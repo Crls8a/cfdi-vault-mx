@@ -5,9 +5,10 @@ This project should run as documentation-led agile delivery: every sprint ships 
 ## Quick path
 
 1. Keep sprint length at two weeks unless the team explicitly changes it.
-2. Use the backlog ID as the stable reference across Markdown, issues, branches, and PRs.
-3. Start work only when the item is Ready.
-4. Accept work only when the Definition of Done is met.
+2. Use the backlog ID as the stable reference across Markdown, optional issues, branches, and PRs.
+3. Use [Lightweight governance policy](governance.md) to decide whether an issue is required.
+4. Start work only when the item is Ready.
+5. Accept work only when the Definition of Done is met.
 
 ## Cadence
 
@@ -56,6 +57,7 @@ stateDiagram-v2
 - [ ] Acceptance criteria are testable.
 - [ ] Dependencies are listed by backlog ID.
 - [ ] Owner role is assigned.
+- [ ] Governance tier is known: issue-required, issue-optional, or high-risk pre-implementation gate.
 - [ ] Data, queue, storage, installer, or CLI impact is documented when relevant.
 - [ ] Error and edge-case behavior is documented or explicitly deferred.
 - [ ] The work is small enough for review, or a review-size exception is recorded.
@@ -69,6 +71,8 @@ stateDiagram-v2
 - [ ] Queue changes include retry, idempotency, and DLQ behavior.
 - [ ] Parser changes include fixtures and partial-parse behavior.
 - [ ] Tests pass locally.
+- [ ] Sensitive fixture scanner passes.
+- [ ] `git diff --check` passes.
 - [ ] Acceptance criteria are explicitly checked in the PR or sprint review.
 
 ## Delegation rules
