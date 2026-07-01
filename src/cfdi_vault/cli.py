@@ -11,6 +11,14 @@ import typer
 from cfdi_vault.config import ConfigValidationError, load_config
 from cfdi_vault.domain import DownloadDirection, RequestType
 from cfdi_vault.cache import RedisCache
+from cfdi_vault.onboarding import (
+    OnboardingError,
+    OnboardingRequest,
+    parse_download_mode,
+    parse_iso_date,
+    parse_schedule_mode,
+    run_onboarding,
+)
 from cfdi_vault.queueing import RabbitMqQueue
 from cfdi_vault.recovery_service import RecoveryService, build_default_query, write_minimal_pdf
 from cfdi_vault.service import ImportBatchResult, ImportRecord, SummaryRow, VaultService
@@ -30,6 +38,112 @@ app.add_typer(config_app, name="config")
 app.add_typer(queue_app, name="queue")
 app.add_typer(worker_app, name="worker")
 app.add_typer(sync_app, name="sync")
+
+
+COMMAND_HELP: tuple[dict[str, str], ...] = (
+    {
+        "command": "doctor",
+        "purpose": "Check whether database, queue, cache, and storage are reachable.",
+        "when": "Run after install or when the CLI cannot connect to dependencies.",
+        "example": "cfdi-vault doctor",
+    },
+    {
+        "command": "onboard",
+        "purpose": "Create the first safe local profile config from storage, RFC, schedule, and e.firma references.",
+        "when": "Run once before recovery so users do not edit JSON by hand.",
+        "example": "cfdi-vault onboard --config ./local.config.json",
+    },
+    {
+        "command": "config validate",
+        "purpose": "Validate the local multi-RFC profile config without reading credential material.",
+        "when": "Run after creating or editing a config file.",
+        "example": "cfdi-vault config validate examples/config/local-dev-dummy.json",
+    },
+    {
+        "command": "init",
+        "purpose": "Create or update the tenant/RFC scope used by recovery jobs.",
+        "when": "Run once per tenant/RFC before real recovery work.",
+        "example": "cfdi-vault init --tenant-id acme --rfc AAA010101AAA",
+    },
+    {
+        "command": "sync metadata",
+        "purpose": "Recover SAT metadata for a tenant/RFC/date range and load the metadata ledger.",
+        "when": "Run before XML recovery so the system knows which UUIDs should exist.",
+        "example": "cfdi-vault sync metadata --tenant-id acme --rfc AAA010101AAA --start 2024-01-01 --end 2024-01-31",
+    },
+    {
+        "command": "sync xml",
+        "purpose": "Recover SAT packages/XML evidence, register local file paths, parse known fields, and load data.",
+        "when": "Run after or alongside metadata recovery when XML evidence is needed.",
+        "example": "cfdi-vault sync xml --tenant-id acme --rfc AAA010101AAA --start 2024-01-01 --end 2024-01-31",
+    },
+    {
+        "command": "queue status",
+        "purpose": "Show queue/job event counts from the durable event log.",
+        "when": "Use when a job is pending, failed, or needs operational inspection.",
+        "example": "cfdi-vault queue status",
+    },
+    {
+        "command": "worker run",
+        "purpose": "Process queued recovery work from RabbitMQ.",
+        "when": "Use with --enqueue workflows or in the Docker Compose worker service.",
+        "example": "cfdi-vault worker run --loop",
+    },
+    {
+        "command": "reconcile",
+        "purpose": "Recompute metadata/XML reconciliation state.",
+        "when": "Run after evidence changes or when pending/downloaded status looks stale.",
+        "example": "cfdi-vault reconcile --tenant-id acme",
+    },
+    {
+        "command": "search",
+        "purpose": "Search normalized CFDI records by UUID, RFC, name, status, type, or concept text.",
+        "when": "Use when the accountant/operator needs to find invoices quickly.",
+        "example": "cfdi-vault search AAA010101AAA",
+    },
+    {
+        "command": "show",
+        "purpose": "Show one CFDI in terminal-readable form.",
+        "when": "Use after search when a specific UUID needs detail.",
+        "example": "cfdi-vault show <UUID>",
+    },
+    {
+        "command": "print",
+        "purpose": "Render one CFDI as text, HTML, or a basic PDF.",
+        "when": "Use when an auditable human-readable output is needed.",
+        "example": "cfdi-vault print <UUID> --format pdf --output storage/exports/<UUID>.pdf",
+    },
+    {
+        "command": "export",
+        "purpose": "Export normalized recovery data.",
+        "when": "Use when accounting data needs to leave the vault as CSV.",
+        "example": "cfdi-vault export --format csv --output storage/exports/cfdi.csv",
+    },
+    {
+        "command": "import-xml",
+        "purpose": "Import one local synthetic CFDI XML into the legacy local-first SQLite vault.",
+        "when": "Use for old lab/demo fixtures, not for SAT recovery.",
+        "example": "cfdi-vault import-xml examples/synthetic-cfdi/invoice-income.xml",
+    },
+    {
+        "command": "import-zip",
+        "purpose": "Import local synthetic XML files from a ZIP into the legacy SQLite vault.",
+        "when": "Use for old lab/demo fixtures, not for SAT recovery.",
+        "example": "cfdi-vault import-zip examples/synthetic-cfdi/invoices.zip",
+    },
+    {
+        "command": "summary",
+        "purpose": "Show legacy SQLite totals grouped by month, issuer, and comprobante type.",
+        "when": "Use with the local synthetic import path.",
+        "example": "cfdi-vault summary",
+    },
+    {
+        "command": "export-csv",
+        "purpose": "Export legacy SQLite imported CFDI records to CSV.",
+        "when": "Use with the local synthetic import path.",
+        "example": "cfdi-vault export-csv export.csv",
+    },
+)
 
 
 def _db_option() -> Path:
@@ -66,6 +180,40 @@ def _require_queue_for_enqueue(enqueue: bool) -> None:
         raise typer.Exit(code=1)
 
 
+@app.command("help")
+def help_command(
+    topic: str | None = typer.Argument(None, help='Optional command name, e.g. "sync metadata".'),
+) -> None:
+    """Explain CFDI Vault MX workflows and command responsibilities."""
+
+    if topic:
+        command = _find_command_help(topic)
+        if command is None:
+            typer.echo(f"Unknown help topic: {topic}", err=True)
+            typer.echo("Run: cfdi-vault help")
+            raise typer.Exit(code=1)
+        _print_command_help(command)
+        return
+
+    typer.echo("CFDI Vault MX help")
+    typer.echo("")
+    typer.echo("Recommended recovery flow:")
+    typer.echo("  1. cfdi-vault doctor")
+    typer.echo("  2. cfdi-vault init --tenant-id <tenant> --rfc <RFC>")
+    typer.echo("  3. cfdi-vault sync metadata --tenant-id <tenant> --rfc <RFC> --start YYYY-MM-DD --end YYYY-MM-DD")
+    typer.echo("  4. cfdi-vault sync xml --tenant-id <tenant> --rfc <RFC> --start YYYY-MM-DD --end YYYY-MM-DD")
+    typer.echo("  5. cfdi-vault search <text-or-rfc>")
+    typer.echo("  6. cfdi-vault show <UUID>")
+    typer.echo("  7. cfdi-vault print <UUID> --format pdf")
+    typer.echo("")
+    typer.echo("Command catalog:")
+    for command in COMMAND_HELP:
+        typer.echo(f"  {command['command']:<14} {command['purpose']}")
+    typer.echo("")
+    typer.echo('For details: cfdi-vault help "sync metadata"')
+    typer.echo("For Typer options: cfdi-vault <command> --help")
+
+
 @config_app.command("validate")
 def config_validate(
     config_path: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
@@ -86,6 +234,89 @@ def config_validate(
             f"- {profile.profile_id}: rfc={profile.rfc}, "
             f"storageRoot={profile.storage_root}, metadataFirst={profile.download.metadata_first}"
         )
+
+
+@app.command("onboard")
+def onboard(
+    config_path: Path = typer.Option(Path("cfdi-vault.local.json"), "--config", help="Safe profile config to create or update."),
+    profile_id: str | None = typer.Option(None, "--profile-id", help="Local profile identifier."),
+    rfc: str | None = typer.Option(None, "--rfc", help="Taxpayer RFC for this local profile."),
+    storage_root: Path | None = typer.Option(None, "--storage-root", help="Root folder for metadata, packages, XML, logs, and exports."),
+    download_mode: str | None = typer.Option(None, "--download-mode", help="issued, received, or both."),
+    start_date: str | None = typer.Option(None, "--start-date", help="Initial download start date: YYYY-MM-DD."),
+    end_date: str | None = typer.Option(None, "--end-date", help="Optional initial download end date: YYYY-MM-DD."),
+    periodicity: str | None = typer.Option(None, "--periodicity", help="disabled, interval, or daily."),
+    interval_minutes: int | None = typer.Option(None, "--interval-minutes", min=1, help="Minutes between runs when periodicity is interval."),
+    daily_at: str | None = typer.Option(None, "--daily-at", help="HH:MM local time when periodicity is daily."),
+    max_concurrency: int | None = typer.Option(None, "--max-concurrency", min=1, max=10, help="Maximum concurrent SAT/recovery work."),
+    certificate_path: Path | None = typer.Option(None, "--cer", help="Local .cer file to validate. The file is not copied."),
+    private_key_path: Path | None = typer.Option(None, "--key", help="Local .key file to validate. The file is not copied."),
+    timezone_name: str = typer.Option("America/Mexico_City", "--timezone", help="Schedule timezone stored in config."),
+    credential_ref_prefix: str | None = typer.Option(None, "--credential-ref-prefix", help="Non-secret reference prefix for external credential custody."),
+    replace_existing: bool = typer.Option(False, "--replace-existing", help="Replace an existing profile with the same profile id."),
+) -> None:
+    """Create the first safe local profile config without storing credential material."""
+
+    typer.echo("Security warnings:")
+    typer.echo("- Do not use real e.firma material in test or development fixtures.")
+    typer.echo("- Do not share the private key file (`.key`).")
+    typer.echo("- The private-key phrase is checked only for presence and is never written to config.")
+
+    try:
+        profile_id = _required_text(profile_id, "Profile id")
+        rfc = _required_text(rfc, "RFC")
+        storage_root = _required_path(storage_root, "Storage root")
+        download_mode = _required_text(download_mode, "Download mode [issued/received/both]", default="both")
+        start_date = _required_text(start_date, "Initial start date [YYYY-MM-DD]")
+        if end_date is None:
+            end_date = str(typer.prompt("Initial end date [YYYY-MM-DD, optional]", default="")).strip() or None
+        periodicity = _required_text(periodicity, "Periodicity [disabled/interval/daily]", default="disabled")
+        if max_concurrency is None:
+            max_concurrency = int(typer.prompt("Maximum concurrency", default="2"))
+        certificate_path = _required_path(certificate_path, "Path to .cer file")
+        private_key_path = _required_path(private_key_path, "Path to .key file")
+        schedule_mode = parse_schedule_mode(periodicity)
+        if schedule_mode.value == "interval" and interval_minutes is None:
+            interval_minutes = int(typer.prompt("Interval minutes"))
+        if schedule_mode.value == "daily" and daily_at is None:
+            daily_at = str(typer.prompt("Daily time [HH:MM]")).strip()
+        request = OnboardingRequest(
+            profile_id=profile_id,
+            rfc=rfc,
+            storage_root=storage_root,
+            download_mode=parse_download_mode(download_mode),
+            start_date=parse_iso_date(start_date, "start date"),
+            end_date=parse_iso_date(end_date, "end date") if end_date else None,
+            schedule_mode=schedule_mode,
+            interval_minutes=interval_minutes,
+            daily_at=daily_at,
+            max_concurrency=max_concurrency,
+            certificate_path=certificate_path,
+            private_key_path=private_key_path,
+            output_config=config_path,
+            timezone=timezone_name,
+            credential_ref_prefix=credential_ref_prefix,
+            replace_existing=replace_existing,
+        )
+        phrase_value = typer.prompt(
+            "Private-key phrase (hidden; discarded after validation)",
+            hide_input=True,
+            confirmation_prompt=True,
+        )
+        result = run_onboarding(request, str(phrase_value))
+    except (OnboardingError, ValueError) as exc:
+        typer.echo("Onboarding failed:", err=True)
+        errors = exc.errors if isinstance(exc, OnboardingError) else (str(exc),)
+        for error in errors:
+            typer.echo(f"- {error}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo("Onboarding complete.")
+    typer.echo(f"Config: {result.output_config}")
+    typer.echo(f"Profile: {result.profile_id} ({result.rfc})")
+    typer.echo(f"Storage root: {result.storage_root}")
+    typer.echo(f"Certificate fingerprint: {result.certificate_fingerprint}")
+    typer.echo("Credential material was not copied and the private-key phrase was not stored.")
 
 
 @app.command("doctor")
@@ -419,3 +650,34 @@ def _parse_cli_datetime(value: str, *, end_of_day: bool) -> datetime:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
 
+
+def _find_command_help(topic: str) -> dict[str, str] | None:
+    normalized = topic.strip().lower()
+    for command in COMMAND_HELP:
+        if command["command"] == normalized:
+            return command
+    return None
+
+
+def _print_command_help(command: dict[str, str]) -> None:
+    typer.echo(command["command"])
+    typer.echo(f"Purpose: {command['purpose']}")
+    typer.echo(f"When to use: {command['when']}")
+    typer.echo(f"Example: {command['example']}")
+
+
+def _required_text(value: str | None, prompt: str, *, default: str | None = None) -> str:
+    if value is None or not value.strip():
+        value = str(typer.prompt(prompt, default=default)).strip()
+    if not value:
+        raise ValueError(f"{prompt} is required")
+    return value
+
+
+def _required_path(value: Path | None, prompt: str) -> Path:
+    if value is None:
+        raw_value = str(typer.prompt(prompt)).strip()
+        if not raw_value:
+            raise ValueError(f"{prompt} is required")
+        value = Path(raw_value)
+    return value
