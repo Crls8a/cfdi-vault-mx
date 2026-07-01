@@ -6,6 +6,7 @@ from pathlib import Path
 
 import typer
 
+from cfdi_vault.config import ConfigValidationError, load_config
 from cfdi_vault.service import ImportBatchResult, ImportRecord, SummaryRow, VaultService
 
 app = typer.Typer(
@@ -13,10 +14,35 @@ app = typer.Typer(
     help="Import, summarize, and export synthetic CFDI/XML data in a local SQLite vault.",
     no_args_is_help=True,
 )
+config_app = typer.Typer(help="Validate local RFC profile configuration.", no_args_is_help=True)
+
+app.add_typer(config_app, name="config")
 
 
 def _db_option() -> Path:
     return Path("cfdi-vault.sqlite3")
+
+
+@config_app.command("validate")
+def config_validate(
+    config_path: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+) -> None:
+    """Validate a local RFC profile config file."""
+
+    try:
+        config = load_config(config_path)
+    except ConfigValidationError as exc:
+        typer.echo("Config validation failed:", err=True)
+        for error in exc.errors:
+            typer.echo(f"- {error}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"Config OK: schemaVersion={config.schema_version}, profiles={len(config.profiles)}")
+    for profile in config.profiles:
+        typer.echo(
+            f"- {profile.profile_id}: rfc={profile.rfc}, "
+            f"storageRoot={profile.storage_root}, metadataFirst={profile.download.metadata_first}"
+        )
 
 
 @app.command("import-xml")

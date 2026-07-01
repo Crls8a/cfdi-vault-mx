@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "profileId": "dummy-received-lookback",
+      "rfc": "XAXX010101000",
+      "storageRoot": "C:/CFDI-Vault-Dummy/storage/dummy-received-lookback",
+      "download": {
+        "issued": false,
+        "received": true,
+        "metadataFirst": true
+      },
+      "lookbackDays": 30,
+      "maxConcurrency": 2,
+      "schedule": {
+        "enabled": true,
+        "intervalMinutes": 360,
+        "timezone": "America/Mexico_City"
+      },
+      "certificateFingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+      "credentialRefs": {
+        "certificateRef": "local-dev-dummy://cfdi-vault/examples/dummy-certificate",
+        "privateKeyRef": "local-dev-dummy://cfdi-vault/examples/dummy-private-key",
+        "passphraseRef": "local-dev-dummy://cfdi-vault/examples/dummy-passphrase"
+      }
+    },
+    {
+      "profileId": "dummy-issued-initial-range",
+      "rfc": "XAXX010101000",
+      "storageRoot": "C:/CFDI-Vault-Dummy/storage/dummy-issued-initial-range",
+      "download": {
+        "issued": true,
+        "received": false,
+        "metadataFirst": true
+      },
+      "initialRange": {
+        "startDate": "2024-01-01",
+        "endDate": "2024-01-31"
+      },
+      "maxConcurrency": 1,
+      "schedule": {
+        "enabled": false,
+        "timezone": "America/Mexico_City"
+      },
+      "certificateFingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+      "credentialRefs": {
+        "certificateRef": "local-dev-dummy://cfdi-vault/examples/dummy-issued-certificate",
+        "privateKeyRef": "local-dev-dummy://cfdi-vault/examples/dummy-issued-private-key",
+        "passphraseRef": "local-dev-dummy://cfdi-vault/examples/dummy-issued-passphrase"
+      }
+    }
+  ]
+}
