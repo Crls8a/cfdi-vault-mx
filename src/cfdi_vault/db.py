@@ -52,6 +52,18 @@ def create_sqlite_engine(db_path: str | Path) -> Engine:
     return create_engine(f"sqlite+pysqlite:///{path.as_posix()}", future=True)
 
 
+def create_engine_from_url(database_url: str | None = None, *, sqlite_path: str | Path | None = None) -> Engine:
+    """Create an engine from a URL, defaulting to the local SQLite vault.
+
+    The recovery architecture is PostgreSQL-first for durable deployments, but
+    tests and local examples still need a dependency-light SQLite path.
+    """
+
+    if database_url:
+        return create_engine(database_url, future=True)
+    return create_sqlite_engine(sqlite_path or "cfdi-vault.sqlite3")
+
+
 def create_session_factory(engine: Engine) -> SessionFactory:
     """Create a SQLAlchemy session factory with stable post-commit objects."""
 

@@ -11,6 +11,7 @@ requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "CFDI Vault MX Lab" }]
 dependencies = [
+    "rich>=13.7,<14.0",
     "SQLAlchemy>=2.0,<3.0",
     "typer>=0.12,<1.0",
 ]
@@ -18,6 +19,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0,<9.0",
+]
+infra = [
+    "pika>=1.3,<2.0",
+    "psycopg[binary]>=3.1,<4.0",
+    "redis>=5.0,<6.0",
 ]
 
 [project.scripts]
