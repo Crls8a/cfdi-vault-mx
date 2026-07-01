@@ -1,11 +1,22 @@
 from datetime import datetime, timezone
 
-from cfdi_vault.domain import DownloadDirection, RequestType
+from cfdi_vault.domain import DownloadDirection, ReconciliationState, RequestType
 from cfdi_vault.fake_sat import FakeSatClient
 from cfdi_vault.recovery_db import CfdiDocument, CfdiMetadataLedger, SatPackageRecord, SatRequestRecord, XmlEvidence
 from cfdi_vault.recovery_service import RecoveryService, build_default_query, write_minimal_pdf
 from cfdi_vault.worker import RecoveryWorker
 from sqlalchemy import select
+
+
+def _synthetic_metadata_bytes(*rows: tuple[str, str, str, str]) -> bytes:
+    lines = [
+        "uuid|rfcEmisor|nombreEmisor|rfcReceptor|nombreReceptor|fechaEmision|montoTotal|estadoComprobante|tipoComprobante|idPaquete",
+    ]
+    for uuid, status, total, effect in rows:
+        lines.append(
+            f"{uuid}|AAA010101AAA|Synthetic Issuer|BBB010101BBB|Synthetic Receiver|2024-01-15T10:30:00Z|{total}|{status}|{effect}|SYN-PACKAGE-002"
+        )
+    return "\n".join(lines).encode("utf-8")
 
 
 def test_fake_metadata_sync_creates_searchable_documents(tmp_path) -> None:
@@ -29,6 +40,149 @@ def test_fake_metadata_sync_creates_searchable_documents(tmp_path) -> None:
         assert len(rows) == 2
         assert rows[0]["parser_status"] == "metadata_only"
         assert any(row["queue"] == "sat.download" for row in queue_rows)
+    finally:
+        service.close()
+
+
+def test_ingest_metadata_file_stores_inventory_and_invalid_rows(tmp_path) -> None:
+    service = RecoveryService(sqlite_path=tmp_path / "recovery.sqlite3", storage_root=tmp_path / "storage")
+    try:
+        query = build_default_query(
+            tenant_id="default",
+            rfc="XAXX010101000",
+            direction=DownloadDirection.RECEIVED,
+            request_type=RequestType.METADATA,
+            start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+        )
+        content = b"\n".join(
+            [
+                _synthetic_metadata_bytes(
+                    ("00000000-0000-4000-8000-000000000011", "Vigente", "100.00", "I"),
+                    ("00000000-0000-4000-8000-000000000012", "Cancelado", "200.00", "E"),
+                ),
+                b"NOT-A-UUID|AAA010101AAA|Synthetic Issuer|BBB010101BBB|Synthetic Receiver|2024-01-15|300.00|Vigente|I|SYN-PACKAGE-002",
+            ]
+        )
+
+        result = service.ingest_metadata_file(query, content, source_package_id="SYN-PACKAGE-002")
+
+        with service.session_factory() as session:
+            ledgers = session.scalars(select(CfdiMetadataLedger).order_by(CfdiMetadataLedger.uuid)).all()
+            documents = session.scalars(select(CfdiDocument).order_by(CfdiDocument.uuid)).all()
+
+        assert result.accepted_count == 2
+        assert result.rejected_count == 1
+        assert result.invalid_rows[0].line_number == 4
+        assert result.storage_key.endswith(".txt")
+        assert len(ledgers) == 2
+        assert [ledger.reconciliation_state for ledger in ledgers] == [
+            ReconciliationState.DISCOVERED_IN_METADATA.value,
+            ReconciliationState.CANCELLED_METADATA.value,
+        ]
+        assert len(documents) == 2
+        assert {document.parser_status for document in documents} == {"metadata_only"}
+
+    finally:
+        service.close()
+
+
+def test_reconcile_metadata_moves_existing_without_xml_to_pending(tmp_path) -> None:
+    service = RecoveryService(sqlite_path=tmp_path / "recovery.sqlite3", storage_root=tmp_path / "storage")
+    try:
+        query = build_default_query(
+            tenant_id="default",
+            rfc="XAXX010101000",
+            direction=DownloadDirection.RECEIVED,
+            request_type=RequestType.METADATA,
+            start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+        )
+        service.ingest_metadata_file(
+            query,
+            _synthetic_metadata_bytes(("00000000-0000-4000-8000-000000000013", "Vigente", "100.00", "I")),
+        )
+
+        changed = service.reconcile(tenant_id="default")
+
+        with service.session_factory() as session:
+            ledger = session.scalar(select(CfdiMetadataLedger))
+
+        assert changed == 1
+        assert ledger is not None
+        assert ledger.reconciliation_state == ReconciliationState.XML_PENDING.value
+    finally:
+        service.close()
+
+
+def test_reconcile_metadata_identifies_existing_xml_evidence(tmp_path) -> None:
+    service = RecoveryService(sqlite_path=tmp_path / "recovery.sqlite3", storage_root=tmp_path / "storage")
+    try:
+        query = build_default_query(
+            tenant_id="default",
+            rfc="XAXX010101000",
+            direction=DownloadDirection.RECEIVED,
+            request_type=RequestType.METADATA,
+            start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+        )
+        uuid = "00000000-0000-4000-8000-000000000014"
+        xml_sha256 = "0" * 64
+        service.ingest_metadata_file(query, _synthetic_metadata_bytes((uuid, "Vigente", "100.00", "I")))
+        with service.session_factory() as session:
+            document = session.scalar(select(CfdiDocument).where(CfdiDocument.uuid == uuid))
+            assert document is not None
+            document.xml_sha256 = xml_sha256
+            document.download_state = ReconciliationState.XML_DOWNLOADED.value
+            session.add(
+                XmlEvidence(
+                    tenant_id="default",
+                    uuid=uuid,
+                    source_package_id="SYN-PACKAGE-002",
+                    xml_sha256=xml_sha256,
+                    size_bytes=10,
+                    storage_key="synthetic/xml.xml",
+                    parser_version="test",
+                    parser_status="complete",
+                    created_at=datetime(2024, 1, 20, tzinfo=timezone.utc),
+                )
+            )
+            session.commit()
+
+        changed = service.reconcile(tenant_id="default")
+
+        with service.session_factory() as session:
+            ledger = session.scalar(select(CfdiMetadataLedger).where(CfdiMetadataLedger.uuid == uuid))
+
+        assert changed == 1
+        assert ledger is not None
+        assert ledger.reconciliation_state == ReconciliationState.XML_DOWNLOADED.value
+    finally:
+        service.close()
+
+
+def test_repeated_metadata_ingest_marks_status_change_for_consultation(tmp_path) -> None:
+    service = RecoveryService(sqlite_path=tmp_path / "recovery.sqlite3", storage_root=tmp_path / "storage")
+    try:
+        query = build_default_query(
+            tenant_id="default",
+            rfc="XAXX010101000",
+            direction=DownloadDirection.RECEIVED,
+            request_type=RequestType.METADATA,
+            start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+        )
+        uuid = "00000000-0000-4000-8000-000000000015"
+        service.ingest_metadata_file(query, _synthetic_metadata_bytes((uuid, "Vigente", "100.00", "I")))
+
+        service.ingest_metadata_file(query, _synthetic_metadata_bytes((uuid, "En Proceso", "100.00", "I")))
+
+        with service.session_factory() as session:
+            ledger = session.scalar(select(CfdiMetadataLedger).where(CfdiMetadataLedger.uuid == uuid))
+
+        assert ledger is not None
+        assert ledger.status == "En Proceso"
+        assert ledger.reconciliation_state == ReconciliationState.STATE_CHECK_PENDING.value
     finally:
         service.close()
 

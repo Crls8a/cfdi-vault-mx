@@ -32,8 +32,10 @@ from cfdi_vault.domain import (
     SatRequestState,
 )
 from cfdi_vault.fake_sat import FakeSatClient
+from cfdi_vault.metadata_parser import InvalidMetadataRow, parse_metadata_bytes
 from cfdi_vault.ports import CachePort, QueuePort, SatClientPort, StoragePort
 from cfdi_vault.queueing import InMemoryQueue
+from cfdi_vault.reconciliation import decide_metadata_state
 from cfdi_vault.recovery_db import (
     CfdiDocument,
     CfdiMetadataLedger,
@@ -68,6 +70,17 @@ class SyncResult:
     packages: tuple[str, ...]
     metadata_count: int
     status: str
+
+
+@dataclass(frozen=True)
+class MetadataImportResult:
+    """Result of ingesting a SAT-like metadata file."""
+
+    accepted_count: int
+    rejected_count: int
+    invalid_rows: tuple[InvalidMetadataRow, ...]
+    metadata_sha256: str
+    storage_key: str
 
 
 class RecoveryService:
@@ -198,6 +211,41 @@ class RecoveryService:
 
         query = _query_from_payload(message.payload)
         return self._process_sat_request_job(query, job_id=message.job_id)
+
+    def ingest_metadata_file(
+        self,
+        query: DownloadQuery,
+        content: bytes,
+        *,
+        delimiter: str | None = None,
+        source_package_id: str = "",
+    ) -> MetadataImportResult:
+        """Parse and reconcile one SAT-like metadata TXT/CSV file."""
+
+        errors = query.validate()
+        if errors:
+            raise ValueError("; ".join(errors))
+        self.init_tenant(query.tenant_id, query.requester_rfc, query.tenant_id)
+        parsed = parse_metadata_bytes(content, delimiter=delimiter, source_package_id=source_package_id)
+        metadata_sha256 = sha256_bytes(content)
+        metadata_key = self.storage.metadata_key(
+            query.requester_rfc,
+            _storage_period(query),
+            source_package_id or f"metadata-{query.criteria_hash()[:12]}",
+            metadata_sha256,
+            extension=_metadata_extension(content, delimiter=delimiter),
+        )
+        metadata_file = self.storage.write_bytes_idempotent(metadata_key, content)
+        with self.session_factory() as session:
+            count = self._upsert_metadata(session, query, parsed.entries, metadata_sha256=metadata_file.sha256)
+            session.commit()
+        return MetadataImportResult(
+            accepted_count=count,
+            rejected_count=parsed.rejected_count,
+            invalid_rows=parsed.invalid_rows,
+            metadata_sha256=metadata_file.sha256,
+            storage_key=str(metadata_file.path),
+        )
 
     def _process_sat_request_job(self, query: DownloadQuery, *, job_id: str) -> SyncResult:
         now = _now()
@@ -480,7 +528,7 @@ class RecoveryService:
                 new_state = (
                     ReconciliationState.XML_DOWNLOADED.value
                     if existing and existing.xml_sha256
-                    else _metadata_state(str(ledger.status or ""), has_xml=False)
+                    else _metadata_state(str(ledger.status or ""), has_xml=bool(existing and existing.xml_sha256))
                 )
                 if ledger.reconciliation_state != new_state:
                     session.add(
@@ -519,7 +567,7 @@ class RecoveryService:
             )
             raw_payload = _metadata_payload(entry)
             has_xml = _has_xml_evidence(session, query.tenant_id, entry.uuid)
-            new_state = _metadata_state(entry.status, has_xml=has_xml)
+            new_state = _metadata_state(entry.status, has_xml=has_xml, is_new=existing is None, previous_status=existing.status if existing else None)
             if existing is None:
                 session.add(
                     CfdiMetadataLedger(
@@ -960,13 +1008,15 @@ def _search_text(entry: MetadataEntry) -> str:
     ).lower()
 
 
-def _metadata_state(status: str, *, has_xml: bool) -> str:
-    if has_xml:
-        return ReconciliationState.XML_DOWNLOADED.value
-    normalized_status = status.strip().lower()
-    if normalized_status in {"cancelado", "cancelada", "cancelled", "canceled"}:
-        return ReconciliationState.CANCELLED_METADATA.value
-    return ReconciliationState.XML_PENDING.value
+def _metadata_state(status: str, *, has_xml: bool, is_new: bool = False, previous_status: str | None = None) -> str:
+    return decide_metadata_state(status, has_xml=has_xml, is_new=is_new, previous_status=previous_status).state.value
+
+
+def _metadata_extension(content: bytes, *, delimiter: str | None) -> str:
+    first_line = content.splitlines()[0] if content.splitlines() else b""
+    if delimiter in {"|", "\t"} or b"|" in first_line or b"\t" in first_line:
+        return "txt"
+    return "csv"
 
 
 def _has_xml_evidence(session: object, tenant_id: str, uuid: str) -> bool:
