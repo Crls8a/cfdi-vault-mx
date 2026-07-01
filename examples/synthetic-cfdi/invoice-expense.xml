@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4" xmlns:tfd="http://www.sat.gob.mx/TimbreFiscalDigital" Version="4.0" Serie="SYN" Folio="2" Fecha="2026-02-03T12:10:00" FormaPago="01" SubTotal="250.00" Moneda="MXN" Total="290.00" TipoDeComprobante="I" MetodoPago="PUE" LugarExpedicion="00000">
+  <cfdi:Emisor Rfc="SYN-ISSUER-002" Nombre="Synthetic Issuer Beta" RegimenFiscal="601" />
+  <cfdi:Receptor Rfc="SYN-RECEIVER-001" Nombre="Synthetic Receiver One" DomicilioFiscalReceptor="00000" RegimenFiscalReceptor="601" UsoCFDI="G03" />
+  <cfdi:Conceptos>
+    <cfdi:Concepto ClaveProdServ="01010101" Cantidad="1" ClaveUnidad="ACT" Descripcion="Synthetic lab material" ValorUnitario="250.00" Importe="250.00" ObjetoImp="02" />
+  </cfdi:Conceptos>
+  <cfdi:Complemento>
+    <tfd:TimbreFiscalDigital Version="1.1" UUID="00000000-0000-4000-8000-000000000002" FechaTimbrado="2026-02-03T12:11:00" RfcProvCertif="SYN-PAC-001" SelloCFD="SYNTHETIC" NoCertificadoSAT="00000000000000000000" SelloSAT="SYNTHETIC" />
+  </cfdi:Complemento>
+</cfdi:Comprobante>

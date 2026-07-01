@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4" xmlns:tfd="http://www.sat.gob.mx/TimbreFiscalDigital" Version="4.0" Serie="SYN" Folio="3" Fecha="2026-02-20T16:45:00" SubTotal="100.00" Moneda="MXN" Total="100.00" TipoDeComprobante="E" LugarExpedicion="00000">
+  <cfdi:Emisor Rfc="SYN-ISSUER-001" Nombre="Synthetic Issuer Alpha" RegimenFiscal="601" />
+  <cfdi:Receptor Rfc="SYN-RECEIVER-002" Nombre="Synthetic Receiver Two" DomicilioFiscalReceptor="00000" RegimenFiscalReceptor="601" UsoCFDI="G02" />
+  <cfdi:Conceptos>
+    <cfdi:Concepto ClaveProdServ="01010101" Cantidad="1" ClaveUnidad="ACT" Descripcion="Synthetic credit note" ValorUnitario="100.00" Importe="100.00" ObjetoImp="01" />
+  </cfdi:Conceptos>
+  <cfdi:Complemento>
+    <tfd:TimbreFiscalDigital Version="1.1" UUID="00000000-0000-4000-8000-000000000003" FechaTimbrado="2026-02-20T16:46:00" RfcProvCertif="SYN-PAC-001" SelloCFD="SYNTHETIC" NoCertificadoSAT="00000000000000000000" SelloSAT="SYNTHETIC" />
+  </cfdi:Complemento>
+</cfdi:Comprobante>
