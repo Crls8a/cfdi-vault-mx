@@ -15,6 +15,7 @@ Tests must use synthetic data only. Inline XML, builders, and fake SAT payloads 
 | `tests/test_sat_orchestration.py` | Metadata-first simulated orchestration tests using fake SAT scenarios and allow-listed RFC-like placeholders. |
 | `tests/test_sat_simulator.py` | Fake SAT scenario tests with handcrafted synthetic SOAP/XML-like strings and package bytes. |
 | `tests/test_secret_provider.py` | SecretProvider boundary tests using synthetic in-memory credential values and redacted audit records. |
+| `tests/test_windows_secret_adapter.py` | Windows Credential Manager adapter tests using an injected in-memory backend and no OS credential store. |
 
 ## Rules
 
