@@ -21,8 +21,10 @@ from cfdi_vault.onboarding import (
 )
 from cfdi_vault.queueing import RabbitMqQueue
 from cfdi_vault.recovery_service import RecoveryService, build_default_query, write_minimal_pdf
+from cfdi_vault.secrets import CredentialKind, CredentialProviderError, CredentialReference, DummySecretProvider
 from cfdi_vault.service import ImportBatchResult, ImportRecord, SummaryRow, VaultService
 from cfdi_vault.worker import RecoveryWorker
+from cfdi_vault.windows_secrets import WindowsCredentialManagerSecretProvider
 
 app = typer.Typer(
     name="cfdi-vault",
@@ -33,11 +35,13 @@ config_app = typer.Typer(help="Validate local RFC profile configuration.", no_ar
 queue_app = typer.Typer(help="Inspect queue state.", no_args_is_help=True)
 worker_app = typer.Typer(help="Run recovery workers.", no_args_is_help=True)
 sync_app = typer.Typer(help="Submit SAT recovery sync jobs.", no_args_is_help=True)
+custody_app = typer.Typer(help="Manage local secret references without printing values.", no_args_is_help=True)
 
 app.add_typer(config_app, name="config")
 app.add_typer(queue_app, name="queue")
 app.add_typer(worker_app, name="worker")
 app.add_typer(sync_app, name="sync")
+app.add_typer(custody_app, name="secret")
 
 
 COMMAND_HELP: tuple[dict[str, str], ...] = (
@@ -58,6 +62,24 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "purpose": "Validate the local multi-RFC profile config without reading credential material.",
         "when": "Run after creating or editing a config file.",
         "example": "cfdi-vault config validate examples/config/local-dev-dummy.json",
+    },
+    {
+        "command": "secret register",
+        "purpose": "Register a local credential reference without printing or storing the value in config.",
+        "when": "Run after creating a profile that points to Windows Credential Manager references.",
+        "example": "cfdi-vault secret register windows-credential-manager://cfdi-vault/profile/private-key --kind private-key",
+    },
+    {
+        "command": "secret verify",
+        "purpose": "Verify that a credential reference exists without reading or printing the value.",
+        "when": "Run before SAT authentication or signing setup checks.",
+        "example": "cfdi-vault secret verify windows-credential-manager://cfdi-vault/profile/private-key --kind private-key",
+    },
+    {
+        "command": "secret delete",
+        "purpose": "Delete a credential reference without printing the previous value.",
+        "when": "Run when rotating or removing a local profile.",
+        "example": "cfdi-vault secret delete windows-credential-manager://cfdi-vault/profile/private-key --kind private-key --yes",
     },
     {
         "command": "init",
@@ -234,6 +256,78 @@ def config_validate(
             f"- {profile.profile_id}: rfc={profile.rfc}, "
             f"storageRoot={profile.storage_root}, metadataFirst={profile.download.metadata_first}"
         )
+
+
+@custody_app.command("register")
+def custody_register(
+    reference_uri: str = typer.Argument(..., help="Credential reference URI."),
+    kind: str = typer.Option("generic", "--kind", help="certificate, private-key, phrase, or generic."),
+    purpose: str = typer.Option("cli-register", "--purpose", help="Redacted audit purpose."),
+) -> None:
+    """Register a credential reference without printing the entered value."""
+
+    reference = _credential_reference(reference_uri, kind)
+    provider = _provider_for_reference(reference)
+    entered_value = typer.prompt(
+        "Credential value (hidden; not printed and not stored in config)",
+        hide_input=True,
+        confirmation_prompt=True,
+    )
+    try:
+        provider.store(reference, str(entered_value), purpose=purpose)
+    except CredentialProviderError as exc:
+        typer.echo(f"Credential registration failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Registered reference: {reference.uri}")
+    typer.echo("Credential value was not printed and was not written to config.")
+
+
+@custody_app.command("verify")
+def custody_verify(
+    reference_uri: str = typer.Argument(..., help="Credential reference URI."),
+    kind: str = typer.Option("generic", "--kind", help="certificate, private-key, phrase, or generic."),
+    purpose: str = typer.Option("cli-verify", "--purpose", help="Redacted audit purpose."),
+) -> None:
+    """Verify that a credential reference exists without printing the value."""
+
+    reference = _credential_reference(reference_uri, kind)
+    provider = _provider_for_reference(reference)
+    try:
+        exists = provider.exists(reference, purpose=purpose)
+    except CredentialProviderError as exc:
+        typer.echo(f"Credential verification failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if not exists:
+        typer.echo(f"Reference not found: {reference.uri}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"Reference verified: {reference.uri}")
+    typer.echo("Credential value was not printed.")
+
+
+@custody_app.command("delete")
+def custody_delete(
+    reference_uri: str = typer.Argument(..., help="Credential reference URI."),
+    kind: str = typer.Option("generic", "--kind", help="certificate, private-key, phrase, or generic."),
+    purpose: str = typer.Option("cli-delete", "--purpose", help="Redacted audit purpose."),
+    yes: bool = typer.Option(False, "--yes", help="Skip confirmation prompt."),
+) -> None:
+    """Delete a credential reference without printing the previous value."""
+
+    reference = _credential_reference(reference_uri, kind)
+    if not yes and not typer.confirm(f"Delete credential reference {reference.uri}?"):
+        typer.echo("Delete cancelled.")
+        return
+    provider = _provider_for_reference(reference)
+    try:
+        deleted = provider.delete(reference, purpose=purpose)
+    except CredentialProviderError as exc:
+        typer.echo(f"Credential deletion failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if deleted:
+        typer.echo(f"Deleted reference: {reference.uri}")
+    else:
+        typer.echo(f"Reference not found: {reference.uri}")
+    typer.echo("Credential value was not printed.")
 
 
 @app.command("onboard")
@@ -664,6 +758,23 @@ def _print_command_help(command: dict[str, str]) -> None:
     typer.echo(f"Purpose: {command['purpose']}")
     typer.echo(f"When to use: {command['when']}")
     typer.echo(f"Example: {command['example']}")
+
+
+def _credential_reference(reference_uri: str, raw_kind: str) -> CredentialReference:
+    normalized = raw_kind.strip().lower().replace("-", "_")
+    try:
+        kind = CredentialKind(normalized)
+    except ValueError as exc:
+        raise typer.BadParameter("kind must be certificate, private-key, phrase, or generic") from exc
+    return CredentialReference(uri=reference_uri, kind=kind)
+
+
+def _provider_for_reference(reference: CredentialReference) -> object:
+    if reference.provider_scheme == WindowsCredentialManagerSecretProvider.provider_scheme:
+        return WindowsCredentialManagerSecretProvider()
+    if reference.provider_scheme == DummySecretProvider.provider_scheme:
+        return DummySecretProvider()
+    raise typer.BadParameter(f"unsupported credential reference scheme: {reference.provider_scheme}")
 
 
 def _required_text(value: str | None, prompt: str, *, default: str | None = None) -> str:
