@@ -8,7 +8,7 @@ This repository is split into two documentation areas: the current local-first C
 2. Read [Architecture](architecture.md) to understand the existing local parser/storage boundaries.
 3. Read [Security model](security-model.md) before touching real CFDI data or certificates.
 4. Read [Foundation-first plan](foundation/README.md) before adding more recovery features.
-5. Read [Agile planning workspace](planning/README.md) before assigning sprint work.
+5. Read [Agile planning workspace](planning/README.md) and [Lightweight governance policy](planning/governance.md) before assigning sprint work.
 6. Read [Safe RFC profile configuration](config/README.md) before adding local profile settings.
 7. Read [First-run onboarding](installer/onboarding.md) before changing installer or profile setup.
 8. Read [Idempotent local storage](storage-design.md) before writing package, metadata, or XML evidence.
@@ -29,6 +29,7 @@ This repository is split into two documentation areas: the current local-first C
 | Current repo | [SDD](sdd.md) | Initial implemented requirements. |
 | Foundation | [Foundation-first plan](foundation/README.md) | Gate before more code: scope, stories, CLI/UX, installer, unified recovery pipeline, storage, architecture, data model, ambiguity, ownership, delegation. |
 | Planning | [Agile planning workspace](planning/README.md) | Sprint roadmap, backlog, team board, delegation model, and agile operating rules. |
+| Planning | [Lightweight governance policy](planning/governance.md) | Solo-maintainer issue policy, PR/CI expectations, and mandatory security gates. |
 | Recovery v2 | [Recovery v2](recovery-v2.md) | Implemented fake SAT, queue/cache/storage ports, Docker, CLI, and next steps. |
 | Recovery v2 | [ADR 0002](adr/0002-recovery-v2-rabbitmq-redis-postgres.md) | Decision record for RabbitMQ, Redis, PostgreSQL, JSON payloads, and search. |
 | Planned library | [SAT download overview](sat-download/README.md) | Entry point for the future download client. |

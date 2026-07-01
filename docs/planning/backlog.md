@@ -49,6 +49,7 @@ This backlog is the shared task source for the CFDI recovery library. Each item 
 | SAT-003 | 7 | SAT Integration | Add manual live SAT verification runbook | SAT-002 | SAT Integration | A maintainer can run live checks safely outside CI with documented prerequisites. |
 | REL-001 | 8 | Release | Prepare open-source contribution guide | Sprints 1-7 | Docs | Contributors know setup, tests, fixture policy, security boundaries, and review rules. |
 | REL-002 | 8 | Release | Build release candidate checklist | Sprints 1-7 | Product / PM | Installer, Docker Compose, docs, tests, examples, and known limits are verified. |
+| GOV-001 | Follow-up | Governance | Clarify solo-maintainer lightweight governance policy | None | Product / PM | Documentation explains when issues are required, when Sprint Packets are enough, and which PR/CI/security gates are always mandatory. |
 | DEVX-001 | Follow-up | DevEx | Normalize repository line endings | None | DevEx | CRLF/LF warnings are resolved with a dedicated `.gitattributes`/formatting pass, without mixing into feature commits. |
 
 ## Backlog hygiene

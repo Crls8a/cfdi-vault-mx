@@ -9,16 +9,18 @@ The planning source of truth is Markdown in this repository. This keeps the plan
 ## Quick path
 
 1. Read [Agile operating model](agile-operating-model.md) to understand cadence, roles, and quality gates.
-2. Read [Sprint roadmap](sprint-roadmap.md) to see the recommended execution order.
-3. Use [Sprint 0 execution plan](sprint-0-execution.md) to start the first sprint safely.
-4. Use [Backlog](backlog.md) to create issues or assign work.
-5. Use [Team board](team-board.md) to track the current sprint.
+2. Read [Lightweight governance policy](governance.md) before deciding whether an issue is required.
+3. Read [Sprint roadmap](sprint-roadmap.md) to see the recommended execution order.
+4. Use [Sprint 0 execution plan](sprint-0-execution.md) to start the first sprint safely.
+5. Use [Backlog](backlog.md) to create Sprint Packets, issues, or assign work.
+6. Use [Team board](team-board.md) to track the current sprint.
 
 ## Planning map
 
 | Document | Use it for |
 |---|---|
 | [Agile operating model](agile-operating-model.md) | Team rules, roles, ceremonies, Definition of Ready, Definition of Done. |
+| [Lightweight governance policy](governance.md) | Solo-maintainer issue policy, PR/CI requirements, and mandatory security gates. |
 | [Sprint roadmap](sprint-roadmap.md) | Sequencing, sprint goals, parallel tracks, blockers, exit criteria. |
 | [Sprint 0 execution plan](sprint-0-execution.md) | First sprint scope, agent assignments, handoff prompts, acceptance gate. |
 | [Sprint 0 review findings](sprint-0-review-findings.md) | Agent review results and Sprint 0 acceptance evidence. |
@@ -27,11 +29,12 @@ The planning source of truth is Markdown in this repository. This keeps the plan
 
 ## Editing workflow
 
-1. Add or update a backlog item in [Backlog](backlog.md).
-2. Confirm it passes Definition of Ready from [Agile operating model](agile-operating-model.md).
-3. Move it into the active sprint board in [Team board](team-board.md).
-4. Link implementation PRs or external tickets back to the backlog ID.
-5. Mark the item accepted only after tests, docs, and user-facing behavior match the acceptance criteria.
+1. Add or update a backlog item or Sprint Packet in [Backlog](backlog.md).
+2. Confirm whether the change requires an issue using [Lightweight governance policy](governance.md).
+3. Confirm it passes Definition of Ready from [Agile operating model](agile-operating-model.md).
+4. Move it into the active sprint board in [Team board](team-board.md).
+5. Link implementation PRs or external tickets back to the backlog ID when they exist.
+6. Mark the item accepted only after tests, docs, and user-facing behavior match the acceptance criteria.
 
 ## Planning gate
 
