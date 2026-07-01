@@ -13,7 +13,7 @@ This roadmap sequences the CFDI recovery library from foundation to release. Spr
 ```mermaid
 flowchart TD
     S0["Sprint 0: Planning and foundation gate"] --> S1["Sprint 1: Local setup and storage contract"]
-    S1 --> S2["Sprint 2: PostgreSQL schema and repositories"]
+    S1 --> S2["Sprint 2: Metadata-first reconciliation foundation"]
     S1 --> S3["Sprint 3: RabbitMQ and Redis reliability"]
     S1 --> S5["Sprint 5: Parser matrix and fixtures"]
     S2 --> S4["Sprint 4: Fake SAT recovery E2E"]
@@ -31,7 +31,7 @@ flowchart TD
 |---|---|---|---|---|
 | 0 | Planning and foundation gate | PM, Architecture, QA | None | Foundation docs, planning docs, open questions, and ownership model are accepted. |
 | 1 | Local setup and storage contract | Infrastructure, CLI/UX, Storage | Sprint 0 | Docker Compose path, installer path, storage root, package/XML layout, and `doctor` expectations are documented and validated. |
-| 2 | PostgreSQL schema and repositories | Data, QA | Storage contract from Sprint 1 | Migrations, repositories, JSONB strategy, indexes, and integration tests exist. |
+| 2 | Metadata-first reconciliation foundation | Data, QA, Architecture | Storage contract from Sprint 1 | SAT-like metadata parser, invalid-row reporting, metadata ledger reconciliation, status-consultation port, retry policy, and synthetic tests exist. |
 | 3 | RabbitMQ and Redis reliability | Queue/Worker, QA | Message contract from Sprint 1 | Exchanges, routing keys, retry, DLQ, progress cache, locks, and worker heartbeat are implemented and tested. |
 | 4 | Fake SAT recovery E2E | SAT Integration, Queue/Worker, Data, Storage, QA | Sprints 2, 3, and parser baseline | Fake SAT flow downloads packages, extracts XML, registers evidence, loads PostgreSQL, reconciles, and exposes job status. |
 | 5 | Parser matrix and fixtures | Parser, Data, QA | Version/complement scope accepted | CFDI 3.2, 3.3, 4.0, payments, payroll, and unknown complement fixtures prove complete vs partial parsing. |
@@ -44,7 +44,7 @@ flowchart TD
 | Starts after | Work that can run in parallel |
 |---|---|
 | Sprint 0 | Installer design, storage implementation, CLI help/UX refinement, parser fixture collection. |
-| Sprint 1 | PostgreSQL repositories, RabbitMQ/Redis adapters, parser registry, QA integration harness. |
+| Sprint 1 | Metadata reconciliation, RabbitMQ/Redis adapters, parser registry, QA integration harness. |
 | Sprint 2 + Sprint 3 | Fake SAT E2E orchestration, search query builder, reconciliation checks. |
 | Sprint 4 | CLI progress dashboard, print/export templates, release docs, security hardening preparation. |
 
@@ -52,7 +52,7 @@ flowchart TD
 
 1. Foundation gate.
 2. Storage root and evidence registration.
-3. PostgreSQL migrations and repositories.
+3. Metadata ledger, parser, and reconciliation policy.
 4. RabbitMQ/Redis durable worker behavior.
 5. Fake SAT end-to-end recovery.
 6. CLI operator experience.

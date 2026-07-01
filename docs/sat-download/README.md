@@ -12,9 +12,10 @@ This folder turns the research note about SAT massive CFDI downloads into small,
 4. Review e.firma and secret-handling rules in [Authentication and security](auth-security.md).
 5. Model valid queries with [Request model](request-model.md).
 6. Design the recovery product with [Metadata-led reconciliation architecture](reconciliation-architecture.md).
-7. Implement around [Statuses, limits, and errors](statuses-limits-errors.md).
-8. Define user communication with [User-facing errors and edge cases](user-facing-errors.md).
-9. Use [Implementation plan](implementation-plan.md) to split the future library into reviewable work units.
+7. Review the Sprint 2 behavior in [Metadata-first reconciliation slice](metadata-first-reconciliation.md).
+8. Implement around [Statuses, limits, and errors](statuses-limits-errors.md).
+9. Define user communication with [User-facing errors and edge cases](user-facing-errors.md).
+10. Use [Implementation plan](implementation-plan.md) to split the future library into reviewable work units.
 
 ## What the library is expected to do
 
