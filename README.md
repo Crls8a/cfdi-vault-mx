@@ -1,6 +1,11 @@
 # CFDI Vault MX
 
-CFDI Vault MX is a local-first backend/data lab for importing, parsing, storing, summarizing, and exporting **synthetic** Mexican CFDI/XML files. It is built as a public case study for architecture, data modeling, CLI design, testing, and secure handling boundaries.
+CFDI Vault MX is evolving from a local CFDI/XML lab into an open-source **CFDI recovery and reconciliation library**. The current code supports two safe paths:
+
+- local synthetic XML import with SQLite;
+- a fake SAT recovery workflow with CLI, queue/cache/storage ports, PostgreSQL-ready schema, and Docker Compose scaffolding.
+
+Live SAT SOAP access is still intentionally disabled until signing, credential custody, and compliance work are implemented.
 
 ## Quick path
 
@@ -11,20 +16,38 @@ CFDI Vault MX is a local-first backend/data lab for importing, parsing, storing,
    python -m pip install -e ".[dev]"
    ```
 
-3. Import sample XML:
+3. Validate the dummy local profile config:
 
    ```bash
+   cfdi-vault config validate examples/config/local-dev-dummy.json
+   ```
+
+   For private machine setup, use `cfdi-vault onboard --config ./cfdi-vault.local.json`.
+
+4. Import sample XML with the local-first path:
+
+   ```bash
+   cfdi-vault help
    cfdi-vault import-xml examples/synthetic-cfdi/invoice-income.xml --db local.sqlite3
    ```
 
-4. Review summaries and export:
+5. Review summaries and export:
 
    ```bash
    cfdi-vault summary --db local.sqlite3
    cfdi-vault export-csv export.csv --db local.sqlite3
    ```
 
-5. Verify:
+6. Run the fake SAT recovery path:
+
+   ```bash
+   cfdi-vault doctor
+   cfdi-vault sync metadata --rfc XAXX010101000 --start 2024-01-01 --end 2024-01-31
+   cfdi-vault search fake
+   cfdi-vault queue status
+   ```
+
+7. Verify:
 
    ```bash
    python -m pytest
@@ -36,12 +59,38 @@ CFDI Vault MX is a local-first backend/data lab for importing, parsing, storing,
    .\.venv\Scripts\python.exe -m pytest
    ```
 
+## Docker Compose path
+
+```powershell
+Copy-Item .env.example .env
+docker compose up -d --build postgres rabbitmq redis
+docker compose run --rm app doctor
+```
+
+Windows local setup can also use:
+
+```powershell
+.\scripts\install.ps1
+```
+
+## SAT download library documentation
+
+The repository includes design documentation for the SAT Web Service download library. Start at `docs/foundation/README.md`, then `docs/planning/README.md`, `docs/sat-download/README.md`, and `docs/recovery-v2.md`.
+
+Important boundary: this implementation includes fake SAT only. It does not authenticate with SAT, upload e.firma files, or download real CFDI.
+
 ## What this lab does
 
 | Capability | Phase-one behavior |
 |---|---|
 | Import XML | Parses one CFDI-like XML file. |
 | Import ZIP | Imports every `.xml` member in a ZIP archive. |
+| Help | Explains the recommended recovery flow and what each command does. |
+| Onboarding | Creates a safe local profile config with storage, RFC, schedule, certificate fingerprint, and credential references only. |
+| Fake SAT sync | Creates deterministic metadata/package rows without network access. |
+| Queue events | Records RabbitMQ-style queue events; RabbitMQ adapter is available through `.[infra]`. |
+| Cache/progress | Uses a cache port; Redis adapter is available through `.[infra]`. |
+| Recovery database | Adds PostgreSQL-ready tables with JSON-compatible payloads. |
 | Parse fields | UUID, issuer, receiver, date, amounts, currency, type, payment method/form. |
 | Store locally | Uses SQLite through SQLAlchemy. |
 | Deduplicate | Skips records with an existing UUID. |
@@ -54,7 +103,7 @@ CFDI Vault MX is a local-first backend/data lab for importing, parsing, storing,
 - Use only `examples/synthetic-cfdi/` or your own fake data.
 - Do not import real taxpayer XMLs.
 - Do not store `.cer`, `.key`, passwords, SAT credentials, or secrets.
-- Do not add SAT integration, e.firma upload, or dashboard code in phase one.
+- Do not use `--live` until the real SAT SOAP/signing slice is implemented and reviewed.
 
 ## Project map
 
@@ -64,9 +113,17 @@ CFDI Vault MX is a local-first backend/data lab for importing, parsing, storing,
 | `src/cfdi_vault/db.py` | SQLAlchemy model and SQLite setup. |
 | `src/cfdi_vault/service.py` | Import, dedupe, summary, and CSV export use cases. |
 | `src/cfdi_vault/cli.py` | Typer CLI entrypoint. |
+| `src/cfdi_vault/config.py` | Safe local RFC profile configuration schema and validation. |
+| `src/cfdi_vault/recovery_service.py` | Fake SAT recovery, search, print, export, and reconciliation use cases. |
+| `src/cfdi_vault/recovery_db.py` | PostgreSQL-ready recovery/accounting schema. |
+| `src/cfdi_vault/queueing.py` | In-memory and RabbitMQ queue adapters. |
+| `src/cfdi_vault/cache.py` | In-memory and Redis cache adapters. |
+| `docker-compose.yml` | Local PostgreSQL/RabbitMQ/Redis stack. |
+| `examples/config/` | Dummy safe profile config examples. |
 | `examples/synthetic-cfdi/` | Fake XML examples only. |
 | `tests/` | Parser, import, dedupe, summary, and export tests. |
 | `docs/` | Architecture, SDD, security model, ADRs, and learning log. |
+| `docs/planning/` | Agile planning workspace with sprint roadmap, backlog, and team board. |
 
 ## Next step
 

@@ -9,11 +9,16 @@ __pycache__/
 *.db
 .env
 .env.*
+!.env.example
+cfdi-vault.local.json
+*.local.json
 *.pem
 *.key
 *.cer
 *.p12
 *.pfx
+storage/
+logs/
 build/
 dist/
 *.egg-info/

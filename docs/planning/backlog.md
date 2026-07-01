@@ -1,0 +1,63 @@
+# Product backlog
+
+This backlog is the shared task source for the CFDI recovery library. Each item should become either a GitHub issue, a Linear/Jira ticket, or a small PR task, but the ID remains stable here.
+
+## Quick path
+
+1. Pick items from the next sprint target.
+2. Check dependencies before assigning work.
+3. Keep one owner role accountable for delivery.
+4. Do not start implementation until the item meets Definition of Ready.
+
+## Backlog
+
+| ID | Sprint | Workstream | Title | Depends on | Owner role | Acceptance |
+|---|---:|---|---|---|---|---|
+| PM-001 | 0 | Planning | Accept sprint roadmap and workstream ownership | None | Product / PM | Roadmap, backlog, and board are reviewed by the team. |
+| ARCH-001 | 0 | Architecture | Review foundation gate before new code | None | Architecture | Foundation checklist has no unknown blocker for Sprint 1. |
+| QA-001 | 0 | QA | Define fixture policy and no-real-CFDI rule | ARCH-001 | QA | Test data policy blocks real taxpayer data, lists fixture categories, and links examples/tests provenance. |
+| DOC-001 | 0 | Docs | Link planning docs from main documentation index | PM-001 | Docs | README and docs index point to planning workspace. |
+| QA-002 | 1 | QA | Add fixture safety scanner | QA-001 | QA | A script or test blocks real-looking RFC values outside the allow-list, taxpayer names, secrets, certificates, keys, SAT credentials, and committed runtime evidence. |
+| STOR-001 | 1 | Storage | Implement idempotent local storage model | ARCH-001 | Infrastructure | Metadata, packages, XML, normalized rows, and pipeline events have RFC/period local storage, SHA-256 tracking, and replay-safe idempotency rules. |
+| STOR-002 | 1 | Storage | Implement package/XML evidence path builder | STOR-001 | Infrastructure | Paths are tenant, RFC, year, month, type, and UUID aware. |
+| STOR-003 | 1 | Storage | Add storage manifest and growth metadata | STOR-002 | Infrastructure | Each package/XML registration records hash, size, path, and retention state. |
+| CLI-001 | 1 | CLI/UX | Design `storage locate` and `storage status` commands | STOR-001 | CLI / UX | Help text and user stories describe how operators find local evidence. |
+| INST-001 | 1 | Installer | Desktop onboarding for storage and e.firma references | STOR-001, INF-001 | Infrastructure | Onboarding creates/writes safe profile config, validates writable storage, validates local certificate/key shape, records certificate fingerprint and credential references only, and never stores plaintext secrets. |
+| INF-001 | 1 | Infrastructure | Define safe RFC profile configuration | QA-002 | Infrastructure | Config schema supports multiple RFC profiles, storage roots, metadata-first downloads, ranges/lookback, concurrency, scheduling, certificate fingerprints, and external credential references without plaintext secrets. |
+| DB-001 | 2 | Data | Introduce migration framework | STOR-003 | Data / Accounting | Database schema can be created, upgraded, and inspected repeatably. |
+| DB-002 | 2 | Data | Implement operational tables | DB-001 | Data / Accounting | Tenants, credential profiles, jobs, requests, packages, queue events, signer audit, and reconciliation tables exist. |
+| DB-003 | 2 | Data | Implement CFDI accounting tables | DB-001 | Data / Accounting | Documents, parties, concepts, taxes, payments, payroll, related docs, metadata ledger, and XML evidence exist. |
+| DB-004 | 2 | Search | Add PostgreSQL search indexes | DB-003 | Data / Accounting | UUID, RFC, date, total, status, type, text, trigram, and JSONB indexes support v1 search. |
+| QUEUE-001 | 3 | Queue/Worker | Define RabbitMQ exchanges and routing keys | ARCH-001 | Queue / Worker | Queue names, routing keys, payload contract, and DLQ are documented and implemented. |
+| QUEUE-002 | 3 | Queue/Worker | Implement retry and DLQ policy | QUEUE-001 | Queue / Worker | Failed jobs retry with bounded attempts and land in dead-letter state with reason. |
+| CACHE-001 | 3 | Cache | Implement Redis progress and locks | QUEUE-001 | Queue / Worker | Progress, criteria locks, rate limit state, token cache, and heartbeat keys are observable. |
+| WORKER-001 | 3 | Queue/Worker | Add worker heartbeat and status reporting | CACHE-001 | Queue / Worker | CLI can show active workers and stale worker warnings. |
+| PARSER-001 | 5 | Parser | Build CFDI version detector | QA-001 | Parser | 3.2, 3.3, 4.0, and unknown XML are classified deterministically. |
+| PARSER-002 | 5 | Parser | Add core CFDI parsers | PARSER-001 | Parser | Common accounting fields parse from 3.2, 3.3, and 4.0 fixtures. |
+| PARSER-003 | 5 | Parser | Add complement registry baseline | PARSER-002 | Parser | Payments and payroll parse when known; unknown complements are stored raw with partial status. |
+| PARSER-004 | 5 | Parser | Add retroactive fixture matrix | PARSER-003 | QA | Fixtures cover income, expense, payment, payroll, cancellation metadata, and unknown complement paths. |
+| SAT-001 | 4 | SAT Integration | Expand fake SAT scenarios | QUEUE-002, PARSER-001 | SAT Integration | Fake SAT covers accepted, processing, finished, multiple packages, SAT errors, expiration, and duplicates. |
+| PIPE-001 | 4 | Recovery Pipeline | Implement unified recovery orchestration | DB-003, QUEUE-002, STOR-003, SAT-001 | Architecture | One job tracks request, verify, package download, extraction, database load, and reconciliation. |
+| PIPE-002 | 4 | Recovery Pipeline | Register package and XML evidence during sync | PIPE-001 | Infrastructure | Every file has durable path, hash, size, source job, and extraction metadata. |
+| REC-001 | 4 | Reconciliation | Implement metadata/XML reconciliation events | PIPE-002 | Data / Accounting | Missing XML, duplicate UUID, partial parser, and status mismatch are visible. |
+| CLI-002 | 6 | CLI/UX | Add progress dashboard | WORKER-001, PIPE-001 | CLI / UX | CLI shows job progress, package counts, XML pending, errors, and worker state. |
+| CLI-003 | 6 | CLI/UX | Implement search filters | DB-004 | CLI / UX | Search by UUID, RFC, name, date, total, type, status, concept text, and complement. |
+| CLI-004 | 6 | CLI/UX | Implement `show`, `print`, and export polish | CLI-003 | CLI / UX | Operators can inspect, print/export, and see partial-parse warnings. |
+| ERR-001 | 6 | UX / Errors | Normalize actionable error messages | CLI-002 | CLI / UX | Every common error explains what failed, why it matters, and next action. |
+| SEC-001 | 7 | Security | Define credential custody and signer policy | ARCH-001 | Security | No password/e.firma is stored by default; local-secure path is explicitly designed. |
+| SAT-002 | 7 | SAT Integration | Implement signer port and SOAP client boundary | SEC-001 | SAT Integration | Live SAT code is opt-in, typed, tested with fakes, and disabled in CI. |
+| SAT-003 | 7 | SAT Integration | Add manual live SAT verification runbook | SAT-002 | SAT Integration | A maintainer can run live checks safely outside CI with documented prerequisites. |
+| REL-001 | 8 | Release | Prepare open-source contribution guide | Sprints 1-7 | Docs | Contributors know setup, tests, fixture policy, security boundaries, and review rules. |
+| REL-002 | 8 | Release | Build release candidate checklist | Sprints 1-7 | Product / PM | Installer, Docker Compose, docs, tests, examples, and known limits are verified. |
+| DEVX-001 | Follow-up | DevEx | Normalize repository line endings | None | DevEx | CRLF/LF warnings are resolved with a dedicated `.gitattributes`/formatting pass, without mixing into feature commits. |
+
+## Backlog hygiene
+
+- Keep backlog IDs stable.
+- Split items that cannot be reviewed in one focused PR.
+- Do not mark an item Accepted without evidence.
+- Add new ambiguity to `docs/foundation/open-questions.md` before coding around it.
+
+## Next step
+
+Move selected items into [Team board](team-board.md) at sprint planning.
