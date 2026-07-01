@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from cfdi_vault.domain import CfdiStatusQuery, CfdiStatusResult, DownloadQuery, QueueMessage, UserFacingError
+from cfdi_vault.sat_contract import SatAuthResult, SatDownloadResult, SatRequestResult, SatVerificationResult
 
 
 class SignerPort(Protocol):
@@ -25,6 +26,34 @@ class SatClientPort(Protocol):
 
     def download_package(self, package_id: str) -> bytes:
         """Download raw package bytes."""
+
+
+class SatAuthenticatorPort(Protocol):
+    """SAT authentication boundary for non-live and future live adapters."""
+
+    def authenticate(self) -> SatAuthResult:
+        """Return normalized SAT authorization data without exposing secrets."""
+
+
+class SatRequestPort(Protocol):
+    """Boundary for submitting a SAT mass-download request."""
+
+    def submit_request(self, query: DownloadQuery) -> SatRequestResult:
+        """Submit one request and return a normalized SAT result."""
+
+
+class SatVerificationPort(Protocol):
+    """Boundary for checking asynchronous SAT request status."""
+
+    def verify_request(self, request_id: str) -> SatVerificationResult:
+        """Return request state and package identifiers if available."""
+
+
+class SatDownloadPort(Protocol):
+    """Boundary for downloading one SAT package payload."""
+
+    def download_package(self, package_id: str) -> SatDownloadResult:
+        """Download one package and return a normalized outcome."""
 
 
 class CfdiStatusClientPort(Protocol):
