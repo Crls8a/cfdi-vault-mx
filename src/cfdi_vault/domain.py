@@ -209,6 +209,27 @@ class MetadataEntry:
 
 
 @dataclass(frozen=True)
+class CfdiStatusQuery:
+    """Minimum data required by SAT status consultation."""
+
+    uuid: str
+    issuer_rfc: str
+    receiver_rfc: str
+    total: Decimal
+
+
+@dataclass(frozen=True)
+class CfdiStatusResult:
+    """Normalized result returned by a CFDI status consultation adapter."""
+
+    uuid: str
+    status: str
+    checked_at: datetime
+    sat_code: str | None = None
+    raw_response: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class UserFacingError:
     """Typed error payload for CLI/API callers."""
 

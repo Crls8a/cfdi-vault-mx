@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from cfdi_vault.domain import DownloadQuery, QueueMessage, UserFacingError
+from cfdi_vault.domain import CfdiStatusQuery, CfdiStatusResult, DownloadQuery, QueueMessage, UserFacingError
 
 
 class SignerPort(Protocol):
@@ -25,6 +25,18 @@ class SatClientPort(Protocol):
 
     def download_package(self, package_id: str) -> bytes:
         """Download raw package bytes."""
+
+
+class CfdiStatusClientPort(Protocol):
+    """Boundary for SAT CFDI status consultation.
+
+    Production adapters must not be mixed into metadata parsing or local
+    reconciliation. The application layer should call this only when the
+    reconciliation policy marks a UUID as requiring status confirmation.
+    """
+
+    def query_status(self, query: CfdiStatusQuery) -> CfdiStatusResult:
+        """Return normalized CFDI status details for one UUID."""
 
 
 class QueuePort(Protocol):
