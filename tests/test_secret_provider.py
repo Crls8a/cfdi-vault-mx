@@ -8,6 +8,7 @@ import pytest
 
 from cfdi_vault.config import validate_config
 from cfdi_vault.secrets import (
+    CredentialAccessAction,
     CredentialAccessOutcome,
     CredentialKind,
     CredentialProviderError,
@@ -55,6 +56,28 @@ def test_dummy_provider_records_missing_and_denied_access_without_values() -> No
         CredentialAccessOutcome.DENIED,
     ]
     assert all("value" not in record for record in provider.audit_log_records())
+
+
+def test_dummy_provider_records_create_verify_and_delete_actions() -> None:
+    payload = "SYNTHETIC_DUMMY_CREATE_DELETE"
+    reference = _reference(CredentialKind.GENERIC)
+    provider = DummySecretProvider()
+
+    provider.store(reference, payload, purpose="unit-test-create")
+    exists_before_delete = provider.exists(reference, purpose="unit-test-verify")
+    deleted = provider.delete(reference, purpose="unit-test-delete")
+    exists_after_delete = provider.exists(reference, purpose="unit-test-verify-after-delete")
+
+    assert exists_before_delete is True
+    assert deleted is True
+    assert exists_after_delete is False
+    assert [event.action for event in provider.audit_events] == [
+        CredentialAccessAction.CREATE,
+        CredentialAccessAction.VERIFY,
+        CredentialAccessAction.DELETE,
+        CredentialAccessAction.VERIFY,
+    ]
+    assert payload not in json.dumps(provider.audit_log_records(), sort_keys=True)
 
 
 def test_audit_log_payload_excludes_resolved_value(caplog: pytest.LogCaptureFixture) -> None:

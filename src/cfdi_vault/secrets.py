@@ -22,8 +22,19 @@ class CredentialAccessOutcome(StrEnum):
     """Result of one credential reference resolution attempt."""
 
     GRANTED = "granted"
+    STORED = "stored"
+    DELETED = "deleted"
     MISSING = "missing"
     DENIED = "denied"
+
+
+class CredentialAccessAction(StrEnum):
+    """Credential custody operation recorded in redacted audit events."""
+
+    CREATE = "create"
+    READ = "read"
+    VERIFY = "verify"
+    DELETE = "delete"
 
 
 class CredentialProviderError(LookupError):
@@ -76,6 +87,7 @@ class CredentialAccessAuditEvent:
     kind: CredentialKind
     purpose: str
     outcome: CredentialAccessOutcome
+    action: CredentialAccessAction = CredentialAccessAction.READ
     occurred_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     reason: str | None = None
 
@@ -87,6 +99,7 @@ class CredentialAccessAuditEvent:
             "reference_uri": self.reference_uri,
             "kind": self.kind.value,
             "purpose": self.purpose,
+            "action": self.action.value,
             "outcome": self.outcome.value,
             "occurred_at": self.occurred_at.isoformat(),
         }
@@ -108,6 +121,26 @@ class DummySecretProvider:
     def audit_events(self) -> tuple[CredentialAccessAuditEvent, ...]:
         return tuple(self._events)
 
+    def store(self, reference: CredentialReference, value: str, *, purpose: str) -> None:
+        """Store a synthetic in-memory value and record a redacted event."""
+
+        if reference.provider_scheme != self.provider_scheme:
+            self._record(
+                reference,
+                purpose=purpose,
+                action=CredentialAccessAction.CREATE,
+                outcome=CredentialAccessOutcome.DENIED,
+                reason="unsupported provider scheme",
+            )
+            raise CredentialProviderError("credential reference uses an unsupported provider scheme")
+        self._values[reference.uri] = value
+        self._record(
+            reference,
+            purpose=purpose,
+            action=CredentialAccessAction.CREATE,
+            outcome=CredentialAccessOutcome.STORED,
+        )
+
     def resolve(self, reference: CredentialReference, *, purpose: str) -> SecretValue:
         """Resolve a synthetic value and record a redacted audit event."""
 
@@ -115,6 +148,7 @@ class DummySecretProvider:
             self._record(
                 reference,
                 purpose=purpose,
+                action=CredentialAccessAction.READ,
                 outcome=CredentialAccessOutcome.DENIED,
                 reason="unsupported provider scheme",
             )
@@ -125,13 +159,50 @@ class DummySecretProvider:
             self._record(
                 reference,
                 purpose=purpose,
+                action=CredentialAccessAction.READ,
                 outcome=CredentialAccessOutcome.MISSING,
                 reason="reference not registered in dummy provider",
             )
             raise CredentialProviderError("credential reference is not registered in dummy provider")
 
-        self._record(reference, purpose=purpose, outcome=CredentialAccessOutcome.GRANTED)
+        self._record(reference, purpose=purpose, action=CredentialAccessAction.READ, outcome=CredentialAccessOutcome.GRANTED)
         return SecretValue(value, kind=reference.kind, reference_uri=reference.uri)
+
+    def exists(self, reference: CredentialReference, *, purpose: str) -> bool:
+        """Check whether a synthetic reference exists without revealing it."""
+
+        exists = reference.uri in self._values and reference.provider_scheme == self.provider_scheme
+        self._record(
+            reference,
+            purpose=purpose,
+            action=CredentialAccessAction.VERIFY,
+            outcome=CredentialAccessOutcome.GRANTED if exists else CredentialAccessOutcome.MISSING,
+            reason=None if exists else "reference not registered in dummy provider",
+        )
+        return exists
+
+    def delete(self, reference: CredentialReference, *, purpose: str) -> bool:
+        """Delete a synthetic reference and record a redacted event."""
+
+        if reference.provider_scheme != self.provider_scheme:
+            self._record(
+                reference,
+                purpose=purpose,
+                action=CredentialAccessAction.DELETE,
+                outcome=CredentialAccessOutcome.DENIED,
+                reason="unsupported provider scheme",
+            )
+            raise CredentialProviderError("credential reference uses an unsupported provider scheme")
+        existed = reference.uri in self._values
+        self._values.pop(reference.uri, None)
+        self._record(
+            reference,
+            purpose=purpose,
+            action=CredentialAccessAction.DELETE,
+            outcome=CredentialAccessOutcome.DELETED if existed else CredentialAccessOutcome.MISSING,
+            reason=None if existed else "reference not registered in dummy provider",
+        )
+        return existed
 
     def audit_log_records(self) -> tuple[dict[str, str], ...]:
         """Return log-safe audit dictionaries."""
@@ -143,6 +214,7 @@ class DummySecretProvider:
         reference: CredentialReference,
         *,
         purpose: str,
+        action: CredentialAccessAction,
         outcome: CredentialAccessOutcome,
         reason: str | None = None,
     ) -> None:
@@ -152,6 +224,7 @@ class DummySecretProvider:
                 reference_uri=reference.uri,
                 kind=reference.kind,
                 purpose=purpose,
+                action=action,
                 outcome=outcome,
                 reason=reason,
             )
