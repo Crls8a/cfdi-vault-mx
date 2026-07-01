@@ -6,6 +6,7 @@ from typing import Protocol
 
 from cfdi_vault.domain import CfdiStatusQuery, CfdiStatusResult, DownloadQuery, QueueMessage, UserFacingError
 from cfdi_vault.sat_contract import SatAuthResult, SatDownloadResult, SatRequestResult, SatVerificationResult
+from cfdi_vault.secrets import CredentialAccessAuditEvent, CredentialReference, SecretValue
 
 
 class SignerPort(Protocol):
@@ -13,6 +14,17 @@ class SignerPort(Protocol):
 
     def sign(self, xml_payload: bytes) -> bytes:
         """Return the signed XML payload."""
+
+
+class SecretProviderPort(Protocol):
+    """Resolves credential references without leaking values to config/logs."""
+
+    @property
+    def audit_events(self) -> tuple[CredentialAccessAuditEvent, ...]:
+        """Return redacted audit events for resolution attempts."""
+
+    def resolve(self, reference: CredentialReference, *, purpose: str) -> SecretValue:
+        """Resolve a credential reference for immediate in-memory use."""
 
 
 class SatClientPort(Protocol):
