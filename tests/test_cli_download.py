@@ -190,8 +190,9 @@ def test_download_live_option_is_rejected(tmp_path: Path) -> None:
         env={"LOCALAPPDATA": str(appdata_root)},
     )
 
-    assert result.exit_code != 0
-    assert "--live" in result.output
+    assert result.exit_code == 2
+    assert "request_id=" not in result.output
+    assert "mode=fake" not in result.output
 
 
 def _write_setup_profile(appdata_root: Path, *, profile_id: str = "dummy-profile") -> None:
