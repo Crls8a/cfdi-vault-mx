@@ -78,6 +78,18 @@ class ReconciliationState(StrEnum):
     FAILED_PERMANENT = "FAILED_PERMANENT"
 
 
+class CfdiStatusOutcome(StrEnum):
+    """Normalized CFDI status consultation outcomes."""
+
+    ACTIVE = "active"
+    CANCELLED = "cancelled"
+    NOT_FOUND = "not_found"
+    UNAUTHORIZED = "unauthorized"
+    RETRYABLE = "retryable"
+    PERMANENT = "permanent"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True)
 class DateTimePeriod:
     """Closed datetime range used for SAT request planning."""
@@ -227,6 +239,7 @@ class CfdiStatusResult:
     checked_at: datetime
     sat_code: str | None = None
     raw_response: dict[str, Any] = field(default_factory=dict)
+    outcome: CfdiStatusOutcome = CfdiStatusOutcome.UNKNOWN
 
 
 @dataclass(frozen=True)
