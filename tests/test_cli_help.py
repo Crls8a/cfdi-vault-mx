@@ -27,3 +27,11 @@ def test_help_command_fails_for_unknown_topic() -> None:
 
     assert result.exit_code == 1
     assert "Unknown help topic" in result.output
+
+
+def test_cli_subcommand_help_builds_for_setup_and_worker() -> None:
+    for args in (["setup", "--help"], ["setup", "--no-smoke", "--help"], ["worker", "run", "--help"]):
+        result = CliRunner().invoke(app, args)
+
+        assert result.exit_code == 0, result.output
+        assert result.exception is None
