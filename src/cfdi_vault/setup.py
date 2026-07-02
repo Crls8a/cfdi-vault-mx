@@ -34,6 +34,8 @@ from cfdi_vault.setup_intake import (
     stage_credentials_for_appdata,
 )
 from cfdi_vault.setup_service import run_setup
+from cfdi_vault.setup_smoke import DummySignatureBackend, SmokeResult, run_dummy_smoke
+from cfdi_vault.setup_status import ProfileInspection, format_profile_status, inspect_profile
 
 __all__ = [
     "APPDATA_DIR_NAME",
@@ -44,25 +46,31 @@ __all__ = [
     "CredentialMode",
     "CredentialReference",
     "CredentialSelection",
+    "DummySignatureBackend",
     "ExistenceProvider",
     "LocalProfile",
     "LocalProfileStatus",
     "PendingCredentialImport",
+    "ProfileInspection",
     "SecretValue",
     "SetupError",
     "SetupResult",
+    "SmokeResult",
     "build_profile_paths",
     "default_phrase_reference",
     "discover_credentials",
     "ensure_profile_layout",
     "find_repo_root",
+    "format_profile_status",
     "guard_credential_intake",
     "import_credentials_to_appdata",
+    "inspect_profile",
     "load_profile",
     "profile_from_document",
     "redact_fingerprint",
     "redact_rfc",
     "resolve_appdata_root",
+    "run_dummy_smoke",
     "run_setup",
     "stage_credentials_for_appdata",
     "validate_profile_id",
