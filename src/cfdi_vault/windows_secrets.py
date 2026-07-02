@@ -71,6 +71,7 @@ class CtypesWindowsCredentialBackend:
 
     def write(self, target_name: str, value: str) -> None:
         ctypes, wintypes = _ctypes_modules()
+        advapi32 = _advapi32(ctypes)
         blob = value.encode("utf-16-le")
         blob_buffer = ctypes.create_string_buffer(blob)
 
@@ -85,33 +86,37 @@ class CtypesWindowsCredentialBackend:
         credential.Persist = self.persist_local_machine
         credential.UserName = "cfdi-vault-mx"
 
-        if not ctypes.windll.advapi32.CredWriteW(ctypes.byref(credential), 0):
-            raise ctypes.WinError()
+        if not advapi32.CredWriteW(ctypes.byref(credential), 0):
+            raise _windows_error(ctypes)
 
     def read(self, target_name: str) -> str:
         ctypes, wintypes = _ctypes_modules()
+        advapi32 = _advapi32(ctypes)
 
         class Credential(ctypes.Structure):
             _fields_ = _credential_fields(wintypes)
 
         pointer = ctypes.POINTER(Credential)()
-        if not ctypes.windll.advapi32.CredReadW(target_name, self.credential_type_generic, 0, ctypes.byref(pointer)):
-            if ctypes.get_last_error() == self.not_found_error:
+        if not advapi32.CredReadW(target_name, self.credential_type_generic, 0, ctypes.byref(pointer)):
+            error_code = _last_windows_error(ctypes)
+            if error_code == self.not_found_error:
                 raise CredentialProviderError("credential reference was not found")
-            raise ctypes.WinError()
+            raise _windows_error(ctypes, error_code)
         try:
             raw = ctypes.string_at(pointer.contents.CredentialBlob, pointer.contents.CredentialBlobSize)
             return raw.decode("utf-16-le")
         finally:
-            ctypes.windll.advapi32.CredFree(pointer)
+            advapi32.CredFree(pointer)
 
     def delete(self, target_name: str) -> bool:
         ctypes, _wintypes = _ctypes_modules()
-        if ctypes.windll.advapi32.CredDeleteW(target_name, self.credential_type_generic, 0):
+        advapi32 = _advapi32(ctypes)
+        if advapi32.CredDeleteW(target_name, self.credential_type_generic, 0):
             return True
-        if ctypes.get_last_error() == self.not_found_error:
+        error_code = _last_windows_error(ctypes)
+        if error_code == self.not_found_error:
             return False
-        raise ctypes.WinError()
+        raise _windows_error(ctypes, error_code)
 
     def exists(self, target_name: str) -> bool:
         try:
@@ -232,6 +237,28 @@ def _ctypes_modules() -> tuple[object, object]:
     from ctypes import wintypes
 
     return ctypes, wintypes
+
+
+def _advapi32(ctypes: object) -> object:
+    return ctypes.WinDLL("advapi32", use_last_error=True)
+
+
+def _last_windows_error(ctypes: object) -> int:
+    error_code = int(ctypes.get_last_error())
+    if error_code:
+        return error_code
+    get_last_error = getattr(ctypes, "GetLastError", None)
+    if get_last_error is None:
+        return 0
+    return int(get_last_error())
+
+
+def _windows_error(ctypes: object, error_code: int | None = None) -> OSError:
+    if error_code is None:
+        error_code = _last_windows_error(ctypes)
+    if error_code:
+        return ctypes.WinError(error_code)
+    return ctypes.WinError()
 
 
 def _credential_fields(wintypes: object) -> list[tuple[str, object]]:
