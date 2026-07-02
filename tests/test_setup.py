@@ -218,3 +218,38 @@ def test_dummy_smoke_signs_and_verifies_without_exposing_phrase(tmp_path: Path) 
     assert smoke.detail == "dummy sign/verify passed"
     assert phrase not in smoke.detail
     assert phrase not in smoke.backend
+
+
+def test_reference_mode_keeps_external_paths_but_creates_appdata_layout(tmp_path: Path) -> None:
+    source_folder = _write_synthetic_credentials(tmp_path / "reference-external")
+    result = setup.run_setup(
+        profile_id="dummy-profile",
+        rfc="XAXX010101000",
+        source_folder=source_folder,
+        phrase_value="SYNTHETIC-LOCAL-PHRASE",
+        provider=_provider(),
+        mode=setup.CredentialMode.REFERENCED,
+        env={"LOCALAPPDATA": str(tmp_path / "appdata")},
+        repo_root=_repo_root(tmp_path / "repo"),
+    )
+
+    assert result.profile.credential_mode == setup.CredentialMode.REFERENCED
+    assert result.profile.certificate_path == (source_folder / "dummy.cer").resolve()
+    assert result.profile.private_key_path == (source_folder / "dummy.key").resolve()
+    assert result.paths.credentials_dir.is_dir()
+    assert result.paths.storage_root.is_dir()
+
+
+def test_discovery_rejects_unencrypted_pem_private_key(tmp_path: Path) -> None:
+    source_folder = tmp_path / "external-pem"
+    source_folder.mkdir()
+    (source_folder / "dummy.cer").write_bytes(b"\x30\x82SYNTHETIC-CERTIFICATE")
+    (source_folder / "dummy.pem").write_text(
+        "-----BEGIN " + "PRIVATE KEY-----\nSYNTHETIC\n-----END " + "PRIVATE KEY-----\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(setup.SetupError) as exc_info:
+        setup.discover_credentials(source_folder)
+
+    assert "appears unencrypted" in str(exc_info.value)
