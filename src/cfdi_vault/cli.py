@@ -8,6 +8,7 @@ from pathlib import Path
 
 import typer
 
+from cfdi_vault import setup as setup_flow
 from cfdi_vault.config import ConfigValidationError, load_config
 from cfdi_vault.domain import DownloadDirection, RequestType
 from cfdi_vault.cache import RedisCache
@@ -47,9 +48,21 @@ app.add_typer(custody_app, name="secret")
 COMMAND_HELP: tuple[dict[str, str], ...] = (
     {
         "command": "doctor",
-        "purpose": "Check whether database, queue, cache, and storage are reachable.",
+        "purpose": "Check whether database, queue, cache, storage, and setup profile are reachable.",
         "when": "Run after install or when the CLI cannot connect to dependencies.",
         "example": "cfdi-vault doctor",
+    },
+    {
+        "command": "setup",
+        "purpose": "Create the local AppData RFC profile and import credential files without env vars.",
+        "when": "Run once on the operator machine before recovery work.",
+        "example": "cfdi-vault setup --source-folder <external-folder>",
+    },
+    {
+        "command": "status",
+        "purpose": "Show redacted local setup profile readiness.",
+        "when": "Run after setup or when credential/profile readiness is unclear.",
+        "example": "cfdi-vault status --profile-id default",
     },
     {
         "command": "onboard",
@@ -221,12 +234,14 @@ def help_command(
     typer.echo("")
     typer.echo("Recommended recovery flow:")
     typer.echo("  1. cfdi-vault doctor")
-    typer.echo("  2. cfdi-vault init --tenant-id <tenant> --rfc <RFC>")
-    typer.echo("  3. cfdi-vault sync metadata --tenant-id <tenant> --rfc <RFC> --start YYYY-MM-DD --end YYYY-MM-DD")
-    typer.echo("  4. cfdi-vault sync xml --tenant-id <tenant> --rfc <RFC> --start YYYY-MM-DD --end YYYY-MM-DD")
-    typer.echo("  5. cfdi-vault search <text-or-rfc>")
-    typer.echo("  6. cfdi-vault show <UUID>")
-    typer.echo("  7. cfdi-vault print <UUID> --format pdf")
+    typer.echo("  2. cfdi-vault setup --source-folder <external-folder>")
+    typer.echo("  3. cfdi-vault status")
+    typer.echo("  4. cfdi-vault init --tenant-id <tenant> --rfc <RFC>")
+    typer.echo("  5. cfdi-vault sync metadata --tenant-id <tenant> --rfc <RFC> --start YYYY-MM-DD --end YYYY-MM-DD")
+    typer.echo("  6. cfdi-vault sync xml --tenant-id <tenant> --rfc <RFC> --start YYYY-MM-DD --end YYYY-MM-DD")
+    typer.echo("  7. cfdi-vault search <text-or-rfc>")
+    typer.echo("  8. cfdi-vault show <UUID>")
+    typer.echo("  9. cfdi-vault print <UUID> --format pdf")
     typer.echo("")
     typer.echo("Command catalog:")
     for command in COMMAND_HELP:
@@ -413,18 +428,85 @@ def onboard(
     typer.echo("Credential material was not copied and the private-key phrase was not stored.")
 
 
+@app.command("setup")
+def setup_command(
+    source_folder: Path | None = typer.Option(None, "--source-folder", help="External folder containing the credential files."),
+    profile_id: str = typer.Option("default", "--profile-id", help="Local setup profile id."),
+    rfc: str | None = typer.Option(None, "--rfc", help="RFC for this local setup profile."),
+    certificate_path: Path | None = typer.Option(None, "--cer", help="Explicit certificate file when source folder has more than one candidate."),
+    private_key_path: Path | None = typer.Option(None, "--key", help="Explicit private key file when source folder has more than one candidate."),
+    credential_mode: str = typer.Option("copied", "--credential-mode", help="copied or referenced."),
+    no_smoke: bool = typer.Option(False, "--no-smoke", help="Skip the local dummy sign/verify smoke check after setup."),
+) -> None:
+    """Create the local AppData profile and import credentials safely."""
+
+    try:
+        if source_folder is None:
+            source_folder = Path(str(typer.prompt("External credential folder")).strip())
+        rfc = _required_text(rfc, "RFC")
+        mode = setup_flow.CredentialMode(credential_mode.strip().lower())
+        phrase_value = typer.prompt(
+            "Private-key phrase (hidden; stored through secret provider)",
+            hide_input=True,
+            confirmation_prompt=True,
+        )
+        phrase_ref = setup_flow.default_phrase_reference(profile_id)
+        provider = _provider_for_reference(CredentialReference(uri=phrase_ref, kind=CredentialKind.PHRASE))
+        result = setup_flow.run_setup(
+            profile_id=profile_id,
+            rfc=rfc,
+            source_folder=source_folder,
+            certificate_path=certificate_path,
+            private_key_path=private_key_path,
+            phrase_value=str(phrase_value),
+            provider=provider,
+            mode=mode,
+        )
+        smoke_result = None if no_smoke else setup_flow.run_dummy_smoke(result.profile, provider)
+    except (setup_flow.SetupError, CredentialProviderError, ValueError) as exc:
+        typer.echo("Setup failed:", err=True)
+        errors = exc.errors if isinstance(exc, setup_flow.SetupError) else (str(exc),)
+        for error in errors:
+            typer.echo(f"- {error}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo("Setup complete.")
+    typer.echo(f"Profile: {result.profile.profile_id} ({setup_flow.redact_rfc(result.profile.rfc)})")
+    typer.echo("Credential files were imported into the local AppData profile.")
+    typer.echo("The private-key phrase was stored through the secret provider, not in profile.json.")
+    if smoke_result is not None:
+        typer.echo(f"Smoke: {smoke_result.detail} ({smoke_result.backend})")
+    typer.echo("Run: cfdi-vault status")
+
+
+@app.command("status")
+def setup_status(
+    profile_id: str = typer.Option("default", "--profile-id", help="Local setup profile id."),
+) -> None:
+    """Show redacted local setup profile readiness."""
+
+    provider = _setup_provider(profile_id)
+    inspection = setup_flow.inspect_profile(profile_id, provider=provider)
+    typer.echo(setup_flow.format_profile_status(inspection))
+    if inspection.status != setup_flow.LocalProfileStatus.READY:
+        raise typer.Exit(code=1)
+
+
 @app.command("doctor")
 def doctor(
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
     recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
+    profile_id: str = typer.Option("default", "--profile-id", help="Local setup profile id to inspect."),
 ) -> None:
-    """Check database, queue, cache, and storage connectivity."""
+    """Check database, queue, cache, storage, and setup profile readiness."""
 
     checks = _service(database_url, recovery_db, storage).doctor()
     for check in checks:
         status = "OK" if check.ok else "FAIL"
         typer.echo(f"{status} {check.name}: {check.detail}")
+    typer.echo("")
+    typer.echo(setup_flow.format_profile_status(setup_flow.inspect_profile(profile_id, provider=_setup_provider(profile_id))))
     if not all(check.ok for check in checks):
         raise typer.Exit(code=1)
 
@@ -464,7 +546,7 @@ def queue_status(
 
 @worker_app.command("run")
 def worker_run(
-    once: bool = typer.Option(True, "--once/--loop", help="Run once or keep polling the configured queue."),
+    loop: bool = typer.Option(False, "--loop", help="Keep polling the configured queue instead of running once."),
     poll_seconds: float = typer.Option(5.0, "--poll-seconds", min=0.5, help="Polling interval when --loop is used."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
     recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
@@ -473,7 +555,7 @@ def worker_run(
     """Run the recovery worker shell."""
 
     worker = RecoveryWorker(_service(database_url, recovery_db, storage))
-    if not once:
+    if loop:
         worker.run_forever(poll_seconds=poll_seconds)
         return
     report = worker.run_once()
@@ -775,6 +857,11 @@ def _provider_for_reference(reference: CredentialReference) -> object:
     if reference.provider_scheme == DummySecretProvider.provider_scheme:
         return DummySecretProvider()
     raise typer.BadParameter(f"unsupported credential reference scheme: {reference.provider_scheme}")
+
+
+def _setup_provider(profile_id: str) -> object:
+    phrase_ref = setup_flow.default_phrase_reference(profile_id)
+    return _provider_for_reference(CredentialReference(uri=phrase_ref, kind=CredentialKind.PHRASE))
 
 
 def _required_text(value: str | None, prompt: str, *, default: str | None = None) -> str:
