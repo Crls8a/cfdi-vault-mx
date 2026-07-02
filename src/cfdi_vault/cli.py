@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, time, timezone
 import os
 from pathlib import Path
+import sys
 
 import typer
 
@@ -428,6 +430,76 @@ def onboard(
     typer.echo("Credential material was not copied and the private-key phrase was not stored.")
 
 
+def _prompt_private_key_phrase() -> str:
+    prompt_text = "Private-key phrase (masked; stored through secret provider)"
+    if _supports_masked_phrase_prompt():
+        return _prompt_masked_with_confirmation(prompt_text)
+    return str(
+        typer.prompt(
+            "Private-key phrase (hidden; stored through secret provider)",
+            hide_input=True,
+            confirmation_prompt=True,
+        )
+    )
+
+
+def _supports_masked_phrase_prompt() -> bool:
+    return os.name == "nt" and sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _prompt_masked_with_confirmation(prompt_text: str, *, attempts: int = 3) -> str:
+    for _attempt in range(attempts):
+        phrase_value = _read_masked_line(f"{prompt_text}: ")
+        confirmation_value = _read_masked_line("Repeat for confirmation: ")
+        if phrase_value == confirmation_value:
+            return phrase_value
+        typer.echo("Error: the two entered values do not match.", err=True)
+    raise ValueError("private-key phrase confirmation did not match")
+
+
+def _read_masked_line(
+    prompt_text: str,
+    *,
+    read_char: Callable[[], str] | None = None,
+    write_text: Callable[[str], None] | None = None,
+) -> str:
+    if read_char is None:
+        if os.name != "nt":
+            return str(typer.prompt(prompt_text.rstrip(": "), hide_input=True))
+        import msvcrt
+
+        read_char = msvcrt.getwch
+    if write_text is None:
+        write_text = _write_prompt_fragment
+
+    chars: list[str] = []
+    write_text(prompt_text)
+    while True:
+        char = read_char()
+        if char in ("\r", "\n"):
+            write_text("\n")
+            return "".join(chars)
+        if char == "\x03":
+            raise KeyboardInterrupt
+        if char in ("\x00", "\xe0"):
+            read_char()
+            continue
+        if char in ("\b", "\x7f"):
+            if chars:
+                chars.pop()
+                write_text("\b \b")
+            continue
+        if char in ("\x04", "\x1a"):
+            continue
+        chars.append(char)
+        write_text("*")
+
+
+def _write_prompt_fragment(text: str) -> None:
+    typer.echo(text, nl=False)
+    sys.stdout.flush()
+
+
 @app.command("setup")
 def setup_command(
     source_folder: Path | None = typer.Option(None, "--source-folder", help="External folder containing the credential files."),
@@ -445,11 +517,7 @@ def setup_command(
             source_folder = Path(str(typer.prompt("External credential folder")).strip())
         rfc = _required_text(rfc, "RFC")
         mode = setup_flow.CredentialMode(credential_mode.strip().lower())
-        phrase_value = typer.prompt(
-            "Private-key phrase (hidden; stored through secret provider)",
-            hide_input=True,
-            confirmation_prompt=True,
-        )
+        phrase_value = _prompt_private_key_phrase()
         phrase_ref = setup_flow.default_phrase_reference(profile_id)
         provider = _provider_for_reference(CredentialReference(uri=phrase_ref, kind=CredentialKind.PHRASE))
         result = setup_flow.run_setup(

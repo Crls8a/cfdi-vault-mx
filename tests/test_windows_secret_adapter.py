@@ -2,16 +2,25 @@ from __future__ import annotations
 
 import json
 import logging
+import ctypes
 from datetime import date
 
+import pytest
+
+from cfdi_vault import windows_secrets
 from cfdi_vault.config import validate_config
 from cfdi_vault.secrets import (
     CredentialAccessAction,
     CredentialAccessOutcome,
     CredentialKind,
+    CredentialProviderError,
     CredentialReference,
 )
-from cfdi_vault.windows_secrets import InMemoryWindowsCredentialBackend, WindowsCredentialManagerSecretProvider
+from cfdi_vault.windows_secrets import (
+    CtypesWindowsCredentialBackend,
+    InMemoryWindowsCredentialBackend,
+    WindowsCredentialManagerSecretProvider,
+)
 
 
 def _windows_reference(kind: CredentialKind = CredentialKind.PRIVATE_KEY) -> CredentialReference:
@@ -53,6 +62,30 @@ def test_windows_provider_stores_reads_verifies_and_deletes_without_value_in_aud
         CredentialAccessOutcome.MISSING,
     ]
     assert stored_value not in json.dumps(provider.audit_log_records(), sort_keys=True)
+
+
+def test_ctypes_windows_backend_maps_missing_reference_to_provider_error(monkeypatch) -> None:
+    if not hasattr(ctypes, "set_last_error"):
+        pytest.skip("ctypes last-error helpers are Windows-only")
+    from ctypes import wintypes
+
+    class MissingAdvapi32:
+        def CredReadW(self, *_args: object) -> int:
+            ctypes.set_last_error(CtypesWindowsCredentialBackend.not_found_error)
+            return 0
+
+        def CredDeleteW(self, *_args: object) -> int:
+            ctypes.set_last_error(CtypesWindowsCredentialBackend.not_found_error)
+            return 0
+
+    monkeypatch.setattr(windows_secrets, "_ctypes_modules", lambda: (ctypes, wintypes))
+    monkeypatch.setattr(windows_secrets, "_advapi32", lambda _ctypes: MissingAdvapi32())
+    backend = CtypesWindowsCredentialBackend()
+
+    with pytest.raises(CredentialProviderError, match="credential reference was not found"):
+        backend.read("windows-credential-manager://cfdi-vault/tests/missing")
+    assert backend.exists("windows-credential-manager://cfdi-vault/tests/missing") is False
+    assert backend.delete("windows-credential-manager://cfdi-vault/tests/missing") is False
 
 
 def test_windows_provider_audit_logs_do_not_expose_resolved_value(caplog) -> None:

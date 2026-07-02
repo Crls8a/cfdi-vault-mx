@@ -80,6 +80,33 @@ def test_setup_cli_accepts_no_smoke_without_dual_flag_type_errors(monkeypatch, t
     assert result.exception is None
 
 
+def test_setup_masked_phrase_reader_shows_feedback_without_secret() -> None:
+    chars = iter(["p", "a", "s", "x", "\b", "s", "\r"])
+    writes: list[str] = []
+
+    value = cli._read_masked_line("Private-key phrase: ", read_char=lambda: next(chars), write_text=writes.append)
+
+    output = "".join(writes)
+    assert value == "pass"
+    assert "pass" not in output
+    assert "*" in output
+    assert "\b \b" in output
+
+
+def test_setup_masked_phrase_confirmation_retries_without_printing_value(monkeypatch, capsys) -> None:
+    phrase_value = "SYNTHETIC-CLI-PHRASE"
+    responses = iter([phrase_value, "mismatch", phrase_value, phrase_value])
+    monkeypatch.setattr(cli, "_read_masked_line", lambda _prompt: next(responses))
+
+    value = cli._prompt_masked_with_confirmation("Private-key phrase")
+
+    captured = capsys.readouterr()
+    assert value == phrase_value
+    assert phrase_value not in captured.out
+    assert phrase_value not in captured.err
+    assert "do not match" in captured.err
+
+
 def test_status_cli_reports_missing_profile_with_redaction(tmp_path: Path) -> None:
     appdata_root = tmp_path / "appdata"
 
