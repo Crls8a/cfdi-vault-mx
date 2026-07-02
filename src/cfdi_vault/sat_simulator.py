@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from io import BytesIO
+from zipfile import ZIP_DEFLATED, ZipFile
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 
@@ -133,4 +135,11 @@ def _synthetic_soap(operation: str, sat_code: str) -> str:
 
 
 def _synthetic_package_bytes(package_id: str) -> bytes:
-    return f"SYNTHETIC-PACKAGE::{package_id}\n".encode("utf-8")
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", ZIP_DEFLATED) as package:
+        package.writestr(
+            "synthetic.xml",
+            f"<SyntheticPackage><PackageId>{package_id}</PackageId></SyntheticPackage>\n",
+        )
+        package.writestr("metadata.txt", f"package_id={package_id}\nsource=synthetic\n")
+    return buffer.getvalue()
