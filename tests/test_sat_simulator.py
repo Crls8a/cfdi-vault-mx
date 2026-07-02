@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+from io import BytesIO
+from zipfile import ZipFile, is_zipfile
 
 from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType
 from cfdi_vault.sat_contract import SatOutcomeAction
@@ -49,4 +51,7 @@ def test_fake_sat_scenarios_cover_download_outcomes() -> None:
     assert exhausted.action == SatOutcomeAction.DOWNLOADS_EXHAUSTED
     assert exhausted.content is None
     assert downloaded.action == SatOutcomeAction.FINISHED
-    assert downloaded.content == b"SYNTHETIC-PACKAGE::SYN-PKG-001\n"
+    assert downloaded.content is not None
+    assert is_zipfile(BytesIO(downloaded.content))
+    with ZipFile(BytesIO(downloaded.content)) as package:
+        assert sorted(package.namelist()) == ["metadata.txt", "synthetic.xml"]
