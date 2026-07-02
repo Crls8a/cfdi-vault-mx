@@ -12,7 +12,7 @@ import typer
 
 from cfdi_vault import setup as setup_flow
 from cfdi_vault.config import ConfigValidationError, load_config
-from cfdi_vault.domain import DownloadDirection, RequestType
+from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType
 from cfdi_vault.cache import RedisCache
 from cfdi_vault.onboarding import (
     OnboardingError,
@@ -26,6 +26,8 @@ from cfdi_vault.queueing import RabbitMqQueue
 from cfdi_vault.recovery_service import RecoveryService, build_default_query, write_minimal_pdf
 from cfdi_vault.secrets import CredentialKind, CredentialProviderError, CredentialReference, DummySecretProvider
 from cfdi_vault.service import ImportBatchResult, ImportRecord, SummaryRow, VaultService
+from cfdi_vault.sat_orchestration import DownloadRequestOrchestrator
+from cfdi_vault.sat_simulator import FakeSatScenario, FakeSatScenarioClient
 from cfdi_vault.worker import RecoveryWorker
 from cfdi_vault.windows_secrets import WindowsCredentialManagerSecretProvider
 
@@ -38,12 +40,14 @@ config_app = typer.Typer(help="Validate local RFC profile configuration.", no_ar
 queue_app = typer.Typer(help="Inspect queue state.", no_args_is_help=True)
 worker_app = typer.Typer(help="Run recovery workers.", no_args_is_help=True)
 sync_app = typer.Typer(help="Submit SAT recovery sync jobs.", no_args_is_help=True)
+download_app = typer.Typer(help="Plan and submit fake/offline SAT download requests.", no_args_is_help=True)
 custody_app = typer.Typer(help="Manage local secret references without printing values.", no_args_is_help=True)
 
 app.add_typer(config_app, name="config")
 app.add_typer(queue_app, name="queue")
 app.add_typer(worker_app, name="worker")
 app.add_typer(sync_app, name="sync")
+app.add_typer(download_app, name="download")
 app.add_typer(custody_app, name="secret")
 
 
@@ -113,6 +117,18 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "purpose": "Recover SAT packages/XML evidence, register local file paths, parse known fields, and load data.",
         "when": "Run after or alongside metadata recovery when XML evidence is needed.",
         "example": "cfdi-vault sync xml --tenant-id acme --rfc AAA010101AAA --start 2024-01-01 --end 2024-01-31",
+    },
+    {
+        "command": "download plan",
+        "purpose": "Validate a safe fake/offline SAT download query from a setup profile.",
+        "when": "Run before submitting a fake SAT request to confirm criteria without printing RFCs or paths.",
+        "example": "cfdi-vault download plan --profile default --from 2024-01-01 --to 2024-01-31 --kind metadata --direction received",
+    },
+    {
+        "command": "download request",
+        "purpose": "Submit a fake/offline SAT download request and print the synthetic accepted result.",
+        "when": "Run after planning when you need a synthetic request id for offline workflow tests.",
+        "example": "cfdi-vault download request --profile default --from 2024-01-01 --to 2024-01-31 --kind cfdi --direction issued",
     },
     {
         "command": "queue status",
@@ -694,6 +710,52 @@ def sync_xml(
     typer.echo(f"metadata_count={result.metadata_count}")
 
 
+@download_app.command("plan")
+def download_plan(
+    profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
+    from_date: str = typer.Option(..., "--from", help="Start date: YYYY-MM-DD."),
+    to_date: str = typer.Option(..., "--to", help="End date: YYYY-MM-DD."),
+    kind: str = typer.Option(..., "--kind", help="metadata or cfdi."),
+    direction: str = typer.Option(..., "--direction", help="received or issued."),
+) -> None:
+    """Validate and print a safe fake/offline SAT download plan."""
+
+    query = _build_profile_download_query(
+        profile_id=profile,
+        from_date=from_date,
+        to_date=to_date,
+        kind=kind,
+        direction=direction,
+    )
+    _print_download_query(profile_id=profile, query=query, will_submit=False)
+
+
+@download_app.command("request")
+def download_request(
+    profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
+    from_date: str = typer.Option(..., "--from", help="Start date: YYYY-MM-DD."),
+    to_date: str = typer.Option(..., "--to", help="End date: YYYY-MM-DD."),
+    kind: str = typer.Option(..., "--kind", help="metadata or cfdi."),
+    direction: str = typer.Option(..., "--direction", help="received or issued."),
+) -> None:
+    """Submit one fake/offline SAT download request without live SAT access."""
+
+    query = _build_profile_download_query(
+        profile_id=profile,
+        from_date=from_date,
+        to_date=to_date,
+        kind=kind,
+        direction=direction,
+    )
+    client = FakeSatScenarioClient(FakeSatScenario.REQUEST_ACCEPTED)
+    registered = DownloadRequestOrchestrator(requester=client, verifier=client).submit_once(query)
+    _print_download_query(profile_id=profile, query=query, will_submit=True)
+    typer.echo(f"request_id={registered.request_id}")
+    typer.echo(f"action={registered.request_result.action.value}")
+    typer.echo(f"sat_code={registered.request_result.sat_code}")
+    typer.echo(f"message={registered.request_result.message}")
+
+
 @app.command("reconcile")
 def reconcile(
     tenant_id: str | None = typer.Option(None, "--tenant-id", help="Tenant identifier."),
@@ -882,6 +944,93 @@ def _print_section(title: str, rows: tuple[SummaryRow, ...]) -> None:
         return
     for row in rows:
         typer.echo(f"{row.label},{row.count},{row.subtotal:.2f},{row.total:.2f}")
+
+
+def _build_profile_download_query(
+    *,
+    profile_id: str,
+    from_date: str,
+    to_date: str,
+    kind: str,
+    direction: str,
+) -> DownloadQuery:
+    request_type = _parse_download_kind(kind)
+    download_direction = _parse_download_direction(direction)
+    start = _parse_download_date(from_date, label="--from", end_of_day=False)
+    end = _parse_download_date(to_date, label="--to", end_of_day=True)
+    profile = _load_download_profile(profile_id)
+
+    try:
+        period = DateTimePeriod(start=start, end=end)
+    except ValueError as exc:
+        typer.echo("error=invalid_date_range", err=True)
+        typer.echo("detail=--from must be before or equal to --to", err=True)
+        raise typer.Exit(code=1) from exc
+
+    query = DownloadQuery(
+        tenant_id=profile.profile_id,
+        requester_rfc=profile.rfc,
+        direction=download_direction,
+        request_type=request_type,
+        period=period,
+    )
+    errors = query.validate()
+    if errors:
+        typer.echo("error=invalid_download_query", err=True)
+        for error in errors:
+            typer.echo(f"detail={error}", err=True)
+        raise typer.Exit(code=1)
+    return query
+
+
+def _load_download_profile(profile_id: str) -> setup_flow.LocalProfile:
+    try:
+        return setup_flow.load_profile(profile_id)
+    except setup_flow.SetupError as exc:
+        reason = "profile_not_configured" if _has_profile_not_configured_error(exc) else "profile_invalid"
+        typer.echo(f"profile={profile_id}", err=True)
+        typer.echo(f"error={reason}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+def _has_profile_not_configured_error(exc: setup_flow.SetupError) -> bool:
+    return any(error.startswith("profile is not configured:") for error in exc.errors)
+
+
+def _parse_download_kind(value: str) -> RequestType:
+    normalized = value.strip().lower()
+    try:
+        return RequestType(normalized)
+    except ValueError as exc:
+        raise typer.BadParameter("kind must be metadata or cfdi") from exc
+
+
+def _parse_download_direction(value: str) -> DownloadDirection:
+    normalized = value.strip().lower()
+    if normalized == DownloadDirection.RECEIVED.value:
+        return DownloadDirection.RECEIVED
+    if normalized == DownloadDirection.ISSUED.value:
+        return DownloadDirection.ISSUED
+    raise typer.BadParameter("direction must be received or issued")
+
+
+def _parse_download_date(value: str, *, label: str, end_of_day: bool) -> datetime:
+    try:
+        return _parse_cli_datetime(value, end_of_day=end_of_day)
+    except ValueError as exc:
+        raise typer.BadParameter(f"{label} must be a valid YYYY-MM-DD date") from exc
+
+
+def _print_download_query(*, profile_id: str, query: DownloadQuery, will_submit: bool) -> None:
+    typer.echo("mode=fake")
+    typer.echo(f"profile={profile_id}")
+    typer.echo(f"kind={query.request_type.value}")
+    typer.echo(f"direction={query.direction.value}")
+    if query.period is not None:
+        typer.echo(f"from={query.period.start.isoformat()}")
+        typer.echo(f"to={query.period.end.isoformat()}")
+    typer.echo(f"will_submit={str(will_submit).lower()}")
+    typer.echo(f"criteria_hash={query.criteria_hash()}")
 
 
 def _parse_cli_datetime(value: str, *, end_of_day: bool) -> datetime:
