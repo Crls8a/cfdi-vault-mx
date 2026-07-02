@@ -1,4 +1,4 @@
-"""Public setup API for local RFC profile core helpers."""
+"""Public setup API for local RFC profile and credential intake helpers."""
 
 from cfdi_vault.secrets import CredentialKind, CredentialReference, SecretValue
 from cfdi_vault.setup_core import (
@@ -25,6 +25,14 @@ from cfdi_vault.setup_core import (
     validate_rfc,
     write_profile,
 )
+from cfdi_vault.setup_intake import (
+    CredentialSelection,
+    PendingCredentialImport,
+    discover_credentials,
+    guard_credential_intake,
+    import_credentials_to_appdata,
+    stage_credentials_for_appdata,
+)
 
 __all__ = [
     "APPDATA_DIR_NAME",
@@ -34,21 +42,27 @@ __all__ = [
     "CredentialKind",
     "CredentialMode",
     "CredentialReference",
+    "CredentialSelection",
     "ExistenceProvider",
     "LocalProfile",
     "LocalProfileStatus",
+    "PendingCredentialImport",
     "SecretValue",
     "SetupError",
     "SetupResult",
     "build_profile_paths",
     "default_phrase_reference",
+    "discover_credentials",
     "ensure_profile_layout",
     "find_repo_root",
+    "guard_credential_intake",
+    "import_credentials_to_appdata",
     "load_profile",
     "profile_from_document",
     "redact_fingerprint",
     "redact_rfc",
     "resolve_appdata_root",
+    "stage_credentials_for_appdata",
     "validate_profile_id",
     "validate_rfc",
     "write_profile",
