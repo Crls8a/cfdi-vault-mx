@@ -33,6 +33,7 @@ from cfdi_vault.setup_intake import (
     import_credentials_to_appdata,
     stage_credentials_for_appdata,
 )
+from cfdi_vault.setup_service import run_setup
 
 __all__ = [
     "APPDATA_DIR_NAME",
@@ -62,6 +63,7 @@ __all__ = [
     "redact_fingerprint",
     "redact_rfc",
     "resolve_appdata_root",
+    "run_setup",
     "stage_credentials_for_appdata",
     "validate_profile_id",
     "validate_rfc",
