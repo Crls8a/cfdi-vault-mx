@@ -6,6 +6,7 @@ from typing import Protocol
 
 from cfdi_vault.domain import CfdiStatusQuery, CfdiStatusResult, DownloadQuery, QueueMessage, UserFacingError
 from cfdi_vault.sat_contract import SatAuthResult, SatDownloadResult, SatRequestResult, SatVerificationResult
+from cfdi_vault.sat_transport import SoapTransportPort
 from cfdi_vault.secrets import CredentialAccessAuditEvent, CredentialReference, SecretValue
 
 
