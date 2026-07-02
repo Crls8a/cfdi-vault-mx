@@ -1,10 +1,27 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 from io import BytesIO
 from zipfile import ZipFile, is_zipfile
 
-from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType
+from cfdi_vault.domain import (
+    CfdiStatusOutcome,
+    CfdiStatusQuery,
+    DateTimePeriod,
+    DownloadDirection,
+    DownloadQuery,
+    RequestType,
+)
 from cfdi_vault.sat_contract import SatOutcomeAction
 from cfdi_vault.sat_simulator import FakeSatScenario, FakeSatScenarioClient
+
+
+def _status_query() -> CfdiStatusQuery:
+    return CfdiStatusQuery(
+        uuid="00000000-0000-4000-8000-000000000009",
+        issuer_rfc="AAA010101AAA",
+        receiver_rfc="BBB010101BBB",
+        total=Decimal("42.00"),
+    )
 
 
 def _query() -> DownloadQuery:
@@ -55,3 +72,32 @@ def test_fake_sat_scenarios_cover_download_outcomes() -> None:
     assert is_zipfile(BytesIO(downloaded.content))
     with ZipFile(BytesIO(downloaded.content)) as package:
         assert sorted(package.namelist()) == ["metadata.txt", "synthetic.xml"]
+
+
+def test_fake_sat_scenarios_cover_status_outcomes() -> None:
+    query = _status_query()
+
+    results = {
+        scenario: FakeSatScenarioClient(scenario).query_status(query)
+        for scenario in (
+            FakeSatScenario.STATUS_ACTIVE,
+            FakeSatScenario.STATUS_CANCELLED,
+            FakeSatScenario.STATUS_NOT_FOUND,
+            FakeSatScenario.STATUS_UNAUTHORIZED,
+            FakeSatScenario.STATUS_RETRYABLE,
+            FakeSatScenario.STATUS_PERMANENT,
+            FakeSatScenario.STATUS_UNKNOWN,
+        )
+    }
+
+    assert (
+        results[FakeSatScenario.STATUS_ACTIVE].uuid
+        == "00000000-0000-4000-8000-000000000009"
+    )
+    assert results[FakeSatScenario.STATUS_ACTIVE].outcome == CfdiStatusOutcome.ACTIVE
+    assert results[FakeSatScenario.STATUS_CANCELLED].outcome == CfdiStatusOutcome.CANCELLED
+    assert results[FakeSatScenario.STATUS_NOT_FOUND].outcome == CfdiStatusOutcome.NOT_FOUND
+    assert results[FakeSatScenario.STATUS_UNAUTHORIZED].outcome == CfdiStatusOutcome.UNAUTHORIZED
+    assert results[FakeSatScenario.STATUS_RETRYABLE].outcome == CfdiStatusOutcome.RETRYABLE
+    assert results[FakeSatScenario.STATUS_PERMANENT].outcome == CfdiStatusOutcome.PERMANENT
+    assert results[FakeSatScenario.STATUS_UNKNOWN].outcome == CfdiStatusOutcome.UNKNOWN

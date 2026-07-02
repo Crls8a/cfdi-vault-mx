@@ -49,3 +49,28 @@ def test_retry_policy_chooses_download_status_check_or_terminal_action() -> None
     assert retry_action_for_state(ReconciliationState.XML_PENDING, error_code="rate_limited") == RetryAction.RETRY_LATER
     assert retry_action_for_state(ReconciliationState.XML_PENDING, attempts=3) == RetryAction.PERMANENT_FAILURE
     assert retry_action_for_state(ReconciliationState.XML_PENDING, error_code="expired") == RetryAction.PERMANENT_FAILURE
+
+
+def test_retry_policy_treats_status_terminal_outcomes_as_non_retryable() -> None:
+    assert (
+        retry_action_for_state(ReconciliationState.CANCELLED_CONFIRMED)
+        == RetryAction.DO_NOT_RETRY
+    )
+    assert retry_action_for_state(ReconciliationState.XML_NOT_AVAILABLE) == RetryAction.DO_NOT_RETRY
+
+    for error_code in ("not_found", "no available", "unauthorized", "permanent", "5003"):
+        assert (
+            retry_action_for_state(ReconciliationState.XML_REQUESTED, error_code=error_code)
+            == RetryAction.PERMANENT_FAILURE
+        )
+
+
+def test_retry_policy_treats_transient_status_outcome_as_retry_later() -> None:
+    assert (
+        retry_action_for_state(ReconciliationState.XML_REQUESTED, error_code="retryable")
+        == RetryAction.RETRY_LATER
+    )
+    assert (
+        retry_action_for_state(ReconciliationState.XML_REQUESTED, error_code="503")
+        == RetryAction.RETRY_LATER
+    )

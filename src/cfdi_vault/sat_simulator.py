@@ -8,7 +8,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 
-from cfdi_vault.domain import DownloadQuery, SatRequestState
+from cfdi_vault.domain import CfdiStatusQuery, CfdiStatusResult, DownloadQuery, SatRequestState
 from cfdi_vault.sat_contract import (
     SatAuthResult,
     SatDownloadResult,
@@ -16,6 +16,7 @@ from cfdi_vault.sat_contract import (
     SatOutcomeAction,
     SatRequestResult,
     SatVerificationResult,
+    classify_cfdi_status_outcome,
     classify_sat_outcome,
 )
 
@@ -31,6 +32,13 @@ class FakeSatScenario(StrEnum):
     PACKAGE_EXPIRED = "package_expired"
     DOWNLOADS_EXHAUSTED = "downloads_exhausted"
     INTERNAL_RETRYABLE_ERROR = "internal_retryable_error"
+    STATUS_ACTIVE = "status_active"
+    STATUS_CANCELLED = "status_cancelled"
+    STATUS_NOT_FOUND = "status_not_found"
+    STATUS_UNAUTHORIZED = "status_unauthorized"
+    STATUS_RETRYABLE = "status_retryable"
+    STATUS_PERMANENT = "status_permanent"
+    STATUS_UNKNOWN = "status_unknown"
 
 
 @dataclass
@@ -86,6 +94,40 @@ class FakeSatScenarioClient:
         if self.scenario == FakeSatScenario.INTERNAL_RETRYABLE_ERROR:
             return _download_result(package_id, "404", "Synthetic transient download error", None)
         return _download_result(package_id, "5000", "Synthetic package downloaded", _synthetic_package_bytes(package_id))
+
+    def query_status(self, query: CfdiStatusQuery) -> CfdiStatusResult:
+        """Return a deterministic synthetic CFDI status consultation result."""
+
+        if self.scenario == FakeSatScenario.STATUS_CANCELLED:
+            return _status_result(query, "Cancelado", "S-CANCELLED")
+        if self.scenario == FakeSatScenario.STATUS_NOT_FOUND:
+            return _status_result(query, "No disponible", "no_available")
+        if self.scenario == FakeSatScenario.STATUS_UNAUTHORIZED:
+            return _status_result(query, "", "5001")
+        if self.scenario == FakeSatScenario.STATUS_RETRYABLE:
+            return _status_result(query, "", "503")
+        if self.scenario == FakeSatScenario.STATUS_PERMANENT:
+            return _status_result(query, "", "5003")
+        if self.scenario == FakeSatScenario.STATUS_UNKNOWN:
+            return _status_result(query, "", "S-UNKNOWN")
+        return _status_result(query, "Vigente", "S-ACTIVE")
+
+
+def _status_result(query: CfdiStatusQuery, status: str, sat_code: str) -> CfdiStatusResult:
+    classification = classify_cfdi_status_outcome(status=status, sat_code=sat_code)
+    return CfdiStatusResult(
+        uuid=query.uuid,
+        status=status,
+        checked_at=datetime(2024, 1, 18, tzinfo=timezone.utc),
+        sat_code=sat_code,
+        outcome=classification.outcome,
+        raw_response={
+            "source": "synthetic",
+            "reason": classification.reason,
+            "issuer_rfc": query.issuer_rfc,
+            "receiver_rfc": query.receiver_rfc,
+        },
+    )
 
 
 def _request_result(request_id: str, sat_code: str, message: str) -> SatRequestResult:

@@ -11,8 +11,41 @@ from cfdi_vault.domain import ReconciliationState
 CANCELLED_STATUSES = frozenset({"cancelado", "cancelada", "cancelled", "canceled"})
 ACTIVE_STATUSES = frozenset({"vigente", "active"})
 TRANSIENT_STATUSES = frozenset({"en_proceso", "en proceso", "processing", "pending"})
-PERMANENT_ERROR_CODES = frozenset({"expired", "rejected", "not_found", "invalid_request", "access_denied"})
-TRANSIENT_ERROR_CODES = frozenset({"timeout", "temporary_unavailable", "rate_limited", "in_process"})
+PERMANENT_ERROR_CODES = frozenset(
+    {
+        "301",
+        "302",
+        "5001",
+        "5003",
+        "5004",
+        "access_denied",
+        "expired",
+        "invalid_request",
+        "no_available",
+        "no_disponible",
+        "not_available",
+        "not_found",
+        "permanent",
+        "rejected",
+        "unauthorized",
+    }
+)
+TRANSIENT_ERROR_CODES = frozenset(
+    {
+        "404",
+        "408",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+        "in_process",
+        "rate_limited",
+        "retryable",
+        "temporary_unavailable",
+        "timeout",
+    }
+)
 
 
 class RetryAction(StrEnum):
@@ -84,13 +117,21 @@ def decide_metadata_state(
     )
 
 
-def retry_action_for_state(state: ReconciliationState, *, attempts: int = 0, max_attempts: int = 3, error_code: str | None = None) -> RetryAction:
+def retry_action_for_state(
+    state: ReconciliationState,
+    *,
+    attempts: int = 0,
+    max_attempts: int = 3,
+    error_code: str | None = None,
+) -> RetryAction:
     """Decide whether recovery should retry, stop, or request status confirmation."""
 
-    normalized_error = (error_code or "").strip().lower()
+    normalized_error = "_".join((error_code or "").strip().lower().split())
+    if state in {ReconciliationState.CANCELLED_CONFIRMED, ReconciliationState.XML_NOT_AVAILABLE}:
+        return RetryAction.DO_NOT_RETRY
     if normalized_error in PERMANENT_ERROR_CODES:
         return RetryAction.PERMANENT_FAILURE
-    if state in {ReconciliationState.CANCELLED_METADATA, ReconciliationState.CANCELLED_CONFIRMED, ReconciliationState.STATE_CHECK_PENDING}:
+    if state in {ReconciliationState.CANCELLED_METADATA, ReconciliationState.STATE_CHECK_PENDING}:
         return RetryAction.CHECK_STATUS
     if state == ReconciliationState.XML_DOWNLOADED:
         return RetryAction.DO_NOT_RETRY
