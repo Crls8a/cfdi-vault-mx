@@ -43,13 +43,22 @@ class SatOutcomeClassification:
     retryable: bool = False
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class SatAuthResult:
     """Normalized authentication result returned by a SAT auth adapter."""
 
     authorization: str
     expires_at: datetime | None = None
     raw_response: dict[str, Any] = field(default_factory=dict)
+
+    def __repr__(self) -> str:
+        return (
+            "SatAuthResult("
+            "authorization=<redacted>, "
+            f"expires_at={self.expires_at!r}, "
+            "raw_response=<redacted>"
+            ")"
+        )
 
 
 @dataclass(frozen=True)
@@ -76,7 +85,7 @@ class SatVerificationResult:
     raw_response: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class SatDownloadResult:
     """Normalized result of downloading one SAT package."""
 
@@ -86,6 +95,18 @@ class SatDownloadResult:
     action: SatOutcomeAction
     content: bytes | None = None
     raw_response: dict[str, Any] = field(default_factory=dict)
+
+    def __repr__(self) -> str:
+        return (
+            "SatDownloadResult("
+            f"package_id={self.package_id!r}, "
+            f"sat_code={self.sat_code!r}, "
+            f"message={self.message!r}, "
+            f"action={self.action!r}, "
+            "content=<redacted>, "
+            "raw_response=<redacted>"
+            ")"
+        )
 
 
 def classify_sat_outcome(
