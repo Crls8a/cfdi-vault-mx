@@ -16,13 +16,15 @@ Live SAT SOAP access is still intentionally disabled until signing, credential c
    python -m pip install -e ".[dev]"
    ```
 
-3. Validate the dummy local profile config:
+3. Create or validate a local profile:
 
    ```bash
+   cfdi-vault setup --source-folder <external-folder>
+   cfdi-vault status
    cfdi-vault config validate examples/config/local-dev-dummy.json
    ```
 
-   For private machine setup, use `cfdi-vault onboard --config ./cfdi-vault.local.json`.
+   For the full AppData credential intake runbook, read `docs/setup.md`.
 
 4. Import sample XML with the local-first path:
 
@@ -86,6 +88,7 @@ Important boundary: this implementation includes fake SAT only. It does not auth
 | Import XML | Parses one CFDI-like XML file. |
 | Import ZIP | Imports every `.xml` member in a ZIP archive. |
 | Help | Explains the recommended recovery flow and what each command does. |
+| Setup | Creates a local AppData RFC profile, imports credential files outside the repo, and stores the private-key phrase through a secret provider. |
 | Onboarding | Creates a safe local profile config with storage, RFC, schedule, certificate fingerprint, and credential references only. |
 | Fake SAT sync | Creates deterministic metadata/package rows without network access. |
 | Queue events | Records RabbitMQ-style queue events; RabbitMQ adapter is available through `.[infra]`. |
@@ -102,7 +105,7 @@ Important boundary: this implementation includes fake SAT only. It does not auth
 
 - Use only `examples/synthetic-cfdi/` or your own fake data.
 - Do not import real taxpayer XMLs.
-- Do not store `.cer`, `.key`, passwords, SAT credentials, or secrets.
+- Do not store `.cer`, `.key`, passwords, SAT credentials, or secrets in the repository or unsafe locations.
 - Do not use `--live` until the real SAT SOAP/signing slice is implemented and reviewed.
 
 ## Project map
@@ -114,6 +117,7 @@ Important boundary: this implementation includes fake SAT only. It does not auth
 | `src/cfdi_vault/service.py` | Import, dedupe, summary, and CSV export use cases. |
 | `src/cfdi_vault/cli.py` | Typer CLI entrypoint. |
 | `src/cfdi_vault/config.py` | Safe local RFC profile configuration schema and validation. |
+| `src/cfdi_vault/setup.py` | AppData profile setup, credential intake guards, redacted status, and dummy smoke boundary. |
 | `src/cfdi_vault/recovery_service.py` | Fake SAT recovery, search, print, export, and reconciliation use cases. |
 | `src/cfdi_vault/recovery_db.py` | PostgreSQL-ready recovery/accounting schema. |
 | `src/cfdi_vault/queueing.py` | In-memory and RabbitMQ queue adapters. |
