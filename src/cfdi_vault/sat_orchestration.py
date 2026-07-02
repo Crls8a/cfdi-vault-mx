@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Iterable
 
-from cfdi_vault.domain import DownloadQuery
+from cfdi_vault.domain import DownloadQuery, SatRequestState
 from cfdi_vault.ports import SatAuthenticatorPort, SatDownloadPort, SatRequestPort, SatVerificationPort
 from cfdi_vault.reconciliation import ReconciliationDecision
-from cfdi_vault.sat_contract import SatDownloadResult, SatOutcomeAction
+from cfdi_vault.sat_contract import SatDownloadResult, SatOutcomeAction, SatRequestResult
 
 
 class SatOrchestrationStatus(StrEnum):
@@ -36,6 +36,114 @@ class SatOrchestrationResult:
     @property
     def should_retry(self) -> bool:
         return self.status == SatOrchestrationStatus.RETRY
+
+
+@dataclass(frozen=True)
+class RegisteredSatRequest:
+    """Offline registry row for one submitted SAT download request."""
+
+    tenant_id: str
+    criteria_hash: str
+    request_id: str
+    request_result: SatRequestResult
+    state: SatRequestState | None = None
+    action: SatOutcomeAction | None = None
+    message: str = ""
+    package_ids: tuple[str, ...] = ()
+
+
+@dataclass
+class InMemorySatRequestRegistry:
+    """Alpha-test registry for SAT requests and verification outcomes."""
+
+    _by_criteria: dict[tuple[str, str], RegisteredSatRequest] = field(default_factory=dict)
+    _by_request_id: dict[str, RegisteredSatRequest] = field(default_factory=dict)
+
+    def find_by_query(self, query: DownloadQuery) -> RegisteredSatRequest | None:
+        return self._by_criteria.get((query.tenant_id, query.criteria_hash()))
+
+    def register_submission(self, query: DownloadQuery, result: SatRequestResult) -> RegisteredSatRequest:
+        existing = self.find_by_query(query)
+        if existing is not None:
+            return existing
+
+        registered = RegisteredSatRequest(
+            tenant_id=query.tenant_id,
+            criteria_hash=query.criteria_hash(),
+            request_id=result.request_id,
+            request_result=result,
+            action=result.action,
+            message=result.message,
+        )
+        self._store(registered)
+        return registered
+
+    def get(self, request_id: str) -> RegisteredSatRequest:
+        return self._by_request_id[request_id]
+
+    def record_verification(
+        self,
+        *,
+        request_id: str,
+        state: SatRequestState,
+        action: SatOutcomeAction,
+        message: str,
+        package_ids: tuple[str, ...] = (),
+    ) -> RegisteredSatRequest:
+        registered = self.get(request_id)
+        merged_package_ids = _append_unique(registered.package_ids, package_ids)
+        updated = replace(
+            registered,
+            state=state,
+            action=action,
+            message=message,
+            package_ids=merged_package_ids if action == SatOutcomeAction.FINISHED else registered.package_ids,
+        )
+        self._store(updated)
+        return updated
+
+    def _store(self, registered: RegisteredSatRequest) -> None:
+        key = (registered.tenant_id, registered.criteria_hash)
+        self._by_criteria[key] = registered
+        self._by_request_id[registered.request_id] = registered
+
+
+class DownloadRequestOrchestrator:
+    """Submits and verifies SAT requests without downloading package bytes."""
+
+    def __init__(
+        self,
+        *,
+        requester: SatRequestPort,
+        verifier: SatVerificationPort,
+        registry: InMemorySatRequestRegistry | None = None,
+    ) -> None:
+        self.requester = requester
+        self.verifier = verifier
+        self.registry = registry or InMemorySatRequestRegistry()
+
+    def submit_once(self, query: DownloadQuery) -> RegisteredSatRequest:
+        """Submit only when this tenant and criteria hash are not registered."""
+
+        existing = self.registry.find_by_query(query)
+        if existing is not None:
+            return existing
+
+        result = self.requester.submit_request(query)
+        return self.registry.register_submission(query, result)
+
+    def poll_once(self, request_id: str) -> RegisteredSatRequest:
+        """Verify one registered request and persist state plus package ids."""
+
+        verification = self.verifier.verify_request(request_id)
+        package_ids = verification.package_ids if verification.action == SatOutcomeAction.FINISHED else ()
+        return self.registry.record_verification(
+            request_id=request_id,
+            state=verification.state,
+            action=verification.action,
+            message=verification.message,
+            package_ids=package_ids,
+        )
 
 
 class MetadataFirstSatOrchestrator:
@@ -118,3 +226,13 @@ def _result_from_action(
         downloaded_packages=downloaded_packages,
         message=message,
     )
+
+
+def _append_unique(existing: tuple[str, ...], incoming: tuple[str, ...]) -> tuple[str, ...]:
+    merged = list(existing)
+    seen = set(existing)
+    for package_id in incoming:
+        if package_id not in seen:
+            merged.append(package_id)
+            seen.add(package_id)
+    return tuple(merged)
