@@ -179,3 +179,42 @@ class FailingStoreProvider:
 
     def resolve(self, reference: CredentialReference, *, purpose: str) -> SecretValue:
         raise CredentialProviderError("synthetic missing reference")
+
+
+def test_status_report_redacts_rfc_fingerprint_and_paths(tmp_path: Path) -> None:
+    provider = _provider()
+    result = _run_setup(tmp_path, provider=provider)
+    output = setup.format_profile_status(setup.inspect_profile("dummy-profile", provider=provider, env={"LOCALAPPDATA": str(tmp_path / "appdata")}))
+
+    assert "Status: ready" in output
+    assert "XAXX010101000" not in output
+    assert str(tmp_path / "appdata") not in output
+    assert result.profile.certificate_fingerprint not in output
+    assert "<redacted-path>" in output
+
+
+def test_missing_and_invalid_status_never_print_paths(tmp_path: Path) -> None:
+    appdata_root = tmp_path / "appdata"
+    missing = setup.format_profile_status(setup.inspect_profile("dummy-profile", env={"LOCALAPPDATA": str(appdata_root)}))
+    assert "Status: missing" in missing
+    assert str(appdata_root) not in missing
+
+    paths = setup.build_profile_paths("dummy-profile", env={"LOCALAPPDATA": str(appdata_root)})
+    paths.profile_json.parent.mkdir(parents=True)
+    paths.profile_json.write_text("{not-json", encoding="utf-8")
+    invalid = setup.format_profile_status(setup.inspect_profile("dummy-profile", env={"LOCALAPPDATA": str(appdata_root)}))
+    assert "Status: insecure" in invalid
+    assert str(appdata_root) not in invalid
+
+
+def test_dummy_smoke_signs_and_verifies_without_exposing_phrase(tmp_path: Path) -> None:
+    provider = _provider()
+    phrase = "SYNTHETIC-LOCAL-PHRASE"
+    result = _run_setup(tmp_path, provider=provider, phrase=phrase)
+
+    smoke = setup.run_dummy_smoke(result.profile, provider)
+
+    assert smoke.ok is True
+    assert smoke.detail == "dummy sign/verify passed"
+    assert phrase not in smoke.detail
+    assert phrase not in smoke.backend
