@@ -127,6 +127,103 @@ def test_download_sync_cfdi_runs_fake_pipeline_without_sensitive_output(tmp_path
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
 
 
+def test_download_status_reads_persisted_fake_sync_aggregates_safely(tmp_path: Path) -> None:
+    appdata_root = tmp_path / "appdata"
+    _write_setup_profile(appdata_root)
+    runner = CliRunner()
+
+    sync = runner.invoke(
+        app,
+        [
+            "download",
+            "sync",
+            "--profile",
+            "dummy-profile",
+            "--from",
+            "2024-01-01",
+            "--to",
+            "2024-01-31",
+            "--kind",
+            "cfdi",
+            "--direction",
+            "received",
+        ],
+        env={"LOCALAPPDATA": str(appdata_root)},
+    )
+    assert sync.exit_code == 0, sync.output
+    sync_lines = _key_value_lines(sync.output)
+
+    status = runner.invoke(
+        app,
+        ["download", "status", "--profile", "dummy-profile", "--job-id", sync_lines["job_id"]],
+        env={"LOCALAPPDATA": str(appdata_root)},
+    )
+
+    assert status.exit_code == 0, status.output
+    lines = _key_value_lines(status.output)
+    assert lines["mode"] == "fake"
+    assert lines["profile"] == "dummy-profile"
+    assert lines["job_id"] == sync_lines["job_id"]
+    assert lines["request_id"] == sync_lines["request_id"]
+    assert lines["status"] == "succeeded"
+    assert lines["sat_state"] == "finished"
+    assert lines["kind"] == "cfdi"
+    assert lines["direction"] == "received"
+    assert lines["criteria_hash"] == sync_lines["criteria_hash"]
+    assert lines["metadata_count"] == "2"
+    assert lines["package_count"] == "1"
+    assert lines["downloaded_package_count"] == "1"
+    assert lines["xml_count"] == "2"
+    _assert_no_download_status_leaks(status.output, appdata_root)
+
+
+def test_download_status_missing_db_or_unknown_job_fails_safely(tmp_path: Path) -> None:
+    appdata_root = tmp_path / "appdata"
+    paths = _write_setup_profile(appdata_root)
+    runner = CliRunner()
+
+    missing_db = runner.invoke(
+        app,
+        ["download", "status", "--profile", "dummy-profile", "--job-id", "missing-job"],
+        env={"LOCALAPPDATA": str(appdata_root)},
+    )
+
+    assert missing_db.exit_code == 1
+    assert "error=status_not_found" in missing_db.output
+    assert not paths.storage_root.joinpath("db", "recovery.sqlite3").exists()
+    _assert_no_download_status_leaks(missing_db.output, appdata_root)
+
+    sync = runner.invoke(
+        app,
+        [
+            "download",
+            "sync",
+            "--profile",
+            "dummy-profile",
+            "--from",
+            "2024-01-01",
+            "--to",
+            "2024-01-31",
+            "--kind",
+            "cfdi",
+            "--direction",
+            "received",
+        ],
+        env={"LOCALAPPDATA": str(appdata_root)},
+    )
+    assert sync.exit_code == 0, sync.output
+
+    unknown_job = runner.invoke(
+        app,
+        ["download", "status", "--profile", "dummy-profile", "--job-id", "unknown-job"],
+        env={"LOCALAPPDATA": str(appdata_root)},
+    )
+
+    assert unknown_job.exit_code == 1
+    assert "error=status_not_found" in unknown_job.output
+    _assert_no_download_status_leaks(unknown_job.output, appdata_root)
+
+
 def test_download_sync_replay_same_criteria_returns_stable_result(tmp_path: Path) -> None:
     appdata_root = tmp_path / "appdata"
     _write_setup_profile(appdata_root)
@@ -332,3 +429,11 @@ def _assert_no_profile_secrets_or_paths(output: str, appdata_root: Path) -> None
     assert "certificate.cer" not in output
     assert "private-key.key" not in output
     assert "windows-credential-manager://" not in output
+
+
+def _assert_no_download_status_leaks(output: str, appdata_root: Path) -> None:
+    _assert_no_profile_secrets_or_paths(output, appdata_root)
+    assert "PKG-" not in output
+    assert ".zip" not in output
+    assert ".xml" not in output
+    assert "recovery.sqlite3" not in output

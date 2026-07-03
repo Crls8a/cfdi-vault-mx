@@ -15,6 +15,7 @@ from uuid import uuid4
 from zipfile import ZipFile
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from cfdi_vault.cache import InMemoryCache
 from cfdi_vault.cfdi_parser import CfdiVersionDetector, parser_for_version
@@ -73,6 +74,23 @@ class SyncResult:
 
 
 @dataclass(frozen=True)
+class DownloadStatus:
+    """Safe persisted aggregate status for one local download job."""
+
+    job_id: str
+    request_id: str
+    status: str
+    sat_state: str
+    kind: str
+    direction: str
+    criteria_hash: str
+    metadata_count: int
+    package_count: int
+    downloaded_package_count: int
+    xml_count: int
+
+
+@dataclass(frozen=True)
 class MetadataImportResult:
     """Result of ingesting a SAT-like metadata file."""
 
@@ -81,6 +99,107 @@ class MetadataImportResult:
     invalid_rows: tuple[InvalidMetadataRow, ...]
     metadata_sha256: str
     storage_key: str
+
+
+def read_download_status(sqlite_path: str | Path, tenant_id: str, job_id: str) -> DownloadStatus | None:
+    """Read safe persisted aggregates for one download job without initializing schema."""
+
+    path = Path(sqlite_path).expanduser()
+    if not path.is_file():
+        return None
+
+    engine = create_engine_from_url(sqlite_path=path)
+    try:
+        session_factory = create_session_factory(engine)
+        with session_factory() as session:
+            job = session.scalar(
+                select(DownloadJob).where(
+                    DownloadJob.tenant_id == tenant_id,
+                    DownloadJob.id == job_id,
+                )
+            )
+            if job is None:
+                return None
+
+            request = session.scalar(
+                select(SatRequestRecord)
+                .where(
+                    SatRequestRecord.tenant_id == tenant_id,
+                    SatRequestRecord.job_id == job.id,
+                )
+                .order_by(SatRequestRecord.id.desc())
+            )
+            request_id = request.id_solicitud if request is not None else ""
+            package_ids = _package_ids_for_request(session, tenant_id=tenant_id, request_id=request_id)
+
+            return DownloadStatus(
+                job_id=job.id,
+                request_id=request_id,
+                status=job.status,
+                sat_state=request.sat_state if request is not None else "",
+                kind=job.request_type,
+                direction=job.direction,
+                criteria_hash=job.criteria_hash,
+                metadata_count=_metadata_count_for_packages(session, tenant_id=tenant_id, package_ids=package_ids),
+                package_count=len(package_ids),
+                downloaded_package_count=_downloaded_package_count(session, tenant_id=tenant_id, request_id=request_id),
+                xml_count=_xml_count_for_packages(session, tenant_id=tenant_id, package_ids=package_ids),
+            )
+    except SQLAlchemyError:
+        return None
+    finally:
+        engine.dispose()
+
+
+def _package_ids_for_request(session: object, *, tenant_id: str, request_id: str) -> tuple[str, ...]:
+    if not request_id:
+        return ()
+    return tuple(
+        row[0]
+        for row in session.execute(
+            select(SatPackageRecord.id_paquete).where(
+                SatPackageRecord.tenant_id == tenant_id,
+                SatPackageRecord.id_solicitud == request_id,
+            )
+        ).all()
+    )
+
+
+def _metadata_count_for_packages(session: object, *, tenant_id: str, package_ids: tuple[str, ...]) -> int:
+    if not package_ids:
+        return 0
+    count = session.scalar(
+        select(func.count()).select_from(CfdiMetadataLedger).where(
+            CfdiMetadataLedger.tenant_id == tenant_id,
+            CfdiMetadataLedger.source_package_id.in_(package_ids),
+        )
+    )
+    return int(count or 0)
+
+
+def _downloaded_package_count(session: object, *, tenant_id: str, request_id: str) -> int:
+    if not request_id:
+        return 0
+    count = session.scalar(
+        select(func.count()).select_from(SatPackageRecord).where(
+            SatPackageRecord.tenant_id == tenant_id,
+            SatPackageRecord.id_solicitud == request_id,
+            SatPackageRecord.status == "downloaded",
+        )
+    )
+    return int(count or 0)
+
+
+def _xml_count_for_packages(session: object, *, tenant_id: str, package_ids: tuple[str, ...]) -> int:
+    if not package_ids:
+        return 0
+    count = session.scalar(
+        select(func.count()).select_from(XmlEvidence).where(
+            XmlEvidence.tenant_id == tenant_id,
+            XmlEvidence.source_package_id.in_(package_ids),
+        )
+    )
+    return int(count or 0)
 
 
 class RecoveryService:
