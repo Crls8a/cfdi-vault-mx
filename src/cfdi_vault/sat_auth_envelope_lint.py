@@ -12,6 +12,9 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from lxml import etree
+from signxml import XMLVerifier
+from signxml.algorithms import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
+from signxml.verifier import SignatureConfiguration
 
 from cfdi_vault.sat_live_smoke import (
     ADDR_NS,
@@ -23,6 +26,10 @@ from cfdi_vault.sat_live_smoke import (
     SatEfirmMaterial,
     _build_auth_envelope,
 )
+
+EXPECTED_C14N_METHOD = CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0.value
+EXPECTED_SIGNATURE_METHOD = SignatureMethod.RSA_SHA1.value
+EXPECTED_DIGEST_METHOD = DigestAlgorithm.SHA1.value
 
 
 @dataclass(frozen=True)
@@ -38,11 +45,19 @@ class AuthEnvelopeLintResult:
     timestamp_window_ok: bool
     bst_present: bool
     bst_der: bool
+    bst_no_pem: bool
     bst_size: int
     signature: bool
     signed_info: bool
+    c14n_method: bool
+    signature_method: bool
+    digest_method: bool
+    reference_transforms: bool
     reference_count: int
+    reference_uris: bool
     references_resolve: bool
+    references_use_wsu_id: bool
+    signed_nodes_exist: bool
     digest_value: bool
     signature_value: bool
     key_info: bool
@@ -50,6 +65,7 @@ class AuthEnvelopeLintResult:
     timestamp_signed: bool
     to_header_present: bool
     action_header_present: bool
+    local_signature_verify: bool
     all_checks_passed: bool
 
 
@@ -68,6 +84,7 @@ def lint_auth_envelope(envelope: bytes, *, now: datetime | None = None) -> AuthE
     signed_info = signature.find(f"{{{DS_NS}}}SignedInfo") if signature is not None else None
     references = signed_info.findall(f".//{{{DS_NS}}}Reference") if signed_info is not None else []
     existing_ids = _collect_ids(root)
+    wsu_ids = _collect_wsu_ids(root)
     result = AuthEnvelopeLintResult(
         envelope_sha256=hashlib.sha256(envelope).hexdigest(),
         envelope_size=len(envelope),
@@ -80,11 +97,19 @@ def lint_auth_envelope(envelope: bytes, *, now: datetime | None = None) -> AuthE
         timestamp_window_ok=_timestamp_window_ok(timestamp, now=now or datetime.now(timezone.utc)),
         bst_present=bst is not None,
         bst_der=_bst_is_der_base64(bst.text if bst is not None else ""),
+        bst_no_pem=_bst_has_no_pem_marker(bst.text if bst is not None else ""),
         bst_size=len((bst.text or "")) if bst is not None else 0,
         signature=signature is not None,
         signed_info=signed_info is not None,
+        c14n_method=_method_algorithm(signed_info, "CanonicalizationMethod") == EXPECTED_C14N_METHOD,
+        signature_method=_method_algorithm(signed_info, "SignatureMethod") == EXPECTED_SIGNATURE_METHOD,
+        digest_method=bool(references) and all(_reference_method_algorithm(ref, "DigestMethod") == EXPECTED_DIGEST_METHOD for ref in references),
+        reference_transforms=bool(references) and all(_reference_transform_ok(ref) for ref in references),
         reference_count=len(references),
+        reference_uris=bool(references) and all(_reference_uri(ref) for ref in references),
         references_resolve=bool(references) and all((ref.get("URI") or "").lstrip("#") in existing_ids for ref in references),
+        references_use_wsu_id=bool(references) and all(_reference_uri(ref) in wsu_ids for ref in references),
+        signed_nodes_exist=bool(references) and all(_reference_uri(ref) in existing_ids for ref in references),
         digest_value=signature.find(f".//{{{DS_NS}}}DigestValue") is not None if signature is not None else False,
         signature_value=signature.find(f".//{{{DS_NS}}}SignatureValue") is not None if signature is not None else False,
         key_info=signature.find(f"{{{DS_NS}}}KeyInfo") is not None if signature is not None else False,
@@ -92,6 +117,7 @@ def lint_auth_envelope(envelope: bytes, *, now: datetime | None = None) -> AuthE
         timestamp_signed=any((ref.get("URI") or "").lstrip("#") == (timestamp.get(f"{{{WSU_NS}}}Id") if timestamp is not None else "") for ref in references),
         to_header_present=header.find(f"{{{ADDR_NS}}}To") is not None if header is not None else False,
         action_header_present=header.find(f"{{{ADDR_NS}}}Action") is not None if header is not None else False,
+        local_signature_verify=_verify_signature_with_bst(root, bst),
         all_checks_passed=False,
     )
     checks = [value for key, value in result.__dict__.items() if isinstance(value, bool) and key != "all_checks_passed"]
@@ -104,6 +130,15 @@ def _collect_ids(root: etree._Element) -> set[str]:
         for value in (node.get("Id"), node.get(f"{{{WSU_NS}}}Id")):
             if value:
                 ids.add(value)
+    return ids
+
+
+def _collect_wsu_ids(root: etree._Element) -> set[str]:
+    ids: set[str] = set()
+    for node in root.iter():
+        value = node.get(f"{{{WSU_NS}}}Id")
+        if value:
+            ids.add(value)
     return ids
 
 
@@ -130,9 +165,72 @@ def _bst_is_der_base64(value: str | None) -> bool:
     if not value or "-----BEGIN" in value:
         return False
     try:
-        return bool(base64.b64decode(value, validate=True))
+        x509.load_der_x509_certificate(base64.b64decode(value, validate=True))
+        return True
     except ValueError:
         return False
+
+
+def _bst_has_no_pem_marker(value: str | None) -> bool:
+    return bool(value) and "-----BEGIN" not in value and "-----END" not in value
+
+
+def _method_algorithm(signed_info: etree._Element | None, local_name: str) -> str:
+    if signed_info is None:
+        return ""
+    node = signed_info.find(f"{{{DS_NS}}}{local_name}")
+    return node.get("Algorithm") if node is not None else ""
+
+
+def _reference_method_algorithm(reference: etree._Element, local_name: str) -> str:
+    node = reference.find(f".//{{{DS_NS}}}{local_name}")
+    return node.get("Algorithm") if node is not None else ""
+
+
+def _reference_transform_ok(reference: etree._Element) -> bool:
+    transforms = reference.findall(f".//{{{DS_NS}}}Transform")
+    return bool(transforms) and all(transform.get("Algorithm") == EXPECTED_C14N_METHOD for transform in transforms)
+
+
+def _reference_uri(reference: etree._Element) -> str:
+    uri = reference.get("URI") or ""
+    return uri[1:] if uri.startswith("#") else ""
+
+
+def _verify_signature_with_bst(root: etree._Element, bst: etree._Element | None) -> bool:
+    certificate = _load_bst_certificate(bst)
+    if certificate is None:
+        return False
+    config = SignatureConfiguration(
+        require_x509=True,
+        expect_references=1,
+        signature_methods=frozenset({SignatureMethod.RSA_SHA1}),
+        digest_algorithms=frozenset({DigestAlgorithm.SHA1}),
+        default_reference_c14n_method=CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0,
+    )
+    try:
+        XMLVerifier().verify(
+            root,
+            x509_cert=certificate.public_bytes(serialization.Encoding.PEM),
+            id_attribute="Id",
+            expect_config=config,
+            validate_schema=False,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _load_bst_certificate(bst: etree._Element | None) -> x509.Certificate | None:
+    if bst is None:
+        return None
+    value = bst.text or ""
+    if not _bst_has_no_pem_marker(value):
+        return None
+    try:
+        return x509.load_der_x509_certificate(base64.b64decode(value, validate=True))
+    except ValueError:
+        return None
 
 
 def _dummy_material() -> SatEfirmMaterial:
