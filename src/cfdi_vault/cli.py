@@ -45,6 +45,7 @@ from cfdi_vault.sat_transport_probe import SatProbeResult, run_sat_transport_pro
 from cfdi_vault.live_permit import (
     LivePermitError,
     LivePermitRequest,
+    auth_live_smoke_permit_expectation,
     create_live_execution_permit,
     load_live_execution_permit,
     permit_expectation_from_query,
@@ -185,7 +186,7 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "command": "sat auth-smoke",
         "purpose": "Validate live SAT authentication smoke gates before any real SAT auth attempt.",
         "when": "Run only on the operator machine after explicit human approval.",
-        "example": "cfdi-vault sat auth-smoke --profile default --manual-real-sat",
+        "example": "cfdi-vault sat auth-smoke --profile default --manual-real-sat --permit PERMIT_ID",
     },
     {
         "command": "sat inspect-auth-contract",
@@ -485,7 +486,7 @@ live_app.add_typer(permit_app, name="permit")
 
 @permit_app.command("create")
 def live_permit_create(
-    scope: str = typer.Option(..., "--scope", help="transport_probe, auth_post_probe, auth_matrix_probe, or metadata_live_smoke."),
+    scope: str = typer.Option(..., "--scope", help="transport_probe, auth_post_probe, auth_matrix_probe, auth_live_smoke, or metadata_live_smoke."),
     profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
     kind: str = typer.Option(..., "--kind", help="metadata only."),
     direction: str = typer.Option(..., "--direction", help="received or issued."),
@@ -765,6 +766,7 @@ def doctor(
 def sat_auth_smoke(
     profile: str = typer.Option("default", "--profile", help="Local setup profile id."),
     manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Required human gate for real SAT smoke."),
+    permit: str | None = typer.Option(None, "--permit", help="One-time local auth_live_smoke permit id."),
 ) -> None:
     """Run guarded SAT authentication smoke preflight before any live auth attempt."""
 
@@ -774,6 +776,9 @@ def sat_auth_smoke(
         query=None,
         metadata_only=True,
         range_within_limit=True,
+        mode="auth-smoke",
+        permit_ref=permit,
+        permit_scope="auth_live_smoke",
     )
     try:
         result = _run_live_auth_smoke(profile)
@@ -1417,6 +1422,7 @@ def _validate_live_smoke_guard(
     range_within_limit: bool,
     mode: str = "live-smoke",
     permit_ref: str | None = None,
+    permit_scope: str = "metadata_live_smoke",
 ) -> bool:
     profile = _load_download_profile(profile_id)
     provider = _setup_provider(profile_id)
@@ -1430,11 +1436,15 @@ def _validate_live_smoke_guard(
     permit_verified = False
     permit_allows_real_credentials = False
     if permit_ref is not None:
-        if query is None:
+        if query is None and permit_scope != "auth_live_smoke":
             typer.echo("error=live_permit_denied", err=True)
             typer.echo("reason=permit-query-required", err=True)
             raise typer.Exit(code=1)
-        expected = permit_expectation_from_query("metadata_live_smoke", profile_id, query)
+        expected = (
+            auth_live_smoke_permit_expectation(profile_id, permit_ref, env=os.environ)
+            if permit_scope == "auth_live_smoke"
+            else permit_expectation_from_query(permit_scope, profile_id, query)  # type: ignore[arg-type]
+        )
         try:
             consumed_permit = validate_and_consume_live_permit(
                 permit_ref,

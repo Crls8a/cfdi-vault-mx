@@ -726,6 +726,69 @@ def test_sat_auth_smoke_requires_same_manual_guard(
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
 
 
+def test_sat_auth_smoke_permit_replaces_interactive_prompt_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    _write_ready_setup_profile(appdata_root)
+    _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=False, doctor_ok=True)
+    permit = create_live_execution_permit(
+        LivePermitRequest(
+            scope="auth_live_smoke",
+            profile_id="dummy-profile",
+            kind="metadata",
+            direction="received",
+            date_from="2024-01-01",
+            date_to="2024-01-01",
+            reason="Carlos authorized SAT auth compatibility smoke",
+        ),
+        env={"LOCALAPPDATA": str(appdata_root)},
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        cli_module,
+        "_run_live_auth_smoke",
+        lambda profile_id: calls.append(profile_id) or cli_module.LiveSmokeCliResult(result="synthetic-auth-ok", auth="attempted"),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["sat", "auth-smoke", "--profile", "dummy-profile", "--manual-real-sat", "--permit", permit.permit_id],
+        env=_live_smoke_env(
+            appdata_root,
+            {
+                "CFDI_VAULT_ALLOW_REAL_SAT": None,
+                "CFDI_VAULT_ALLOW_REAL_CREDENTIALS": None,
+            },
+        ),
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == ["dummy-profile"]
+    assert "Type \"SAT REAL METADATA SMOKE\"" not in result.output
+    assert "xml_downloaded=no" in result.output
+    assert "zip_downloaded=no" in result.output
+    _assert_no_profile_secrets_or_paths(result.output, appdata_root)
+
+    second = CliRunner().invoke(
+        app,
+        ["sat", "auth-smoke", "--profile", "dummy-profile", "--manual-real-sat", "--permit", permit.permit_id],
+        env=_live_smoke_env(
+            appdata_root,
+            {
+                "CFDI_VAULT_ALLOW_REAL_SAT": None,
+                "CFDI_VAULT_ALLOW_REAL_CREDENTIALS": None,
+            },
+        ),
+    )
+
+    assert second.exit_code == 1
+    assert "error=live_permit_denied" in second.output
+    assert "reason=permit-already-consumed" in second.output
+    assert calls == ["dummy-profile"]
+
+
 def test_live_smoke_checkout_guard_fails_closed_outside_git_checkout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
