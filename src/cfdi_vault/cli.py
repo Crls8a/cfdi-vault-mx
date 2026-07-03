@@ -36,7 +36,13 @@ from cfdi_vault.secrets import CredentialKind, CredentialProviderError, Credenti
 from cfdi_vault.service import ImportBatchResult, ImportRecord, SummaryRow, VaultService
 from cfdi_vault.sat_orchestration import DownloadRequestOrchestrator
 from cfdi_vault.sat_simulator import FakeSatScenario, FakeSatScenarioClient
-from cfdi_vault.sat_transport import LiveSatGuardError, LiveSatGuardInput, validate_live_sat_guard
+from cfdi_vault.sat_live_smoke import SatLiveMetadataSmokeAdapter, SatLiveSmokeError
+from cfdi_vault.sat_transport import (
+    GuardedSoapHttpTransport,
+    LiveSatGuardError,
+    LiveSatGuardInput,
+    validate_live_sat_guard,
+)
 from cfdi_vault.worker import RecoveryWorker
 from cfdi_vault.windows_secrets import WindowsCredentialManagerSecretProvider
 
@@ -665,6 +671,9 @@ def sat_auth_smoke(
     except LiveSmokeAdapterUnavailable as exc:
         typer.echo("error=live_adapter_unavailable", err=True)
         raise typer.Exit(code=1) from exc
+    except SatLiveSmokeError as exc:
+        typer.echo("error=live_adapter_failed", err=True)
+        raise typer.Exit(code=1) from exc
     _print_live_smoke_result(profile_id=profile, kind="auth", direction="n/a", result=result)
 
 
@@ -888,6 +897,9 @@ def download_live_smoke(
         result = _run_live_metadata_smoke(profile, query)
     except LiveSmokeAdapterUnavailable as exc:
         typer.echo("error=live_adapter_unavailable", err=True)
+        raise typer.Exit(code=1) from exc
+    except SatLiveSmokeError as exc:
+        typer.echo("error=live_adapter_failed", err=True)
         raise typer.Exit(code=1) from exc
     _print_live_smoke_result(profile_id=profile, kind=query.request_type.value, direction=query.direction.value, result=result)
 
@@ -1214,7 +1226,7 @@ def _validate_live_smoke_guard(
         raise typer.Exit(code=1) from exc
 
     typer.echo("warning=live_sat_smoke_guards_passed", err=True)
-    typer.echo("sat_real_execution=adapter_pending", err=True)
+    typer.echo("sat_real_execution=adapter_enabled", err=True)
     if query is not None:
         _print_download_query(profile_id=profile_id, query=query, will_submit=False, mode="live-smoke")
 
@@ -1277,12 +1289,42 @@ def _is_minimal_live_smoke_range(query: DownloadQuery) -> bool:
 
 
 def _run_live_auth_smoke(profile_id: str) -> LiveSmokeCliResult:
-    raise LiveSmokeAdapterUnavailable(f"live SAT auth smoke adapter is not wired for profile {profile_id!r}")
+    profile = _load_download_profile(profile_id)
+    adapter = SatLiveMetadataSmokeAdapter(
+        profile=profile,
+        provider=_setup_provider(profile_id),
+        transport=_live_smoke_transport(),
+    )
+    result = adapter.auth_smoke()
+    return LiveSmokeCliResult(result=result.result, auth=result.auth, request=result.request, verification=result.verification)
 
 
 def _run_live_metadata_smoke(profile_id: str, query: DownloadQuery) -> LiveSmokeCliResult:
-    raise LiveSmokeAdapterUnavailable(
-        f"live SAT metadata smoke adapter is not wired for profile {profile_id!r} and criteria {query.criteria_hash()}"
+    profile = _load_download_profile(profile_id)
+    adapter = SatLiveMetadataSmokeAdapter(
+        profile=profile,
+        provider=_setup_provider(profile_id),
+        transport=_live_smoke_transport(),
+    )
+    result = adapter.metadata_smoke(query)
+    return LiveSmokeCliResult(result=result.result, auth=result.auth, request=result.request, verification=result.verification)
+
+
+def _live_smoke_transport() -> GuardedSoapHttpTransport:
+    return GuardedSoapHttpTransport(
+        guard_input_factory=lambda: LiveSatGuardInput(
+            manual_real_sat=True,
+            terminal_interactive=True,
+            confirmation_verified=True,
+            profile_ready=True,
+            credentials_ready=True,
+            doctor_ok=True,
+            scanner_passed=True,
+            repo_clean=True,
+            metadata_only=True,
+            range_within_limit=True,
+            environ=os.environ,
+        )
     )
 
 

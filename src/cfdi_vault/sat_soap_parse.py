@@ -84,7 +84,7 @@ def parse_verification_response(xml: XmlInput) -> SatVerificationResult:
     state = _parse_state(_required_value(result, "state", "EstadoSolicitud", "State", "RequestState"))
     message = _value(result, "Mensaje", "Message", "StatusMessage") or ""
     request_id = _value(result, "IdSolicitud", "RequestId", "SolicitudId") or ""
-    package_ids = tuple(_texts(root, "IdPaquete", "PackageId"))
+    package_ids = tuple(_texts(root, "IdPaquete", "IdsPaquetes", "PackageId"))
 
     classification = classify_sat_outcome(SatOperation.VERIFY, sat_code=sat_code, state=state)
     return SatVerificationResult(
