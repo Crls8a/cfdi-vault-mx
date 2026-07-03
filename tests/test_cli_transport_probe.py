@@ -8,7 +8,7 @@ from cfdi_vault.sat_transport_probe import SatProbeResult
 
 
 def test_sat_probe_transport_prints_redacted_results(monkeypatch) -> None:
-    monkeypatch.setattr(cli_module, "_validate_live_transport_probe_guard", lambda profile_id, manual_real_sat: None)
+    monkeypatch.setattr(cli_module, "_validate_live_transport_probe_guard", lambda **kwargs: None)
     monkeypatch.setattr(
         cli_module,
         "_run_transport_probe",
@@ -45,7 +45,7 @@ def test_sat_probe_transport_prints_redacted_results(monkeypatch) -> None:
 
 
 def test_sat_probe_transport_keeps_package_endpoint_non_fatal(monkeypatch) -> None:
-    monkeypatch.setattr(cli_module, "_validate_live_transport_probe_guard", lambda profile_id, manual_real_sat: None)
+    monkeypatch.setattr(cli_module, "_validate_live_transport_probe_guard", lambda **kwargs: None)
     monkeypatch.setattr(
         cli_module,
         "_run_transport_probe",
@@ -68,3 +68,52 @@ def test_sat_probe_transport_keeps_package_endpoint_non_fatal(monkeypatch) -> No
     assert "probe_status=ok" in result.output
     assert "required=no" in result.output
     assert "error_kind=wsdl_unavailable" in result.output
+
+
+def test_sat_probe_transport_passes_permit_id_to_guard(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(cli_module, "_validate_live_transport_probe_guard", lambda **kwargs: seen.update(kwargs))
+    monkeypatch.setattr(cli_module, "_run_transport_probe", lambda: ())
+
+    result = CliRunner().invoke(app, ["sat", "probe-transport", "--profile", "dummy-profile", "--permit", "permit-abc_123"])
+
+    assert result.exit_code == 0, result.output
+    assert seen["profile_id"] == "dummy-profile"
+    assert seen["permit_ref"] == "permit-abc_123"
+    assert seen["manual_real_sat"] is False
+
+
+def test_live_permit_create_writes_redacted_appdata_permit(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "live",
+            "permit",
+            "create",
+            "--scope",
+            "transport_probe",
+            "--profile",
+            "dummy-profile",
+            "--kind",
+            "metadata",
+            "--direction",
+            "received",
+            "--from",
+            "2024-01-01",
+            "--to",
+            "2024-01-01",
+            "--expires-minutes",
+            "15",
+            "--reason",
+            "Carlos authorized post-86 transport probe",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "mode=live-permit" in result.output
+    assert "scope=transport_probe" in result.output
+    assert "redaction_required=true" in result.output
+    assert "permit_storage=appdata-local" in result.output
+    assert "private-key" not in result.output.lower()

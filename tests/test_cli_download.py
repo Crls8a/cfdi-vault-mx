@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 from cfdi_vault import cli as cli_module
 from cfdi_vault import setup as setup_flow
 from cfdi_vault.cli import app
+from cfdi_vault.live_permit import LivePermitRequest, create_live_execution_permit
 from cfdi_vault.secrets import DummySecretProvider
 
 
@@ -495,6 +496,60 @@ def test_download_live_smoke_fake_adapter_happy_path_is_redacted(
     assert lines["xml_downloaded"] == "no"
     assert lines["zip_downloaded"] == "no"
     assert "request_id=" not in result.output
+    _assert_no_profile_secrets_or_paths(result.output, appdata_root)
+
+
+def test_download_live_smoke_permit_replaces_interactive_prompt_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    _write_ready_setup_profile(appdata_root)
+    _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=False, doctor_ok=True)
+    permit = create_live_execution_permit(
+        LivePermitRequest(
+            scope="metadata_live_smoke",
+            profile_id="dummy-profile",
+            kind="metadata",
+            direction="received",
+            date_from="2024-01-01",
+            date_to="2024-01-01",
+            reason="Carlos authorized metadata-only live smoke",
+        ),
+        env={"LOCALAPPDATA": str(appdata_root)},
+    )
+    seen: dict[str, object] = {}
+
+    def fake_live_smoke(profile_id: str, query: object, *, live_permit_verified: bool = False) -> cli_module.LiveSmokeCliResult:
+        seen["profile_id"] = profile_id
+        seen["live_permit_verified"] = live_permit_verified
+        return cli_module.LiveSmokeCliResult(
+            result="synthetic-ok",
+            auth="attempted",
+            request="metadata-submitted",
+            verification="skipped",
+        )
+
+    monkeypatch.setattr(cli_module, "_run_live_metadata_smoke", fake_live_smoke)
+
+    result = CliRunner().invoke(
+        app,
+        _live_smoke_args(["--permit", permit.permit_id]),
+        env=_live_smoke_env(
+            appdata_root,
+            {
+                "CFDI_VAULT_ALLOW_REAL_SAT": None,
+                "CFDI_VAULT_ALLOW_REAL_CREDENTIALS": None,
+            },
+        ),
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen["profile_id"] == "dummy-profile"
+    assert seen["live_permit_verified"] is True
+    assert "Type \"SAT REAL METADATA SMOKE\"" not in result.output
+    assert "xml_downloaded=no" in result.output
+    assert "zip_downloaded=no" in result.output
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
 
 
