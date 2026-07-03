@@ -11,6 +11,7 @@ requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "CFDI Vault MX Lab" }]
 dependencies = [
+    "cryptography>=45.0,<46.0",
     "rich>=13.7,<14.0",
     "signxml>=5.0,<6.0",
     "SQLAlchemy>=2.0,<3.0",
