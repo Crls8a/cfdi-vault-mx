@@ -188,6 +188,59 @@ def test_http_adapter_calls_injected_sender_only_when_all_guards_pass() -> None:
     assert calls == [_request()]
 
 
+def test_live_sat_guard_accepts_noninteractive_permit_without_credentials_for_transport_probe() -> None:
+    validate_live_sat_guard(
+        LiveSatGuardInput(
+            profile_ready=True,
+            credentials_ready=False,
+            doctor_ok=True,
+            scanner_passed=True,
+            repo_clean=True,
+            metadata_only=True,
+            range_within_limit=True,
+            live_permit_verified=True,
+            real_credentials_required=False,
+            environ={},
+        )
+    )
+
+
+def test_live_sat_guard_keeps_ci_and_credential_gates_with_permit() -> None:
+    with pytest.raises(LiveSatGuardError) as ci_exc:
+        validate_live_sat_guard(
+            LiveSatGuardInput(
+                profile_ready=True,
+                credentials_ready=True,
+                doctor_ok=True,
+                scanner_passed=True,
+                repo_clean=True,
+                metadata_only=True,
+                range_within_limit=True,
+                live_permit_verified=True,
+                live_permit_allows_real_credentials=True,
+                environ={"CI": "true"},
+            )
+        )
+    assert "ci-enabled" in ci_exc.value.reasons
+
+    with pytest.raises(LiveSatGuardError) as credentials_exc:
+        validate_live_sat_guard(
+            LiveSatGuardInput(
+                profile_ready=True,
+                credentials_ready=True,
+                doctor_ok=True,
+                scanner_passed=True,
+                repo_clean=True,
+                metadata_only=True,
+                range_within_limit=True,
+                live_permit_verified=True,
+                live_permit_allows_real_credentials=False,
+                environ={},
+            )
+        )
+    assert "missing-explicit-real-credentials-env" in credentials_exc.value.reasons
+
+
 def test_repr_and_guard_errors_do_not_leak_authorization_tokens_or_body() -> None:
     request = _request()
     response = SoapTransportResponse(

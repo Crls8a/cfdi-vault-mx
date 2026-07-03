@@ -38,6 +38,14 @@ from cfdi_vault.sat_orchestration import DownloadRequestOrchestrator
 from cfdi_vault.sat_simulator import FakeSatScenario, FakeSatScenarioClient
 from cfdi_vault.sat_live_smoke import DIAGNOSTIC_STAGES, SatLiveMetadataSmokeAdapter, SatLiveSmokeError
 from cfdi_vault.sat_transport_probe import SatProbeResult, run_sat_transport_probe
+from cfdi_vault.live_permit import (
+    LivePermitError,
+    LivePermitRequest,
+    create_live_execution_permit,
+    permit_expectation_from_query,
+    transport_probe_permit_expectation,
+    validate_and_consume_live_permit,
+)
 from cfdi_vault.sat_transport import (
     GuardedSoapHttpTransport,
     LiveSatGuardError,
@@ -59,6 +67,7 @@ sync_app = typer.Typer(help="Submit SAT recovery sync jobs.", no_args_is_help=Tr
 download_app = typer.Typer(help="Plan and submit fake/offline SAT download requests.", no_args_is_help=True)
 sat_app = typer.Typer(help="Run human-gated SAT live smoke checks.", no_args_is_help=True)
 custody_app = typer.Typer(help="Manage local secret references without printing values.", no_args_is_help=True)
+live_app = typer.Typer(help="Create one-time local live execution permits.", no_args_is_help=True)
 
 app.add_typer(config_app, name="config")
 app.add_typer(queue_app, name="queue")
@@ -67,6 +76,7 @@ app.add_typer(sync_app, name="sync")
 app.add_typer(download_app, name="download")
 app.add_typer(sat_app, name="sat")
 app.add_typer(custody_app, name="secret")
+app.add_typer(live_app, name="live")
 
 
 COMMAND_HELP: tuple[dict[str, str], ...] = (
@@ -162,9 +172,9 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
     },
     {
         "command": "download live-smoke",
-        "purpose": "Validate the human-gated metadata-only live SAT smoke path without allowing CFDI/XML download.",
-        "when": "Run only after #50 is explicitly approved for one local manual SAT smoke attempt.",
-        "example": "cfdi-vault download live-smoke --profile default --from YYYY-MM-DD --to YYYY-MM-DD --kind metadata --direction received --manual-real-sat",
+        "purpose": "Validate the guarded metadata-only live SAT smoke path without allowing CFDI/XML download.",
+        "when": "Run only after explicit approval for one local SAT smoke attempt.",
+        "example": "cfdi-vault download live-smoke --profile default --from YYYY-MM-DD --to YYYY-MM-DD --kind metadata --direction received --permit PERMIT_ID",
     },
     {
         "command": "sat auth-smoke",
@@ -182,7 +192,13 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "command": "sat probe-transport",
         "purpose": "Probe public SAT DNS/TLS/WSDL transport without loading e.firma material.",
         "when": "Run before retrying #50 when live auth transport fails.",
-        "example": "cfdi-vault sat probe-transport --manual-real-sat",
+        "example": "cfdi-vault sat probe-transport --profile default --permit PERMIT_ID",
+    },
+    {
+        "command": "live permit create",
+        "purpose": "Create one AppData-local, one-time, expiring permit for a scoped live SAT operation.",
+        "when": "Use instead of an interactive confirmation prompt for an explicitly authorized live attempt.",
+        "example": "cfdi-vault live permit create --scope transport_probe --profile default --kind metadata --direction received --from YYYY-MM-DD --to YYYY-MM-DD --expires-minutes 15 --reason \"Carlos authorized post-86 transport probe\"",
     },
     {
         "command": "queue status",
@@ -432,6 +448,56 @@ def custody_delete(
     else:
         typer.echo(f"Reference not found: {reference.uri}")
     typer.echo("Credential value was not printed.")
+
+
+permit_app = typer.Typer(help="Create one-time local live execution permits.", no_args_is_help=True)
+live_app.add_typer(permit_app, name="permit")
+
+
+@permit_app.command("create")
+def live_permit_create(
+    scope: str = typer.Option(..., "--scope", help="transport_probe or metadata_live_smoke."),
+    profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
+    kind: str = typer.Option(..., "--kind", help="metadata only."),
+    direction: str = typer.Option(..., "--direction", help="received or issued."),
+    from_date: str = typer.Option(..., "--from", help="YYYY-MM-DD."),
+    to_date: str = typer.Option(..., "--to", help="YYYY-MM-DD."),
+    expires_minutes: int = typer.Option(15, "--expires-minutes", min=1, max=15),
+    reason: str = typer.Option(..., "--reason", help="Auditable local reason."),
+) -> None:
+    """Create a one-time local permit outside the repository for one live operation."""
+
+    try:
+        permit = create_live_execution_permit(
+            LivePermitRequest(
+                scope=scope,
+                profile_id=profile,
+                kind=kind,
+                direction=direction,
+                date_from=from_date,
+                date_to=to_date,
+                expires_minutes=expires_minutes,
+                reason=reason,
+            )
+        )
+    except LivePermitError as exc:
+        typer.echo("error=live_permit_denied", err=True)
+        typer.echo(f"reason={exc.reason}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo("mode=live-permit")
+    typer.echo(f"permit_id={permit.permit_id}")
+    typer.echo(f"scope={scope}")
+    typer.echo(f"profile={profile}")
+    typer.echo(f"kind={kind}")
+    typer.echo(f"direction={direction}")
+    typer.echo(f"date_from={from_date}")
+    typer.echo(f"date_to={to_date}")
+    typer.echo("max_range_days=1")
+    typer.echo("max_attempts=1")
+    typer.echo(f"expires_at={permit.expires_at.isoformat().replace('+00:00', 'Z')}")
+    typer.echo("permit_storage=appdata-local")
+    typer.echo("consumed=false")
+    typer.echo("redaction_required=true")
 
 
 @app.command("onboard")
@@ -731,11 +797,20 @@ def sat_diagnose_live(
 @sat_app.command("probe-transport")
 def sat_probe_transport(
     profile: str = typer.Option("default", "--profile", help="Local setup profile id used for readiness gates only."),
+    from_date: str = typer.Option("", "--from", help="Permit date: YYYY-MM-DD when --permit is used."),
+    to_date: str = typer.Option("", "--to", help="Permit date: YYYY-MM-DD when --permit is used."),
     manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Required human gate for real SAT transport probing."),
+    permit: str | None = typer.Option(None, "--permit", help="One-time local live execution permit id."),
 ) -> None:
     """Probe public SAT DNS/TLS/WSDL transport without e.firma material."""
 
-    _validate_live_transport_probe_guard(profile_id=profile, manual_real_sat=manual_real_sat)
+    _validate_live_transport_probe_guard(
+        profile_id=profile,
+        manual_real_sat=manual_real_sat,
+        permit_ref=permit,
+        date_from=from_date,
+        date_to=to_date,
+    )
     results = tuple(_run_transport_probe())
     _print_transport_probe_results(profile_id=profile, results=results)
     if _has_required_transport_probe_failure(results):
@@ -941,6 +1016,7 @@ def download_live_smoke(
     kind: str = typer.Option(..., "--kind", help="metadata only in this version."),
     direction: str = typer.Option(..., "--direction", help="received or issued."),
     manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Required human gate for real SAT smoke."),
+    permit: str | None = typer.Option(None, "--permit", help="One-time local live execution permit id."),
 ) -> None:
     """Run a human-gated metadata-only live SAT smoke command."""
 
@@ -951,15 +1027,19 @@ def download_live_smoke(
         kind=kind,
         direction=direction,
     )
-    _validate_live_smoke_guard(
+    permit_verified = _validate_live_smoke_guard(
         profile_id=profile,
         manual_real_sat=manual_real_sat,
         query=query,
         metadata_only=query.request_type == RequestType.METADATA,
         range_within_limit=_is_minimal_live_smoke_range(query),
+        permit_ref=permit,
     )
     try:
-        result = _run_live_metadata_smoke(profile, query)
+        if permit_verified:
+            result = _run_live_metadata_smoke(profile, query, live_permit_verified=True)
+        else:
+            result = _run_live_metadata_smoke(profile, query)
     except LiveSmokeAdapterUnavailable as exc:
         typer.echo("error=live_adapter_unavailable", err=True)
         raise typer.Exit(code=1) from exc
@@ -1250,7 +1330,8 @@ def _validate_live_smoke_guard(
     metadata_only: bool,
     range_within_limit: bool,
     mode: str = "live-smoke",
-) -> None:
+    permit_ref: str | None = None,
+) -> bool:
     profile = _load_download_profile(profile_id)
     provider = _setup_provider(profile_id)
     inspection = setup_flow.inspect_profile(profile_id, provider=provider)
@@ -1258,15 +1339,36 @@ def _validate_live_smoke_guard(
     repo_clean, scanner_passed = _checkout_guard_status()
     interactive = _terminal_is_interactive()
     confirmed = False
-    if manual_real_sat and interactive:
+    if permit_ref is None and manual_real_sat and interactive:
         confirmed = _confirm_live_smoke()
+    permit_verified = False
+    permit_allows_real_credentials = False
+    if permit_ref is not None:
+        if query is None:
+            typer.echo("error=live_permit_denied", err=True)
+            typer.echo("reason=permit-query-required", err=True)
+            raise typer.Exit(code=1)
+        expected = permit_expectation_from_query("metadata_live_smoke", profile_id, query)
+        try:
+            consumed_permit = validate_and_consume_live_permit(
+                permit_ref,
+                **expected,
+                env=os.environ,
+                repo_root=_find_checkout_root(Path.cwd()),
+            )
+            permit_verified = True
+            permit_allows_real_credentials = consumed_permit.allow_real_credentials
+        except LivePermitError as exc:
+            typer.echo("error=live_permit_denied", err=True)
+            typer.echo(f"reason={exc.reason}", err=True)
+            raise typer.Exit(code=1) from exc
 
     try:
         validate_live_sat_guard(
             LiveSatGuardInput(
                 manual_real_sat=manual_real_sat,
-                terminal_interactive=interactive,
-                confirmation_verified=confirmed,
+                terminal_interactive=interactive or permit_verified,
+                confirmation_verified=confirmed or permit_verified,
                 profile_ready=inspection.status == setup_flow.LocalProfileStatus.READY,
                 credentials_ready=all(
                     state == "loaded"
@@ -1282,6 +1384,9 @@ def _validate_live_smoke_guard(
                 repo_clean=repo_clean,
                 metadata_only=metadata_only,
                 range_within_limit=range_within_limit,
+                live_permit_verified=permit_verified,
+                live_permit_allows_real_credentials=permit_allows_real_credentials,
+                real_credentials_required=True,
                 environ=os.environ,
             )
         )
@@ -1295,9 +1400,18 @@ def _validate_live_smoke_guard(
     typer.echo("sat_real_execution=adapter_enabled", err=True)
     if query is not None:
         _print_download_query(profile_id=profile_id, query=query, will_submit=False, mode=mode)
+    return permit_verified
+    return permit_verified
 
 
-def _validate_live_transport_probe_guard(*, profile_id: str, manual_real_sat: bool) -> None:
+def _validate_live_transport_probe_guard(
+    *,
+    profile_id: str,
+    manual_real_sat: bool,
+    permit_ref: str | None = None,
+    date_from: str = "",
+    date_to: str = "",
+) -> None:
     profile = _load_download_profile(profile_id)
     provider = _setup_provider(profile_id)
     inspection = setup_flow.inspect_profile(profile_id, provider=provider)
@@ -1305,15 +1419,34 @@ def _validate_live_transport_probe_guard(*, profile_id: str, manual_real_sat: bo
     repo_clean, scanner_passed = _checkout_guard_status()
     interactive = _terminal_is_interactive()
     confirmed = False
-    if manual_real_sat and interactive:
+    if permit_ref is None and manual_real_sat and interactive:
         confirmed = _confirm_live_transport_probe()
+    permit_verified = False
+    if permit_ref is not None:
+        try:
+            expected = transport_probe_permit_expectation(profile_id, permit_ref, env=os.environ)
+            if date_from:
+                expected["date_from"] = date_from
+            if date_to:
+                expected["date_to"] = date_to
+            validate_and_consume_live_permit(
+                permit_ref,
+                **expected,
+                env=os.environ,
+                repo_root=_find_checkout_root(Path.cwd()),
+            )
+            permit_verified = True
+        except LivePermitError as exc:
+            typer.echo("error=live_permit_denied", err=True)
+            typer.echo(f"reason={exc.reason}", err=True)
+            raise typer.Exit(code=1) from exc
 
     try:
         validate_live_sat_guard(
             LiveSatGuardInput(
                 manual_real_sat=manual_real_sat,
-                terminal_interactive=interactive,
-                confirmation_verified=confirmed,
+                terminal_interactive=interactive or permit_verified,
+                confirmation_verified=confirmed or permit_verified,
                 profile_ready=inspection.status == setup_flow.LocalProfileStatus.READY,
                 credentials_ready=all(
                     state == "loaded"
@@ -1329,6 +1462,9 @@ def _validate_live_transport_probe_guard(*, profile_id: str, manual_real_sat: bo
                 repo_clean=repo_clean,
                 metadata_only=True,
                 range_within_limit=True,
+                live_permit_verified=permit_verified,
+                live_permit_allows_real_credentials=False,
+                real_credentials_required=False,
                 environ=os.environ,
             )
         )
@@ -1340,6 +1476,7 @@ def _validate_live_transport_probe_guard(*, profile_id: str, manual_real_sat: bo
 
     typer.echo("warning=live_sat_transport_probe_guards_passed", err=True)
     typer.echo("sat_real_execution=transport_probe_enabled", err=True)
+    return permit_verified
 
 
 def _live_smoke_doctor_ok(profile: setup_flow.LocalProfile) -> bool:
@@ -1417,12 +1554,17 @@ def _run_live_auth_smoke(profile_id: str) -> LiveSmokeCliResult:
     return LiveSmokeCliResult(result=result.result, auth=result.auth, request=result.request, verification=result.verification)
 
 
-def _run_live_metadata_smoke(profile_id: str, query: DownloadQuery) -> LiveSmokeCliResult:
+def _run_live_metadata_smoke(
+    profile_id: str,
+    query: DownloadQuery,
+    *,
+    live_permit_verified: bool = False,
+) -> LiveSmokeCliResult:
     profile = _load_download_profile(profile_id)
     adapter = SatLiveMetadataSmokeAdapter(
         profile=profile,
         provider=_setup_provider(profile_id),
-        transport=_live_smoke_transport(),
+        transport=_live_smoke_transport(live_permit_verified=live_permit_verified),
     )
     result = adapter.metadata_smoke(query)
     return LiveSmokeCliResult(result=result.result, auth=result.auth, request=result.request, verification=result.verification)
@@ -1436,7 +1578,7 @@ def _run_transport_probe() -> tuple[SatProbeResult, ...]:
     return run_sat_transport_probe()
 
 
-def _live_smoke_transport() -> GuardedSoapHttpTransport:
+def _live_smoke_transport(*, live_permit_verified: bool = False) -> GuardedSoapHttpTransport:
     return GuardedSoapHttpTransport(
         guard_input_factory=lambda: LiveSatGuardInput(
             manual_real_sat=True,
@@ -1449,6 +1591,9 @@ def _live_smoke_transport() -> GuardedSoapHttpTransport:
             repo_clean=True,
             metadata_only=True,
             range_within_limit=True,
+            live_permit_verified=live_permit_verified,
+            live_permit_allows_real_credentials=live_permit_verified,
+            real_credentials_required=True,
             environ=os.environ,
         )
     )

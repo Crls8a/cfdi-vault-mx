@@ -88,6 +88,9 @@ class LiveSatGuardInput:
     repo_clean: bool = False
     metadata_only: bool = False
     range_within_limit: bool = False
+    live_permit_verified: bool = False
+    live_permit_allows_real_credentials: bool = False
+    real_credentials_required: bool = True
     environ: Mapping[str, str] = field(default_factory=lambda: os.environ)
 
 
@@ -97,19 +100,24 @@ def validate_live_sat_guard(input: LiveSatGuardInput) -> None:
     reasons: list[str] = []
     if _is_truthy(input.environ.get("CI")):
         reasons.append("ci-enabled")
-    if input.environ.get("CFDI_VAULT_ALLOW_REAL_SAT") != "1":
+    if input.environ.get("CFDI_VAULT_ALLOW_REAL_SAT") != "1" and not input.live_permit_verified:
         reasons.append("missing-explicit-real-sat-env")
-    if input.environ.get("CFDI_VAULT_ALLOW_REAL_CREDENTIALS") != "1":
+    if (
+        input.real_credentials_required
+        and input.environ.get("CFDI_VAULT_ALLOW_REAL_CREDENTIALS") != "1"
+        and not (input.live_permit_verified and input.live_permit_allows_real_credentials)
+    ):
         reasons.append("missing-explicit-real-credentials-env")
-    if not input.manual_real_sat:
-        reasons.append("missing-manual-real-sat-flag")
-    if not input.terminal_interactive:
-        reasons.append("non-interactive-terminal")
-    if not input.confirmation_verified:
-        reasons.append("missing-live-smoke-confirmation")
+    if not input.live_permit_verified:
+        if not input.manual_real_sat:
+            reasons.append("missing-manual-real-sat-flag")
+        if not input.terminal_interactive:
+            reasons.append("non-interactive-terminal")
+        if not input.confirmation_verified:
+            reasons.append("missing-live-smoke-confirmation")
     if not input.profile_ready:
         reasons.append("profile-not-ready")
-    if not input.credentials_ready:
+    if input.real_credentials_required and not input.credentials_ready:
         reasons.append("local-credentials-not-ready")
     if not input.doctor_ok:
         reasons.append("doctor-not-ok")
