@@ -15,6 +15,7 @@ def test_help_command_lists_recovery_flow() -> None:
     assert "download live-smoke" in result.output
     assert "sat auth-smoke" in result.output
     assert "sat diagnose-live" in result.output
+    assert "sat probe-transport" in result.output
     assert "Command catalog" in result.output
 
 
@@ -47,6 +48,7 @@ def test_cli_subcommand_help_builds_for_setup_and_worker() -> None:
         ["download", "live-smoke", "--help"],
         ["sat", "auth-smoke", "--help"],
         ["sat", "diagnose-live", "--help"],
+        ["sat", "probe-transport", "--help"],
         ["worker", "run", "--help"],
     ):
         result = CliRunner().invoke(app, args)
