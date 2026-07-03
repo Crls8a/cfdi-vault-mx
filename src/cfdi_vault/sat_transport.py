@@ -25,6 +25,14 @@ class SoapTransportRequest:
     body: bytes
     headers: Mapping[str, str] = field(default_factory=dict)
     timeout_seconds: float | None = None
+    tls_verify: bool = True
+    client_tls_certificate: object | None = None
+
+    def __post_init__(self) -> None:
+        if self.tls_verify is not True:
+            raise ValueError("tls-verification-required")
+        if self.client_tls_certificate is not None:
+            raise ValueError("client-tls-certificate-not-supported")
 
     def __repr__(self) -> str:
         return (
@@ -32,7 +40,9 @@ class SoapTransportRequest:
             f"endpoint={_redact_endpoint(self.endpoint)!r}, "
             f"headers={_redact_headers(self.headers)!r}, "
             f"body=<redacted {len(self.body)} bytes>, "
-            f"timeout_seconds={self.timeout_seconds!r})"
+            f"timeout_seconds={self.timeout_seconds!r}, "
+            "tls_verify=True, "
+            "client_tls_certificate=None)"
         )
 
 

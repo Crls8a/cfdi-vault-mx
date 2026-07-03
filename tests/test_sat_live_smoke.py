@@ -37,6 +37,27 @@ def test_metadata_smoke_uses_real_adapter_shape_without_package_download(tmp_pat
     assert b"VerificaSolicitudDescarga" in transport.requests[2].body
     assert "SYNTHETIC_TOKEN" not in repr(transport.requests[1])
     assert "SYN-REQ-001" not in repr(transport.requests[2])
+
+
+def test_efirma_material_stays_out_of_tls_client_transport(tmp_path: Path) -> None:
+    transport = FakeSoapTransport([SoapTransportResponse(200, body=_soap("<sat:AutenticaResult>SYNTHETIC_TOKEN</sat:AutenticaResult>"))])
+    material = _material()
+
+    SatLiveMetadataSmokeAdapter(
+        profile=_profile(tmp_path),
+        provider=DummySecretProvider(),
+        transport=transport,
+        material=material,
+    ).auth_smoke()
+
+    request = transport.requests[0]
+    assert request.tls_verify is True
+    assert request.client_tls_certificate is None
+    assert request.timeout_seconds == 60
+    assert b"BinarySecurityToken" in request.body
+    assert material.certificate_pem.decode("ascii") not in repr(request)
+
+
 def test_transport_failure_is_redacted(tmp_path: Path) -> None:
     class BrokenTransport:
         def send(self, _request: object) -> object:
