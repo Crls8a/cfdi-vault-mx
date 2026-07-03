@@ -37,6 +37,7 @@ from cfdi_vault.service import ImportBatchResult, ImportRecord, SummaryRow, Vaul
 from cfdi_vault.sat_orchestration import DownloadRequestOrchestrator
 from cfdi_vault.sat_simulator import FakeSatScenario, FakeSatScenarioClient
 from cfdi_vault.sat_live_smoke import DIAGNOSTIC_STAGES, SatLiveMetadataSmokeAdapter, SatLiveSmokeError
+from cfdi_vault.sat_auth_contract import AuthWsdlContract, fetch_auth_wsdl_contract
 from cfdi_vault.sat_auth_matrix_probe import SatAuthMatrixProbeResult, run_sat_auth_matrix_probe
 from cfdi_vault.sat_auth_post_probe import SatAuthPostProbeResult, run_sat_auth_post_probe
 from cfdi_vault.sat_transport_probe import SatProbeResult, run_sat_transport_probe
@@ -184,6 +185,12 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "purpose": "Validate live SAT authentication smoke gates before any real SAT auth attempt.",
         "when": "Run only on the operator machine after explicit human approval.",
         "example": "cfdi-vault sat auth-smoke --profile default --manual-real-sat",
+    },
+    {
+        "command": "sat inspect-auth-contract",
+        "purpose": "Fetch the public SAT auth WSDL and print only a redacted contract summary.",
+        "when": "Run before auth envelope compatibility work; never stores or prints raw WSDL.",
+        "example": "cfdi-vault sat inspect-auth-contract",
     },
     {
         "command": "sat diagnose-live",
@@ -770,6 +777,19 @@ def sat_auth_smoke(
         _print_live_adapter_error(exc)
         raise typer.Exit(code=1) from exc
     _print_live_smoke_result(profile_id=profile, kind="auth", direction="n/a", result=result)
+
+
+@sat_app.command("inspect-auth-contract")
+def sat_inspect_auth_contract() -> None:
+    """Inspect public SAT auth WSDL without printing raw WSDL."""
+
+    try:
+        contract = fetch_auth_wsdl_contract()
+    except ValueError as exc:
+        typer.echo("error=auth_contract_unavailable", err=True)
+        typer.echo(f"reason={exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    _print_auth_contract(contract)
 
 
 @sat_app.command("diagnose-live")
@@ -1790,6 +1810,23 @@ def _print_live_smoke_result(
     typer.echo("xml_downloaded=no")
     typer.echo("zip_downloaded=no")
     typer.echo("recurrent_automation=no")
+
+
+def _print_auth_contract(contract: AuthWsdlContract) -> None:
+    typer.echo("mode=auth-contract")
+    typer.echo(f"operation={contract.operation_name}")
+    typer.echo(f"soap_action={contract.soap_action}")
+    typer.echo(f"soap_version={contract.soap_version}")
+    typer.echo(f"binding_transport={contract.binding_transport}")
+    typer.echo(f"target_namespace={contract.target_namespace}")
+    typer.echo(f"endpoint_scheme={contract.endpoint_scheme}")
+    typer.echo(f"endpoint_host={contract.endpoint_host}")
+    typer.echo(f"endpoint_port={contract.endpoint_port}")
+    typer.echo(f"endpoint_path={contract.endpoint_path}")
+    typer.echo(f"expected_action_uri={contract.expected_action_uri}")
+    typer.echo(f"wsdl_size={contract.wsdl_size}")
+    typer.echo("raw_wsdl_printed=no")
+    typer.echo("raw_headers_printed=no")
 
 
 def _print_live_diagnose_result(

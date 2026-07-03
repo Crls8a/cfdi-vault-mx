@@ -14,6 +14,7 @@ def test_help_command_lists_recovery_flow() -> None:
     assert "download status" in result.output
     assert "download live-smoke" in result.output
     assert "sat auth-smoke" in result.output
+    assert "sat inspect-auth-contract" in result.output
     assert "sat diagnose-live" in result.output
     assert "sat probe-transport" in result.output
     assert "sat probe-auth-matrix" in result.output
@@ -48,6 +49,7 @@ def test_cli_subcommand_help_builds_for_setup_and_worker() -> None:
         ["download", "status", "--help"],
         ["download", "live-smoke", "--help"],
         ["sat", "auth-smoke", "--help"],
+        ["sat", "inspect-auth-contract", "--help"],
         ["sat", "diagnose-live", "--help"],
         ["sat", "probe-transport", "--help"],
         ["sat", "probe-auth-matrix", "--help"],
