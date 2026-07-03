@@ -5,16 +5,17 @@ This repository is split into two documentation areas: the current local-first C
 ## Quick path
 
 1. Start with [the main README](../README.md) to run the current CLI.
-2. Read [Architecture](architecture.md) to understand the existing local parser/storage boundaries.
-3. Read [Security model](security-model.md) before touching real CFDI data or certificates.
-4. Read [Foundation-first plan](foundation/README.md) before adding more recovery features.
-5. Read [Agile planning workspace](planning/README.md) and [Lightweight governance policy](planning/governance.md) before assigning sprint work.
-6. Read [Safe RFC profile configuration](config/README.md) before adding local profile settings.
-7. Read [Local RFC setup and credential intake](setup.md) before changing AppData setup or credential import.
-8. Read [First-run onboarding](installer/onboarding.md) before changing installer or profile setup.
-9. Read [Idempotent local storage](storage-design.md) before writing package, metadata, or XML evidence.
-10. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
-11. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
+2. Read [Developer CLI invocation](devx.md) before documenting local commands or `PYTHONPATH=src` fallbacks.
+3. Read [Architecture](architecture.md) to understand the existing local parser/storage boundaries.
+4. Read [Security model](security-model.md) before touching real CFDI data or certificates.
+5. Read [Foundation-first plan](foundation/README.md) before adding more recovery features.
+6. Read [Agile planning workspace](planning/README.md) and [Lightweight governance policy](planning/governance.md) before assigning sprint work.
+7. Read [Safe RFC profile configuration](config/README.md) before adding local profile settings.
+8. Read [Local RFC setup and credential intake](setup.md) before changing AppData setup or credential import.
+9. Read [First-run onboarding](installer/onboarding.md) before changing installer or profile setup.
+10. Read [Idempotent local storage](storage-design.md) before writing package, metadata, or XML evidence.
+11. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
+12. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
 
 ## Documentation map
 
@@ -22,6 +23,7 @@ This repository is split into two documentation areas: the current local-first C
 |---|---|---|
 | Current repo | [Architecture](architecture.md) | Existing CLI, parser, service, and SQLite model. |
 | Current repo | [Case study](case-study.md) | Why phase one is local-first and synthetic-only. |
+| Current repo | [Developer CLI invocation](devx.md) | Editable install path, installed CLI usage, and dev-only `PYTHONPATH=src` fallback. |
 | Current repo | [Security model](security-model.md) | Current safety boundaries and forbidden data. |
 | Current repo | [Fixture and fake-data policy](testing/fixture-policy.md) | Allowed fixture categories, fake RFC strategy, and no-real-CFDI rules. |
 | Current repo | [Safe RFC profile configuration](config/README.md) | Local multi-RFC config schema and credential-reference rules. |

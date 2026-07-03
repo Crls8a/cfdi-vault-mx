@@ -16,6 +16,8 @@ Live SAT SOAP access is still intentionally disabled until signing, credential c
    python -m pip install -e ".[dev]"
    ```
 
+   This is the recommended developer path. `PYTHONPATH=src` is only a temporary source-tree debugging fallback; see `docs/devx.md`.
+
 3. Create or validate a local profile:
 
    ```bash
