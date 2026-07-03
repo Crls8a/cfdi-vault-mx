@@ -55,6 +55,22 @@ def test_fake_transport_records_requests_and_returns_synthetic_response_without_
     assert transport.requests[0].endpoint == SAFE_ENDPOINT
 
 
+def test_transport_request_rejects_disabled_tls_verification_and_client_cert() -> None:
+    with pytest.raises(ValueError, match="tls-verification-required"):
+        SoapTransportRequest(
+            endpoint=SAFE_ENDPOINT,
+            body=SAFE_BODY,
+            tls_verify=False,
+        )
+
+    with pytest.raises(ValueError, match="client-tls-certificate-not-supported"):
+        SoapTransportRequest(
+            endpoint=SAFE_ENDPOINT,
+            body=SAFE_BODY,
+            client_tls_certificate=object(),
+        )
+
+
 @pytest.mark.parametrize(
     ("guard", "reason"),
     [
