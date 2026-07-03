@@ -18,6 +18,7 @@ from lxml import etree
 from signxml import XMLSigner, methods
 from signxml.algorithms import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 from cfdi_vault.domain import DownloadDirection, DownloadQuery
+from cfdi_vault.sat_auth_endpoints import DEFAULT_AUTH_ENDPOINT, resolve_auth_endpoint
 from cfdi_vault.sat_contract import SatOutcomeAction
 from cfdi_vault.sat_soap_parse import (
     SatSoapParseError,
@@ -40,7 +41,6 @@ BASE64_ENCODING_TYPE = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-
 AUTH_ACTION = "http://DescargaMasivaTerceros.gob.mx/IAutenticacion/Autentica"
 REQUEST_ACTION = "http://DescargaMasivaTerceros.sat.gob.mx/ISolicitaDescargaService/SolicitaDescarga"
 VERIFY_ACTION = "http://DescargaMasivaTerceros.sat.gob.mx/IVerificaSolicitudDescargaService/VerificaSolicitudDescarga"
-DEFAULT_AUTH_ENDPOINT = "https://cfdiau.sat.gob.mx/nidp/wsfed/ep?id=SATx509Custom"
 DEFAULT_REQUEST_ENDPOINT = "https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/SolicitaDescargaService.svc"
 DEFAULT_VERIFY_ENDPOINT = "https://cfdidescargamasivaverificacion.clouda.sat.gob.mx/VerificaSolicitudDescargaService.svc"
 SAFE_LIVE_ERROR_HINT = "inspect the redacted diagnostic stage; do not copy raw SOAP or local credential data"
@@ -148,7 +148,7 @@ class SatLiveMetadataSmokeAdapter:
         self._transport = transport
         self._material = material
         self._endpoints = endpoints or SatLiveSmokeEndpoints(
-            os.getenv("CFDI_VAULT_SAT_AUTH_ENDPOINT", DEFAULT_AUTH_ENDPOINT),
+            resolve_auth_endpoint(os.environ),
             os.getenv("CFDI_VAULT_SAT_REQUEST_ENDPOINT", DEFAULT_REQUEST_ENDPOINT),
             os.getenv("CFDI_VAULT_SAT_VERIFY_ENDPOINT", DEFAULT_VERIFY_ENDPOINT),
         )

@@ -8,11 +8,12 @@ from dataclasses import dataclass
 from typing import Protocol
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
 from uuid import uuid4
 
+from cfdi_vault.sat_auth_endpoints import RedactedEndpoint, auth_wsdl_endpoint, describe_endpoint, resolve_auth_endpoint
+
 DEFAULT_PROBE_ENDPOINTS = (
-    ("auth_service", "https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/Autenticacion/Autenticacion.svc"),
+    ("auth_service", resolve_auth_endpoint()),
     ("metadata_request", "https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/SolicitaDescargaService.svc"),
     ("verify", "https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/VerificaSolicitudDescargaService.svc"),
     ("package_download", "https://cfdidescargamasiva.clouda.sat.gob.mx/DescargaMasivaService.svc"),
@@ -31,6 +32,10 @@ class SatProbeResult:
     payload_size: int | None = None
     duration_ms: int = 0
     correlation_id: str = ""
+    scheme: str = ""
+    port: int = 443
+    path: str = ""
+    query_present: bool = False
 
 
 @dataclass(frozen=True)
@@ -77,28 +82,29 @@ def run_sat_transport_probe(
     probe_client = client or DefaultSatTransportProbeClient()
     results: list[SatProbeResult] = []
     for endpoint, url in DEFAULT_PROBE_ENDPOINTS:
-        host = urlsplit(url).hostname or "unknown"
-        results.append(_probe_call(lambda: probe_client.resolve(host), endpoint, "dns", host))
-        results.append(_probe_call(lambda: probe_client.tls_handshake(host, 443, timeout_seconds), endpoint, "tls", host))
-        results.append(_http_probe(probe_client, endpoint, "http_get", host, url, timeout_seconds, wsdl=False))
-        results.append(_http_probe(probe_client, endpoint, "wsdl_get", host, f"{url}?singleWsdl", timeout_seconds, wsdl=True))
+        endpoint_info = describe_endpoint(endpoint, url)
+        results.append(_probe_call(lambda: probe_client.resolve(endpoint_info.host), endpoint_info, "dns"))
+        results.append(
+            _probe_call(lambda: probe_client.tls_handshake(endpoint_info.host, endpoint_info.port, timeout_seconds), endpoint_info, "tls")
+        )
+        results.append(_http_probe(probe_client, endpoint_info, "http_get", url, timeout_seconds, wsdl=False))
+        results.append(_http_probe(probe_client, endpoint_info, "wsdl_get", auth_wsdl_endpoint(url), timeout_seconds, wsdl=True))
     return tuple(results)
 
 
-def _probe_call(action: object, endpoint: str, check: str, host: str) -> SatProbeResult:
+def _probe_call(action: object, endpoint_info: RedactedEndpoint, check: str) -> SatProbeResult:
     started = time.perf_counter()
     try:
         action()  # type: ignore[operator]
     except Exception as exc:
-        return _result(endpoint, check, host, _classify_probe_exception(exc), _elapsed_ms(started))
-    return _result(endpoint, check, host, "ok", _elapsed_ms(started))
+        return _result(endpoint_info, check, _classify_probe_exception(exc), _elapsed_ms(started))
+    return _result(endpoint_info, check, "ok", _elapsed_ms(started))
 
 
 def _http_probe(
     client: SatTransportProbeClient,
-    endpoint: str,
+    endpoint_info: RedactedEndpoint,
     check: str,
-    host: str,
     url: str,
     timeout_seconds: float,
     *,
@@ -108,26 +114,25 @@ def _http_probe(
     try:
         response = client.get(url, timeout_seconds)
     except Exception as exc:
-        return _result(endpoint, check, host, _classify_probe_exception(exc), _elapsed_ms(started))
+        return _result(endpoint_info, check, _classify_probe_exception(exc), _elapsed_ms(started))
     if not 200 <= response.status_code < 400:
-        return _result(endpoint, check, host, "wsdl_unavailable" if wsdl else "http_status_error", _elapsed_ms(started), response)
+        return _result(endpoint_info, check, "wsdl_unavailable" if wsdl else "http_status_error", _elapsed_ms(started), response)
     if wsdl and b"definitions" not in response.body.lower() and b"wsdl" not in response.body.lower():
-        return _result(endpoint, check, host, "unexpected_response", _elapsed_ms(started), response)
-    return _result(endpoint, check, host, "ok", _elapsed_ms(started), response)
+        return _result(endpoint_info, check, "unexpected_response", _elapsed_ms(started), response)
+    return _result(endpoint_info, check, "ok", _elapsed_ms(started), response)
 
 
 def _result(
-    endpoint: str,
+    endpoint_info: RedactedEndpoint,
     check: str,
-    host: str,
     error_kind: str,
     duration_ms: int,
     response: ProbeHttpResponse | None = None,
 ) -> SatProbeResult:
     return SatProbeResult(
-        endpoint=endpoint,
+        endpoint=endpoint_info.logical_endpoint,
         check=check,
-        host=host,
+        host=endpoint_info.host,
         status="ok" if error_kind == "ok" else "failed",
         error_kind=error_kind,
         safe_hint=_safe_hint(error_kind),
@@ -135,6 +140,10 @@ def _result(
         payload_size=len(response.body) if response else None,
         duration_ms=duration_ms,
         correlation_id=f"probe-{uuid4().hex[:12]}",
+        scheme=endpoint_info.scheme,
+        port=endpoint_info.port,
+        path=endpoint_info.path,
+        query_present=endpoint_info.query_present,
     )
 
 
