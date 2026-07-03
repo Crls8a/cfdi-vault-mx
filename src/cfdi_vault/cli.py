@@ -672,7 +672,7 @@ def sat_auth_smoke(
         typer.echo("error=live_adapter_unavailable", err=True)
         raise typer.Exit(code=1) from exc
     except SatLiveSmokeError as exc:
-        typer.echo("error=live_adapter_failed", err=True)
+        _print_live_adapter_error(exc)
         raise typer.Exit(code=1) from exc
     _print_live_smoke_result(profile_id=profile, kind="auth", direction="n/a", result=result)
 
@@ -899,7 +899,7 @@ def download_live_smoke(
         typer.echo("error=live_adapter_unavailable", err=True)
         raise typer.Exit(code=1) from exc
     except SatLiveSmokeError as exc:
-        typer.echo("error=live_adapter_failed", err=True)
+        _print_live_adapter_error(exc)
         raise typer.Exit(code=1) from exc
     _print_live_smoke_result(profile_id=profile, kind=query.request_type.value, direction=query.direction.value, result=result)
 
@@ -1346,6 +1346,26 @@ def _print_live_smoke_result(
     typer.echo("xml_downloaded=no")
     typer.echo("zip_downloaded=no")
     typer.echo("recurrent_automation=no")
+
+
+def _print_live_adapter_error(exc: SatLiveSmokeError) -> None:
+    diagnostic = exc.diagnostic
+    typer.echo("error=live_adapter_failed", err=True)
+    typer.echo(f"failed_stage={diagnostic.stage}", err=True)
+    typer.echo(f"error_kind={diagnostic.error_kind}", err=True)
+    typer.echo(f"safe_hint={diagnostic.safe_hint}", err=True)
+    typer.echo(f"correlation_id={diagnostic.correlation_id}", err=True)
+    for key, value in (
+        ("endpoint", diagnostic.endpoint),
+        ("http_status", diagnostic.http_status),
+        ("soap_fault_code", diagnostic.soap_fault_code),
+        ("sat_code", diagnostic.sat_code),
+        ("payload_size", diagnostic.payload_size),
+        ("envelope_sha256", diagnostic.envelope_sha256),
+        ("duration_ms", diagnostic.duration_ms),
+    ):
+        if value is not None:
+            typer.echo(f"{key}={value}", err=True)
 
 
 def _load_download_profile(profile_id: str) -> setup_flow.LocalProfile:

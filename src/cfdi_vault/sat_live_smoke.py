@@ -1,9 +1,13 @@
 """Guarded live SAT metadata-smoke adapter: auth/request/verify only, no package download."""
 from __future__ import annotations
 import base64
+import hashlib
 import os
+import socket
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from urllib.error import HTTPError, URLError
 from uuid import uuid4
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
@@ -37,8 +41,67 @@ VERIFY_ACTION = "http://DescargaMasivaTerceros.sat.gob.mx/IVerificaSolicitudDesc
 DEFAULT_AUTH_ENDPOINT = "https://cfdiau.sat.gob.mx/nidp/wsfed/ep?id=SATx509Custom"
 DEFAULT_REQUEST_ENDPOINT = "https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/SolicitaDescargaService.svc"
 DEFAULT_VERIFY_ENDPOINT = "https://cfdidescargamasivaverificacion.clouda.sat.gob.mx/VerificaSolicitudDescargaService.svc"
+SAFE_LIVE_ERROR_HINT = "inspect the redacted diagnostic stage; do not copy raw SOAP or local credential data"
+TRANSPORT_HINT = "check SOAPAction, content-type, logical endpoint, TLS, and SAT service availability"
+PARSE_HINT = "check SAT response shape with redacted diagnostics only"
+MATERIAL_HINT = "check local profile readiness and e.firma material without printing paths or values"
+BUILD_HINT = "check envelope construction and XML signature inputs without printing SOAP"
+DIAGNOSTIC_STAGES = frozenset(("preflight", "profile_load", "secret_resolve", "credential_load", "certificate_parse", "private_key_load", "xmlsig_sign", "auth_envelope_build", "auth_transport", "auth_response_parse", "token_extract", "metadata_request_build", "metadata_request_transport", "metadata_request_parse", "verify_request_build", "verify_transport", "verify_response_parse", "package_download", "package_process"))
+LIVE_ERROR_KINDS = frozenset(("guard_failed", "profile_not_ready", "secret_unavailable", "credential_load_failed", "certificate_parse_failed", "private_key_load_failed", "xmlsig_failed", "envelope_build_failed", "transport_tls_failed", "transport_timeout", "transport_http_error", "soap_fault", "token_missing", "token_parse_failed", "sat_status_error", "sat_duplicate_request", "sat_unauthorized", "sat_no_data", "sat_retryable", "sat_permanent", "unexpected_response", "redaction_failure", "unknown_live_adapter_failure"))
+@dataclass(frozen=True)
+class SatLiveDiagnosticEntry:
+    """One redacted live diagnostic stage result."""
+    stage: str
+    status: str
+    error_kind: str | None = None
+    safe_hint: str | None = None
+    duration_ms: int | None = None
+    endpoint: str | None = None
+    http_status: int | None = None
+    soap_fault_code: str | None = None
+    sat_code: str | None = None
+    payload_size: int | None = None
+    envelope_sha256: str | None = None
+    correlation_id: str | None = None
 class SatLiveSmokeError(RuntimeError):
     """Safe live smoke failure without credential, token, SOAP, RFC, path, or id detail."""
+    def __init__(
+        self,
+        message: str = "SAT live adapter failed",
+        *,
+        stage: str = "unknown",
+        error_kind: str = "unknown_live_adapter_failure",
+        safe_hint: str = SAFE_LIVE_ERROR_HINT,
+        endpoint: str | None = None,
+        http_status: int | None = None,
+        soap_fault_code: str | None = None,
+        sat_code: str | None = None,
+        payload_size: int | None = None,
+        envelope_sha256: str | None = None,
+        duration_ms: int | None = None,
+        correlation_id: str | None = None,
+    ) -> None:
+        self.diagnostic = SatLiveDiagnosticEntry(
+            stage=stage,
+            status="failed",
+            error_kind=error_kind,
+            safe_hint=safe_hint,
+            duration_ms=duration_ms,
+            endpoint=endpoint,
+            http_status=http_status,
+            soap_fault_code=soap_fault_code,
+            sat_code=sat_code,
+            payload_size=payload_size,
+            envelope_sha256=envelope_sha256,
+            correlation_id=correlation_id or _correlation_id(),
+        )
+        super().__init__(message)
+    @property
+    def failed_stage(self) -> str:
+        return self.diagnostic.stage
+    @property
+    def error_kind(self) -> str:
+        return self.diagnostic.error_kind or "unknown_live_adapter_failure"
 @dataclass(frozen=True, repr=False)
 class SatEfirmMaterial:
     private_key: object
@@ -57,6 +120,7 @@ class SatLiveSmokeSummary:
     auth: str
     request: str = "not_run"
     verification: str = "not_run"
+    diagnostics: tuple[SatLiveDiagnosticEntry, ...] = ()
 class SatLiveMetadataSmokeAdapter:
     def __init__(
         self,
@@ -96,39 +160,125 @@ class SatLiveMetadataSmokeAdapter:
             verification=verification.action.value,
         )
     def _authenticate(self) -> str:
-        body = _build_auth_envelope(self._load_material(), self._endpoints.auth)
-        response = self._send(self._endpoints.auth, AUTH_ACTION, body)
+        body = _build_stage(
+            "auth_envelope_build",
+            lambda: _build_auth_envelope(self._load_material(), self._endpoints.auth),
+        )
+        response = self._send(self._endpoints.auth, AUTH_ACTION, body, stage="auth_transport", endpoint_label="auth")
+        started = time.perf_counter()
         try:
             return parse_authentication_response(response).authorization
-        except (SatSoapParseError, ValueError):
-            raise SatLiveSmokeError("SAT authentication response could not be parsed") from None
+        except (SatSoapParseError, ValueError) as exc:
+            stage, kind = _auth_parse_failure(exc)
+            raise SatLiveSmokeError(
+                "SAT authentication response could not be parsed",
+                stage=stage,
+                error_kind=kind,
+                safe_hint=PARSE_HINT,
+                soap_fault_code=_soap_fault_code(response),
+                payload_size=len(response),
+                duration_ms=_elapsed_ms(started),
+            ) from None
     def _send_request(self, authorization: str, query: DownloadQuery):
-        body = _build_request_envelope(query, self._load_material())
-        response = self._send(self._endpoints.request, REQUEST_ACTION, body, authorization=authorization)
+        body = _build_stage("metadata_request_build", lambda: _build_request_envelope(query, self._load_material()))
+        response = self._send(
+            self._endpoints.request,
+            REQUEST_ACTION,
+            body,
+            authorization=authorization,
+            stage="metadata_request_transport",
+            endpoint_label="metadata_request",
+        )
+        started = time.perf_counter()
         try:
             return parse_download_request_response(response)
         except (SatSoapParseError, ValueError):
-            raise SatLiveSmokeError("SAT request response could not be parsed") from None
+            raise SatLiveSmokeError(
+                "SAT request response could not be parsed",
+                stage="metadata_request_parse",
+                error_kind=_response_error_kind(response),
+                safe_hint=PARSE_HINT,
+                soap_fault_code=_soap_fault_code(response),
+                payload_size=len(response),
+                duration_ms=_elapsed_ms(started),
+            ) from None
     def _send_verification(self, authorization: str, request_id: str):
-        body = _build_verify_envelope(request_id, self._profile.rfc, self._load_material())
-        response = self._send(self._endpoints.verify, VERIFY_ACTION, body, authorization=authorization)
+        body = _build_stage("verify_request_build", lambda: _build_verify_envelope(request_id, self._profile.rfc, self._load_material()))
+        response = self._send(
+            self._endpoints.verify,
+            VERIFY_ACTION,
+            body,
+            authorization=authorization,
+            stage="verify_transport",
+            endpoint_label="verify",
+        )
+        started = time.perf_counter()
         try:
             return parse_verification_response(response)
         except (SatSoapParseError, ValueError):
-            raise SatLiveSmokeError("SAT verification response could not be parsed") from None
-    def _send(self, endpoint: str, action: str, body: bytes, *, authorization: str | None = None) -> bytes:
+            raise SatLiveSmokeError(
+                "SAT verification response could not be parsed",
+                stage="verify_response_parse",
+                error_kind=_response_error_kind(response),
+                safe_hint=PARSE_HINT,
+                soap_fault_code=_soap_fault_code(response),
+                payload_size=len(response),
+                duration_ms=_elapsed_ms(started),
+            ) from None
+    def _send(
+        self,
+        endpoint: str,
+        action: str,
+        body: bytes,
+        *,
+        stage: str,
+        endpoint_label: str,
+        authorization: str | None = None,
+    ) -> bytes:
         headers = {
             "Content-Type": "text/xml;charset=UTF-8",
             "SOAPAction": f'"{action}"',
         }
         if authorization:
             headers["Authorization"] = _wrap_authorization(authorization)
+        started = time.perf_counter()
         try:
             response = self._transport.send(SoapTransportRequest(endpoint=endpoint, body=body, headers=headers, timeout_seconds=self._timeout_seconds))
-        except Exception:
-            raise SatLiveSmokeError("SAT transport failed") from None
+        except HTTPError as exc:
+            raise SatLiveSmokeError(
+                "SAT transport returned a non-success status",
+                stage=stage,
+                error_kind="transport_http_error",
+                safe_hint=TRANSPORT_HINT,
+                endpoint=endpoint_label,
+                http_status=exc.code,
+                payload_size=len(body),
+                envelope_sha256=_digest(body),
+                duration_ms=_elapsed_ms(started),
+            ) from None
+        except Exception as exc:
+            raise SatLiveSmokeError(
+                "SAT transport failed",
+                stage=stage,
+                error_kind=_classify_transport_exception(exc),
+                safe_hint=TRANSPORT_HINT,
+                endpoint=endpoint_label,
+                payload_size=len(body),
+                envelope_sha256=_digest(body),
+                duration_ms=_elapsed_ms(started),
+            ) from None
         if not 200 <= response.status_code < 300:
-            raise SatLiveSmokeError("SAT transport returned a non-success status")
+            raise SatLiveSmokeError(
+                "SAT transport returned a non-success status",
+                stage=stage,
+                error_kind="transport_http_error",
+                safe_hint=TRANSPORT_HINT,
+                endpoint=endpoint_label,
+                http_status=response.status_code,
+                payload_size=len(response.body),
+                envelope_sha256=_digest(body),
+                duration_ms=_elapsed_ms(started),
+            )
         return response.body
     def _load_material(self) -> SatEfirmMaterial:
         if self._material is None:
@@ -137,22 +287,61 @@ class SatLiveMetadataSmokeAdapter:
     @staticmethod
     def _require_metadata_only(query: DownloadQuery) -> None:
         if query.request_type.value != "metadata":
-            raise SatLiveSmokeError("live smoke requires metadata-only query")
+            raise SatLiveSmokeError(
+                "live smoke requires metadata-only query",
+                stage="preflight",
+                error_kind="guard_failed",
+                safe_hint="metadata-only live smoke is required",
+            )
 def load_sat_efirma_material(profile: LocalProfile, provider: ExistenceProvider) -> SatEfirmMaterial:
+    started = time.perf_counter()
     try:
         cert_bytes = profile.certificate_path.read_bytes()
         key_bytes = profile.private_key_path.read_bytes()
+    except OSError:
+        raise SatLiveSmokeError(
+            "local e.firma material could not be loaded",
+            stage="credential_load",
+            error_kind="credential_load_failed",
+            safe_hint=MATERIAL_HINT,
+            duration_ms=_elapsed_ms(started),
+        ) from None
+    started = time.perf_counter()
+    try:
         phrase = provider.resolve(
             CredentialReference(uri=profile.phrase_ref, kind=CredentialKind.PHRASE),
             purpose="sat-live-smoke",
         ).reveal()
-    except (OSError, CredentialProviderError):
-        raise SatLiveSmokeError("local e.firma material could not be loaded") from None
+    except CredentialProviderError:
+        raise SatLiveSmokeError(
+            "local e.firma material could not be loaded",
+            stage="secret_resolve",
+            error_kind="secret_unavailable",
+            safe_hint=MATERIAL_HINT,
+            duration_ms=_elapsed_ms(started),
+        ) from None
+    started = time.perf_counter()
     try:
         cert = _load_certificate(cert_bytes)
+    except (TypeError, ValueError):
+        raise SatLiveSmokeError(
+            "local e.firma certificate could not be parsed",
+            stage="certificate_parse",
+            error_kind="certificate_parse_failed",
+            safe_hint=MATERIAL_HINT,
+            duration_ms=_elapsed_ms(started),
+        ) from None
+    started = time.perf_counter()
+    try:
         private_key = _load_private_key(key_bytes, phrase.encode())
     except (TypeError, ValueError):
-        raise SatLiveSmokeError("local e.firma material could not be parsed") from None
+        raise SatLiveSmokeError(
+            "local e.firma private key could not be loaded",
+            stage="private_key_load",
+            error_kind="private_key_load_failed",
+            safe_hint=MATERIAL_HINT,
+            duration_ms=_elapsed_ms(started),
+        ) from None
     cert_der = cert.public_bytes(serialization.Encoding.DER)
     return SatEfirmMaterial(
         private_key=private_key,
@@ -249,3 +438,68 @@ def _wrap_authorization(authorization: str) -> str:
     if stripped.lower().startswith("wrap "):
         return stripped
     return 'WRAP {}="{}"'.format("access_" + "token", stripped)
+def _build_stage(stage: str, build: object) -> bytes:
+    started = time.perf_counter()
+    try:
+        return build()  # type: ignore[operator]
+    except SatLiveSmokeError:
+        raise
+    except Exception as exc:
+        kind = "xmlsig_failed" if _looks_like_signing_exception(exc) else "envelope_build_failed"
+        raise SatLiveSmokeError(
+            "SAT SOAP envelope could not be built",
+            stage=stage,
+            error_kind=kind,
+            safe_hint=BUILD_HINT,
+            duration_ms=_elapsed_ms(started),
+        ) from None
+def _classify_transport_exception(exc: BaseException) -> str:
+    names = _exception_names(exc)
+    if "timeout" in names or isinstance(exc, (TimeoutError, socket.timeout)):
+        return "transport_timeout"
+    if "ssl" in names or "tls" in names or "certificate" in names:
+        return "transport_tls_failed"
+    if isinstance(exc, URLError):
+        return "transport_timeout" if "timeout" in _exception_names(exc.reason) else "unknown_live_adapter_failure"
+    return "unknown_live_adapter_failure"
+def _auth_parse_failure(exc: BaseException) -> tuple[str, str]:
+    reason = str(exc).lower()
+    if "soap fault" in reason:
+        return "auth_response_parse", "soap_fault"
+    if "authorization is required" in reason:
+        return "token_extract", "token_missing"
+    return "auth_response_parse", "token_parse_failed"
+def _response_error_kind(response: bytes) -> str:
+    return "soap_fault" if _soap_fault_code(response) else "unexpected_response"
+def _soap_fault_code(response: bytes) -> str | None:
+    try:
+        root = etree.fromstring(response)
+    except etree.XMLSyntaxError:
+        return None
+    fault = next((item for item in root.iter() if etree.QName(item).localname == "Fault"), None)
+    if fault is None:
+        return None
+    for item in fault.iter():
+        local = etree.QName(item).localname
+        if local in {"faultcode", "Value"} and item.text and item.text.strip():
+            return _safe_code(item.text)
+    return "soap_fault"
+def _safe_code(value: str) -> str | None:
+    normalized = value.strip()[:64]
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-")
+    return normalized if normalized and all(character in allowed for character in normalized) else None
+def _digest(body: bytes) -> str:
+    return hashlib.sha256(body).hexdigest()
+def _elapsed_ms(started: float) -> int:
+    return max(0, round((time.perf_counter() - started) * 1000))
+def _correlation_id() -> str:
+    return f"diag-{uuid4().hex[:12]}"
+def _looks_like_signing_exception(exc: BaseException) -> bool:
+    return any(marker in _exception_names(exc) for marker in ("signxml", "xmlsig", "signature", "cryptography"))
+def _exception_names(exc: object) -> str:
+    parts: list[str] = []
+    for item in (exc, getattr(exc, "__cause__", None), getattr(exc, "__context__", None), getattr(exc, "reason", None)):
+        if item is not None:
+            item_type = type(item)
+            parts.extend((item_type.__module__.lower(), item_type.__name__.lower()))
+    return " ".join(parts)
