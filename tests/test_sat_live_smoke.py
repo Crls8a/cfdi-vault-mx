@@ -8,9 +8,10 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
+import pytest
 
 from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType
-from cfdi_vault.sat_live_smoke import SatEfirmMaterial, SatLiveMetadataSmokeAdapter, SatLiveSmokeEndpoints
+from cfdi_vault.sat_live_smoke import SatEfirmMaterial, SatLiveMetadataSmokeAdapter, SatLiveSmokeEndpoints, SatLiveSmokeError
 from cfdi_vault.sat_transport import FakeSoapTransport, SoapTransportResponse
 from cfdi_vault.secrets import DummySecretProvider
 from cfdi_vault.setup_core import CredentialMode, LocalProfile, LocalProfileStatus
@@ -36,6 +37,14 @@ def test_metadata_smoke_uses_real_adapter_shape_without_package_download(tmp_pat
     assert b"VerificaSolicitudDescarga" in transport.requests[2].body
     assert "SYNTHETIC_TOKEN" not in repr(transport.requests[1])
     assert "SYN-REQ-001" not in repr(transport.requests[2])
+def test_transport_failure_is_redacted(tmp_path: Path) -> None:
+    class BrokenTransport:
+        def send(self, _request: object) -> object:
+            raise RuntimeError("raw transport detail")
+    adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=BrokenTransport(), material=_material())
+    with pytest.raises(SatLiveSmokeError, match="SAT transport failed") as exc:
+        adapter.auth_smoke()
+    assert "raw transport detail" not in str(exc.value)
 
 
 def _material() -> SatEfirmMaterial:
