@@ -3,10 +3,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
+from cfdi_vault import cli as cli_module
 from cfdi_vault import setup as setup_flow
 from cfdi_vault.cli import app
+from cfdi_vault.secrets import DummySecretProvider
 
 
 def test_download_plan_prints_safe_plan_and_criteria_hash(tmp_path: Path) -> None:
@@ -402,7 +405,142 @@ def test_download_sync_live_option_is_rejected_without_running(tmp_path: Path) -
     assert not paths.storage_root.joinpath("db", "recovery.sqlite3").exists()
 
 
-def _write_setup_profile(appdata_root: Path, *, profile_id: str = "dummy-profile") -> setup_flow.AppDataPaths:
+@pytest.mark.parametrize(
+    ("args", "env_overrides", "interactive", "checkout", "doctor_ok", "reason"),
+    [
+        ([], {}, True, (True, True), True, "missing-manual-real-sat-flag"),
+        (["--manual-real-sat"], {"CFDI_VAULT_ALLOW_REAL_SAT": None}, True, (True, True), True, "missing-explicit-real-sat-env"),
+        (
+            ["--manual-real-sat"],
+            {"CFDI_VAULT_ALLOW_REAL_CREDENTIALS": None},
+            True,
+            (True, True),
+            True,
+            "missing-explicit-real-credentials-env",
+        ),
+        (["--manual-real-sat"], {"CI": "true"}, True, (True, True), True, "ci-enabled"),
+        (["--manual-real-sat"], {}, False, (True, True), True, "non-interactive-terminal"),
+        (["--manual-real-sat", "--kind", "cfdi"], {}, True, (True, True), True, "metadata-only-required"),
+        (["--manual-real-sat", "--to", "2024-01-02"], {}, True, (True, True), True, "range-too-wide"),
+        (["--manual-real-sat"], {}, True, (False, True), True, "repo-dirty"),
+        (["--manual-real-sat"], {}, True, (True, False), True, "scanner-not-passed"),
+        (["--manual-real-sat"], {}, True, (True, True), False, "doctor-not-ok"),
+    ],
+)
+def test_download_live_smoke_aborts_before_adapter_for_guard_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    args: list[str],
+    env_overrides: dict[str, str | None],
+    interactive: bool,
+    checkout: tuple[bool, bool],
+    doctor_ok: bool,
+    reason: str,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    _write_ready_setup_profile(appdata_root)
+    _patch_live_smoke_dependencies(monkeypatch, checkout=checkout, interactive=interactive, doctor_ok=doctor_ok)
+    calls: list[str] = []
+    monkeypatch.setattr(cli_module, "_run_live_metadata_smoke", lambda profile_id, query: calls.append(profile_id))
+
+    result = CliRunner().invoke(
+        app,
+        _live_smoke_args(args),
+        env=_live_smoke_env(appdata_root, env_overrides),
+        input=f"{cli_module.LIVE_SMOKE_CONFIRMATION}\n",
+    )
+
+    assert result.exit_code == 1
+    assert "error=live_sat_guard_denied" in result.output
+    assert f"reason={reason}" in result.output
+    assert calls == []
+    _assert_no_profile_secrets_or_paths(result.output, appdata_root)
+
+
+def test_download_live_smoke_fake_adapter_happy_path_is_redacted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    _write_ready_setup_profile(appdata_root)
+    _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=True, doctor_ok=True)
+    monkeypatch.setattr(
+        cli_module,
+        "_run_live_metadata_smoke",
+        lambda profile_id, query: cli_module.LiveSmokeCliResult(
+            result="synthetic-ok",
+            auth="attempted",
+            request="metadata-submitted",
+            verification="skipped",
+        ),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        _live_smoke_args(["--manual-real-sat"]),
+        env=_live_smoke_env(appdata_root, {}),
+        input=f"{cli_module.LIVE_SMOKE_CONFIRMATION}\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    lines = _key_value_lines(result.output)
+    assert lines["mode"] == "live-smoke"
+    assert lines["profile"] == "dummy-profile"
+    assert lines["kind"] == "metadata"
+    assert lines["direction"] == "received"
+    assert lines["will_submit"] == "false"
+    assert lines["result"] == "synthetic-ok"
+    assert lines["auth"] == "attempted"
+    assert lines["request"] == "metadata-submitted"
+    assert lines["xml_downloaded"] == "no"
+    assert lines["zip_downloaded"] == "no"
+    assert "request_id=" not in result.output
+    _assert_no_profile_secrets_or_paths(result.output, appdata_root)
+
+
+def test_sat_auth_smoke_requires_same_manual_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    _write_ready_setup_profile(appdata_root)
+    _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=True, doctor_ok=True)
+    monkeypatch.setattr(
+        cli_module,
+        "_run_live_auth_smoke",
+        lambda profile_id: cli_module.LiveSmokeCliResult(result="synthetic-auth-ok", auth="attempted"),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["sat", "auth-smoke", "--profile", "dummy-profile", "--manual-real-sat"],
+        env=_live_smoke_env(appdata_root, {}),
+        input=f"{cli_module.LIVE_SMOKE_CONFIRMATION}\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    lines = _key_value_lines(result.output)
+    assert lines["mode"] == "live-smoke"
+    assert lines["kind"] == "auth"
+    assert lines["result"] == "synthetic-auth-ok"
+    _assert_no_profile_secrets_or_paths(result.output, appdata_root)
+
+
+def test_live_smoke_checkout_guard_fails_closed_outside_git_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    assert cli_module._checkout_guard_status() == (False, False)
+
+
+def _write_setup_profile(
+    appdata_root: Path,
+    *,
+    profile_id: str = "dummy-profile",
+    phrase_ref: str | None = None,
+) -> setup_flow.AppDataPaths:
     paths = setup_flow.build_profile_paths(profile_id, env={"LOCALAPPDATA": str(appdata_root)})
     profile = setup_flow.LocalProfile(
         profile_id=profile_id,
@@ -411,12 +549,79 @@ def _write_setup_profile(appdata_root: Path, *, profile_id: str = "dummy-profile
         credential_mode=setup_flow.CredentialMode.COPIED,
         certificate_path=paths.credentials_dir / "certificate.cer",
         private_key_path=paths.credentials_dir / "private-key.key",
-        phrase_ref=setup_flow.default_phrase_reference(profile_id),
+        phrase_ref=phrase_ref or setup_flow.default_phrase_reference(profile_id),
         status=setup_flow.LocalProfileStatus.READY,
         certificate_fingerprint="a" * 64,
     )
     setup_flow.write_profile(profile, paths.profile_json)
     return paths
+
+
+def _write_ready_setup_profile(appdata_root: Path, *, profile_id: str = "dummy-profile") -> setup_flow.AppDataPaths:
+    paths = _write_setup_profile(appdata_root, profile_id=profile_id, phrase_ref=_dummy_phrase_ref(profile_id))
+    paths.credentials_dir.mkdir(parents=True, exist_ok=True)
+    paths.storage_root.mkdir(parents=True, exist_ok=True)
+    paths.credentials_dir.joinpath("certificate.cer").write_text("synthetic certificate", encoding="utf-8")
+    paths.credentials_dir.joinpath("private-key.key").write_text("synthetic private key", encoding="utf-8")
+    return paths
+
+
+def _patch_live_smoke_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    checkout: tuple[bool, bool],
+    interactive: bool,
+    doctor_ok: bool,
+) -> None:
+    monkeypatch.setattr(cli_module, "_checkout_guard_status", lambda: checkout)
+    monkeypatch.setattr(cli_module, "_terminal_is_interactive", lambda: interactive)
+    monkeypatch.setattr(cli_module, "_live_smoke_doctor_ok", lambda profile: doctor_ok)
+    monkeypatch.setattr(
+        cli_module,
+        "_setup_provider",
+        lambda profile_id: DummySecretProvider({_dummy_phrase_ref(profile_id): "synthetic phrase"}),
+    )
+
+
+def _live_smoke_args(overrides: list[str]) -> list[str]:
+    args = [
+        "download",
+        "live-smoke",
+        "--profile",
+        "dummy-profile",
+        "--from",
+        "2024-01-01",
+        "--to",
+        "2024-01-01",
+        "--kind",
+        "metadata",
+        "--direction",
+        "received",
+    ]
+    for option in ("--kind", "--to"):
+        if option in overrides:
+            index = args.index(option)
+            del args[index : index + 2]
+    return args + overrides
+
+
+def _live_smoke_env(appdata_root: Path, overrides: dict[str, str | None]) -> dict[str, str]:
+    env = {
+        "LOCALAPPDATA": str(appdata_root),
+        "CI": "",
+        "CFDI_VAULT_ALLOW_REAL_SAT": "1",
+        "CFDI_VAULT_ALLOW_REAL_CREDENTIALS": "1",
+    }
+    for key, value in overrides.items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
+    return env
+
+
+def _dummy_phrase_ref(profile_id: str) -> str:
+    return f"local-dev-dummy://cfdi-vault/setup/{profile_id}/private-key-phrase"
 
 
 def _key_value_lines(output: str) -> dict[str, str]:
@@ -429,6 +634,7 @@ def _assert_no_profile_secrets_or_paths(output: str, appdata_root: Path) -> None
     assert "certificate.cer" not in output
     assert "private-key.key" not in output
     assert "windows-credential-manager://" not in output
+    assert "local-dev-dummy://" not in output
 
 
 def _assert_no_download_status_leaks(output: str, appdata_root: Path) -> None:

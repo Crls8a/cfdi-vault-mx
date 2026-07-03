@@ -28,9 +28,15 @@ def _request() -> SoapTransportRequest:
 def _passing_guard() -> LiveSatGuardInput:
     return LiveSatGuardInput(
         manual_real_sat=True,
+        terminal_interactive=True,
+        confirmation_verified=True,
         profile_ready=True,
+        credentials_ready=True,
+        doctor_ok=True,
         scanner_passed=True,
         repo_clean=True,
+        metadata_only=True,
+        range_within_limit=True,
         environ={
             "CFDI_VAULT_ALLOW_REAL_SAT": "1",
             "CFDI_VAULT_ALLOW_REAL_CREDENTIALS": "1",

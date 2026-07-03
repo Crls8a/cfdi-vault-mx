@@ -28,6 +28,28 @@ Any future live command must require all three explicit operator choices:
 
 These gates are not permission by themselves. They only make the future command eligible to continue after issue #50 is explicitly approved.
 
+## Enablement commands
+
+The safe CLI surface is:
+
+```powershell
+cfdi-vault sat auth-smoke `
+  --profile <PROFILE_ID> `
+  --manual-real-sat
+
+cfdi-vault download live-smoke `
+  --profile <PROFILE_ID> `
+  --from <YYYY-MM-DD> `
+  --to <YYYY-MM-DD> `
+  --kind metadata `
+  --direction received `
+  --manual-real-sat
+```
+
+Use `--direction issued` only when that exact direction is approved for the manual run.
+
+If the command returns `error=live_adapter_unavailable`, stop. That means the safety gates passed, but the real SAT adapter is not wired for execution yet. Do not fall back to `sync metadata --live`.
+
 ## Safe preflight
 
 Run only repository-safe checks first:
@@ -57,14 +79,20 @@ Expected result:
 The first authorized smoke must be intentionally small:
 
 - metadata-only first;
-- smallest practical date range;
+- one calendar day only for the first attempt;
 - one local manual profile and its configured storage root;
 - no XML/package download until metadata-only evidence is reviewed;
 - no recurrent job, scheduler, CI run, or shared agent environment.
 
 ## Required confirmation
 
-Before any future command performs network I/O, the operator must see a visible warning and confirm the exact run interactively.
+Before any future command performs network I/O, the operator must see a visible warning and confirm the exact run interactively by typing:
+
+```text
+SAT REAL METADATA SMOKE
+```
+
+There is no `--yes` bypass for the first live smoke.
 
 The warning must include:
 
@@ -132,6 +160,10 @@ Stop the smoke and do not retry automatically if:
 - `cfdi-vault status` or `cfdi-vault doctor` fails readiness checks;
 - the profile is not ready, `passwordRef` is missing, or the approved `SecretProvider` cannot resolve locally;
 - `CFDI_VAULT_ALLOW_REAL_SAT=1`, `CFDI_VAULT_ALLOW_REAL_CREDENTIALS=1`, or `--manual-real-sat` is missing;
+- the command is non-interactive or the typed confirmation is missing;
+- `--kind` is anything other than `metadata`;
+- the requested range is more than one calendar day;
+- `cfdi-vault doctor` does not pass for the selected profile;
 - a command attempts to read real SAT material from the repository;
 - output would print tokens, passwords, private keys, certificates, headers, RFCs, paths, XML, ZIPs, or raw SAT payloads;
 - real fiscal data appears in any repository path;
