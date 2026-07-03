@@ -5,6 +5,7 @@ from __future__ import annotations
 import socket
 import ssl
 import time
+from http.client import RemoteDisconnected
 from dataclasses import dataclass
 from typing import Mapping, Protocol
 from urllib import request as urllib_request
@@ -106,22 +107,33 @@ def _classify_response(response: AuthPostProbeHttpResponse) -> str:
 
 
 def _classify_exception(exc: BaseException) -> str:
-    if isinstance(exc, socket.gaierror):
+    root = _root_exception(exc)
+    marker = f"{type(root).__module__} {type(root).__name__} {root}".lower()
+    if isinstance(root, socket.gaierror):
         return "dns_failed"
-    if isinstance(exc, ssl.SSLCertVerificationError):
+    if isinstance(root, ssl.SSLCertVerificationError):
         return "certificate_verify_failed"
-    if isinstance(exc, ssl.SSLError):
+    if isinstance(root, ssl.SSLError):
         return "tls_handshake_failed"
-    if isinstance(exc, (TimeoutError, socket.timeout)):
+    if isinstance(root, (TimeoutError, socket.timeout)):
         return "timeout"
-    if isinstance(exc, URLError):
-        return _classify_exception(exc.reason) if isinstance(exc.reason, BaseException) else "proxy_connect_failed"
-    marker = f"{type(exc).__name__} {exc}".lower()
+    if isinstance(root, (RemoteDisconnected, EOFError)) or "remote end closed" in marker or "remote host closed" in marker or "connection closed" in marker:
+        return "remote_closed_connection"
+    if isinstance(root, ConnectionResetError) or "reset" in marker:
+        return "connection_reset_during_post"
     if "proxy" in marker or "tunnel" in marker or "firewall" in marker:
         return "proxy_connect_failed"
-    if "reset" in marker:
-        return "connection_reset"
-    return "unexpected_transport_error"
+    return "client_configuration_error"
+
+
+def _root_exception(exc: BaseException) -> BaseException:
+    if isinstance(exc, URLError) and isinstance(exc.reason, BaseException):
+        return _root_exception(exc.reason)
+    for attr in ("__cause__", "__context__"):
+        nested = getattr(exc, attr, None)
+        if isinstance(nested, BaseException):
+            return _root_exception(nested)
+    return exc
 
 
 def _result(
@@ -161,8 +173,10 @@ def _safe_hint(error_kind: str) -> str:
         "tls_handshake_failed": "check TLS handshake, SNI, proxy, and SAT auth endpoint availability",
         "certificate_verify_failed": "check local CA trust store without disabling TLS verification",
         "proxy_connect_failed": "check proxy or firewall policy for outbound SAT HTTPS POST",
-        "connection_reset": "auth POST connection was reset before an HTTP response",
+        "connection_reset_during_post": "auth POST connection was reset before an HTTP response",
+        "remote_closed_connection": "auth POST remote closed the connection before an HTTP response",
         "timeout": "auth POST timed out before an HTTP response",
+        "client_configuration_error": "auth POST client configuration failed before a trustworthy HTTP result",
     }.get(error_kind, "unexpected auth POST transport result; do not copy raw body")
 
 

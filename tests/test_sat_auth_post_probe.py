@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from http.client import RemoteDisconnected
 import socket
 import ssl
 from typing import Mapping
@@ -53,16 +54,21 @@ def test_auth_post_probe_treats_soap_fault_as_reached_server() -> None:
     assert result.error_kind == "soap_fault"
 
 
-def test_auth_post_probe_classifies_tls_certificate_timeout_and_proxy_failures() -> None:
-    tls_result = run_sat_auth_post_probe(client=FakeAuthPostClient(error=ssl.SSLError("synthetic tls failure")))
-    ca_result = run_sat_auth_post_probe(client=FakeAuthPostClient(error=ssl.SSLCertVerificationError("synthetic ca failure")))
-    timeout_result = run_sat_auth_post_probe(client=FakeAuthPostClient(error=TimeoutError("synthetic timeout")))
-    proxy_result = run_sat_auth_post_probe(client=FakeAuthPostClient(error=URLError(OSError("synthetic proxy tunnel failure"))))
-    dns_result = run_sat_auth_post_probe(client=FakeAuthPostClient(error=socket.gaierror("synthetic dns failure")))
+def test_auth_post_probe_classifies_transport_failures_precisely() -> None:
+    failures = [
+        (ssl.SSLError("synthetic tls failure"), "tls_handshake_failed"),
+        (ssl.SSLCertVerificationError("synthetic ca failure"), "certificate_verify_failed"),
+        (TimeoutError("synthetic timeout"), "timeout"),
+        (ConnectionResetError("synthetic reset"), "connection_reset_during_post"),
+        (RemoteDisconnected("synthetic remote close"), "remote_closed_connection"),
+        (URLError(OSError("synthetic proxy tunnel failure")), "proxy_connect_failed"),
+        (socket.gaierror("synthetic dns failure"), "dns_failed"),
+        (RuntimeError("synthetic client configuration failure"), "client_configuration_error"),
+    ]
 
-    assert tls_result.status == "failed"
-    assert tls_result.error_kind == "tls_handshake_failed"
-    assert ca_result.error_kind == "certificate_verify_failed"
-    assert timeout_result.error_kind == "timeout"
-    assert proxy_result.error_kind == "proxy_connect_failed"
-    assert dns_result.error_kind == "dns_failed"
+    for failure, error_kind in failures:
+        result = run_sat_auth_post_probe(client=FakeAuthPostClient(error=failure))
+
+        assert result.status == "failed"
+        assert result.error_kind == error_kind
+        assert "synthetic" not in repr(result)

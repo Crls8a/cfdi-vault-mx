@@ -565,7 +565,7 @@ def test_download_live_smoke_adapter_failure_prints_redacted_diagnostic(
         raise cli_module.SatLiveSmokeError(
             "raw adapter detail must stay hidden",
             stage="auth_transport",
-            error_kind="transport_http_error",
+            error_kind="http_status_error",
             safe_hint="check SOAPAction, content-type, logical endpoint, TLS, and SAT service availability",
             endpoint="auth",
             http_status=500,
@@ -590,7 +590,7 @@ def test_download_live_smoke_adapter_failure_prints_redacted_diagnostic(
     lines = _key_value_lines(result.output)
     assert lines["error"] == "live_adapter_failed"
     assert lines["failed_stage"] == "auth_transport"
-    assert lines["error_kind"] == "transport_http_error"
+    assert lines["error_kind"] == "http_status_error"
     assert lines["endpoint"] == "auth"
     assert lines["http_status"] == "500"
     assert lines["payload_size"] == "123"

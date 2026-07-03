@@ -69,7 +69,7 @@ def test_transport_failure_is_redacted(tmp_path: Path) -> None:
         adapter.auth_smoke()
     diagnostic = exc.value.diagnostic
     assert diagnostic.stage == "auth_transport"
-    assert diagnostic.error_kind == "unknown_live_adapter_failure"
+    assert diagnostic.error_kind == "client_configuration_error"
     assert diagnostic.endpoint == "auth"
     assert diagnostic.envelope_sha256 is not None
     assert "raw transport detail" not in str(exc.value)
@@ -82,10 +82,23 @@ def test_http_failure_reports_only_safe_diagnostic_fields(tmp_path: Path) -> Non
         adapter.auth_smoke()
     diagnostic = exc.value.diagnostic
     assert diagnostic.stage == "auth_transport"
-    assert diagnostic.error_kind == "transport_http_error"
+    assert diagnostic.error_kind == "http_status_error"
     assert diagnostic.http_status == 500
     assert diagnostic.payload_size == len(b"<synthetic>server unavailable</synthetic>")
     assert diagnostic.endpoint == "auth"
+    assert diagnostic.transport_layer is None
+
+
+def test_http_fault_failure_is_not_classified_as_tls(tmp_path: Path) -> None:
+    transport = FakeSoapTransport([SoapTransportResponse(500, body=_soap("<soap:Fault />"))])
+    adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
+
+    with pytest.raises(SatLiveSmokeError, match="SAT transport returned a non-success status") as exc:
+        adapter.auth_smoke()
+
+    diagnostic = exc.value.diagnostic
+    assert diagnostic.error_kind == "soap_fault"
+    assert diagnostic.http_status == 500
     assert diagnostic.transport_layer is None
 
 
@@ -96,7 +109,8 @@ def test_http_failure_reports_only_safe_diagnostic_fields(tmp_path: Path) -> Non
         (ssl.SSLCertVerificationError("synthetic CA failure"), "certificate_verify_failed", "tls"),
         (ssl.SSLError("tlsv13 alert certificate required"), "client_cert_rejected", "tls"),
         (TimeoutError("synthetic timeout"), "timeout", "network"),
-        (ConnectionResetError("synthetic reset"), "connection_reset", "network"),
+        (ConnectionResetError("synthetic reset"), "connection_reset_during_post", "network"),
+        (URLError(OSError("synthetic remote end closed connection")), "remote_closed_connection", "network"),
         (URLError(OSError("synthetic proxy tunnel failure")), "proxy_connect_failed", "proxy"),
     ],
 )

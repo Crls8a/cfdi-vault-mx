@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import errno
 import hashlib
+from http.client import RemoteDisconnected
 import os
 import socket
 import ssl
@@ -49,7 +50,7 @@ PARSE_HINT = "check SAT response shape with redacted diagnostics only"
 MATERIAL_HINT = "check local profile readiness and e.firma material without printing paths or values"
 BUILD_HINT = "check envelope construction and XML signature inputs without printing SOAP"
 DIAGNOSTIC_STAGES = ("preflight", "profile_load", "secret_resolve", "credential_load", "certificate_parse", "private_key_load", "xmlsig_sign", "auth_envelope_build", "auth_transport", "auth_response_parse", "token_extract", "metadata_request_build", "metadata_request_transport", "metadata_request_parse", "verify_request_build", "verify_transport", "verify_response_parse", "package_download", "package_process")
-LIVE_ERROR_KINDS = ("guard_failed", "profile_not_ready", "secret_unavailable", "credential_load_failed", "certificate_parse_failed", "private_key_load_failed", "xmlsig_failed", "envelope_build_failed", "transport_tls_failed", "tls_handshake_failed", "certificate_verify_failed", "client_cert_rejected", "proxy_connect_failed", "connection_reset", "timeout", "transport_timeout", "transport_http_error", "soap_fault", "token_missing", "token_parse_failed", "sat_status_error", "sat_duplicate_request", "sat_unauthorized", "sat_no_data", "sat_retryable", "sat_permanent", "unexpected_response", "redaction_failure", "unknown_live_adapter_failure")
+LIVE_ERROR_KINDS = ("guard_failed", "profile_not_ready", "secret_unavailable", "credential_load_failed", "certificate_parse_failed", "private_key_load_failed", "xmlsig_failed", "envelope_build_failed", "transport_tls_failed", "tls_handshake_failed", "certificate_verify_failed", "client_cert_rejected", "proxy_connect_failed", "connection_reset", "connection_reset_during_post", "remote_closed_connection", "timeout", "transport_timeout", "transport_http_error", "http_status_error", "soap_fault", "token_missing", "token_parse_failed", "sat_status_error", "sat_duplicate_request", "sat_unauthorized", "sat_no_data", "sat_retryable", "sat_permanent", "unexpected_response", "unexpected_http_response", "client_configuration_error", "redaction_failure", "unknown_live_adapter_failure")
 @dataclass(frozen=True)
 class SatLiveDiagnosticEntry:
     """One redacted live diagnostic stage result."""
@@ -256,14 +257,15 @@ class SatLiveMetadataSmokeAdapter:
         try:
             response = self._transport.send(SoapTransportRequest(endpoint=endpoint, body=body, headers=headers, timeout_seconds=self._timeout_seconds))
         except HTTPError as exc:
+            response_body = exc.read(8192)
             raise SatLiveSmokeError(
                 "SAT transport returned a non-success status",
                 stage=stage,
-                error_kind="transport_http_error",
+                error_kind=_http_response_error_kind(response_body),
                 safe_hint=TRANSPORT_HINT,
                 endpoint=endpoint_label,
                 http_status=exc.code,
-                payload_size=len(body),
+                payload_size=len(response_body),
                 envelope_sha256=_digest(body),
                 duration_ms=_elapsed_ms(started),
             ) from None
@@ -286,7 +288,7 @@ class SatLiveMetadataSmokeAdapter:
             raise SatLiveSmokeError(
                 "SAT transport returned a non-success status",
                 stage=stage,
-                error_kind="transport_http_error",
+                error_kind=_http_response_error_kind(response.body),
                 safe_hint=TRANSPORT_HINT,
                 endpoint=endpoint_label,
                 http_status=response.status_code,
@@ -489,13 +491,15 @@ def _classify_transport_failure(exc: BaseException) -> TransportFailureClassific
         return TransportFailureClassification("tls_handshake_failed", "tls", exception_class, exception_errno)
     if isinstance(root, (TimeoutError, socket.timeout)) or exception_errno in {errno.ETIMEDOUT, getattr(errno, "WSAETIMEDOUT", -1)}:
         return TransportFailureClassification("timeout", "network", exception_class, exception_errno)
+    if isinstance(root, (RemoteDisconnected, EOFError)) or "remote end closed" in marker or "remote host closed" in marker or "connection closed" in marker:
+        return TransportFailureClassification("remote_closed_connection", "network", exception_class, exception_errno)
     if isinstance(root, ConnectionResetError) or exception_errno in {errno.ECONNRESET, getattr(errno, "WSAECONNRESET", -1)} or "reset" in marker:
-        return TransportFailureClassification("connection_reset", "network", exception_class, exception_errno)
+        return TransportFailureClassification("connection_reset_during_post", "network", exception_class, exception_errno)
     if "proxy" in marker or "tunnel" in marker or "firewall" in marker:
         return TransportFailureClassification("proxy_connect_failed", "proxy", exception_class, exception_errno)
     if isinstance(root, URLError):
-        return TransportFailureClassification("proxy_connect_failed", "proxy", exception_class, exception_errno)
-    return TransportFailureClassification("unknown_live_adapter_failure", "transport", exception_class, exception_errno)
+        return TransportFailureClassification("client_configuration_error", "client", exception_class, exception_errno)
+    return TransportFailureClassification("client_configuration_error", "client", exception_class, exception_errno)
 
 
 def _classify_transport_exception(exc: BaseException) -> str:
@@ -531,7 +535,11 @@ def _auth_parse_failure(exc: BaseException) -> tuple[str, str]:
         return "token_extract", "token_missing"
     return "auth_response_parse", "token_parse_failed"
 def _response_error_kind(response: bytes) -> str:
-    return "soap_fault" if _soap_fault_code(response) else "unexpected_response"
+    return "soap_fault" if _soap_fault_code(response) else "unexpected_http_response"
+
+
+def _http_response_error_kind(response: bytes) -> str:
+    return "soap_fault" if _soap_fault_code(response) else "http_status_error"
 def _soap_fault_code(response: bytes) -> str | None:
     try:
         root = etree.fromstring(response)
