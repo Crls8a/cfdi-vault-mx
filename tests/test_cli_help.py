@@ -10,6 +10,7 @@ def test_help_command_lists_recovery_flow() -> None:
     assert "Recommended recovery flow" in result.output
     assert "sync metadata" in result.output
     assert "sync xml" in result.output
+    assert "download sync" in result.output
     assert "Command catalog" in result.output
 
 
