@@ -31,7 +31,10 @@ def _passing_guard() -> LiveSatGuardInput:
         profile_ready=True,
         scanner_passed=True,
         repo_clean=True,
-        environ={"CFDI_VAULT_ALLOW_REAL_SAT": "1"},
+        environ={
+            "CFDI_VAULT_ALLOW_REAL_SAT": "1",
+            "CFDI_VAULT_ALLOW_REAL_CREDENTIALS": "1",
+        },
     )
 
 
@@ -55,7 +58,11 @@ def test_fake_transport_records_requests_and_returns_synthetic_response_without_
                 profile_ready=True,
                 scanner_passed=True,
                 repo_clean=True,
-                environ={"CI": "true", "CFDI_VAULT_ALLOW_REAL_SAT": "1"},
+                environ={
+                    "CI": "true",
+                    "CFDI_VAULT_ALLOW_REAL_SAT": "1",
+                    "CFDI_VAULT_ALLOW_REAL_CREDENTIALS": "1",
+                },
             ),
             "ci-enabled",
         ),
@@ -71,11 +78,24 @@ def test_fake_transport_records_requests_and_returns_synthetic_response_without_
         ),
         (
             LiveSatGuardInput(
-                manual_real_sat=False,
+                manual_real_sat=True,
                 profile_ready=True,
                 scanner_passed=True,
                 repo_clean=True,
                 environ={"CFDI_VAULT_ALLOW_REAL_SAT": "1"},
+            ),
+            "missing-explicit-real-credentials-env",
+        ),
+        (
+            LiveSatGuardInput(
+                manual_real_sat=False,
+                profile_ready=True,
+                scanner_passed=True,
+                repo_clean=True,
+                environ={
+                    "CFDI_VAULT_ALLOW_REAL_SAT": "1",
+                    "CFDI_VAULT_ALLOW_REAL_CREDENTIALS": "1",
+                },
             ),
             "missing-manual-real-sat-flag",
         ),
@@ -85,7 +105,10 @@ def test_fake_transport_records_requests_and_returns_synthetic_response_without_
                 profile_ready=False,
                 scanner_passed=True,
                 repo_clean=True,
-                environ={"CFDI_VAULT_ALLOW_REAL_SAT": "1"},
+                environ={
+                    "CFDI_VAULT_ALLOW_REAL_SAT": "1",
+                    "CFDI_VAULT_ALLOW_REAL_CREDENTIALS": "1",
+                },
             ),
             "profile-not-ready",
         ),
@@ -95,7 +118,10 @@ def test_fake_transport_records_requests_and_returns_synthetic_response_without_
                 profile_ready=True,
                 scanner_passed=False,
                 repo_clean=True,
-                environ={"CFDI_VAULT_ALLOW_REAL_SAT": "1"},
+                environ={
+                    "CFDI_VAULT_ALLOW_REAL_SAT": "1",
+                    "CFDI_VAULT_ALLOW_REAL_CREDENTIALS": "1",
+                },
             ),
             "scanner-not-passed",
         ),
@@ -105,7 +131,10 @@ def test_fake_transport_records_requests_and_returns_synthetic_response_without_
                 profile_ready=True,
                 scanner_passed=True,
                 repo_clean=False,
-                environ={"CFDI_VAULT_ALLOW_REAL_SAT": "1"},
+                environ={
+                    "CFDI_VAULT_ALLOW_REAL_SAT": "1",
+                    "CFDI_VAULT_ALLOW_REAL_CREDENTIALS": "1",
+                },
             ),
             "repo-dirty",
         ),
