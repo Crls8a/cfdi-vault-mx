@@ -16,6 +16,7 @@ This repository is split into two documentation areas: the current local-first C
 10. Read [Idempotent local storage](storage-design.md) before writing package, metadata, or XML evidence.
 11. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
 12. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
+13. Read [MANUAL-SAT-001](sat-download/manual-sat-runbook.md) before requesting any human-gated live SAT smoke.
 
 ## Documentation map
 
@@ -45,6 +46,7 @@ This repository is split into two documentation areas: the current local-first C
 | Planned library | [Metadata-led reconciliation architecture](sat-download/reconciliation-architecture.md) | Product architecture for metadata inventory, XML evidence, retries, and operator review. |
 | Planned library | [Statuses, limits, and errors](sat-download/statuses-limits-errors.md) | State machine, quotas, and error handling. |
 | Planned library | [User-facing errors and edge cases](sat-download/user-facing-errors.md) | Error payload contract, user messages, and edge cases. |
+| Planned library | [MANUAL-SAT-001 live smoke runbook](sat-download/manual-sat-runbook.md) | Human-gated live SAT smoke approval, evidence, and redaction rules. |
 | Planned library | [Implementation plan](sat-download/implementation-plan.md) | Proposed library modules, persistence, and roadmap. |
 | Planned library | [Examples](sat-download/examples.md) | Transport examples and payload templates. |
 | Planned library | [Sources](sat-download/sources.md) | Official and community references. |
