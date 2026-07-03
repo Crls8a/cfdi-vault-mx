@@ -37,6 +37,7 @@ from cfdi_vault.service import ImportBatchResult, ImportRecord, SummaryRow, Vaul
 from cfdi_vault.sat_orchestration import DownloadRequestOrchestrator
 from cfdi_vault.sat_simulator import FakeSatScenario, FakeSatScenarioClient
 from cfdi_vault.sat_live_smoke import DIAGNOSTIC_STAGES, SatLiveMetadataSmokeAdapter, SatLiveSmokeError
+from cfdi_vault.sat_auth_matrix_probe import SatAuthMatrixProbeResult, run_sat_auth_matrix_probe
 from cfdi_vault.sat_auth_post_probe import SatAuthPostProbeResult, run_sat_auth_post_probe
 from cfdi_vault.sat_transport_probe import SatProbeResult, run_sat_transport_probe
 from cfdi_vault.live_permit import (
@@ -203,10 +204,16 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "example": "cfdi-vault sat probe-auth-post --profile default --permit PERMIT_ID",
     },
     {
+        "command": "sat probe-auth-matrix",
+        "purpose": "Run a no-credential auth GET/WSDL/POST matrix with Python and optional external clients.",
+        "when": "Run after auth endpoint parity is merged to isolate Python/client/SAT/proxy transport behavior.",
+        "example": "cfdi-vault sat probe-auth-matrix --profile default --permit PERMIT_ID",
+    },
+    {
         "command": "live permit create",
         "purpose": "Create one AppData-local, one-time, expiring permit for a scoped live SAT operation.",
         "when": "Use instead of an interactive confirmation prompt for an explicitly authorized live attempt.",
-        "example": "cfdi-vault live permit create --scope auth_post_probe --profile default --kind metadata --direction received --from YYYY-MM-DD --to YYYY-MM-DD --expires-minutes 15 --reason \"Carlos authorized auth POST probe\"",
+        "example": "cfdi-vault live permit create --scope auth_matrix_probe --profile default --kind metadata --direction received --from YYYY-MM-DD --to YYYY-MM-DD --expires-minutes 15 --reason \"Carlos authorized auth matrix probe\"",
     },
     {
         "command": "queue status",
@@ -464,7 +471,7 @@ live_app.add_typer(permit_app, name="permit")
 
 @permit_app.command("create")
 def live_permit_create(
-    scope: str = typer.Option(..., "--scope", help="transport_probe, auth_post_probe, or metadata_live_smoke."),
+    scope: str = typer.Option(..., "--scope", help="transport_probe, auth_post_probe, auth_matrix_probe, or metadata_live_smoke."),
     profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
     kind: str = typer.Option(..., "--kind", help="metadata only."),
     direction: str = typer.Option(..., "--direction", help="received or issued."),
@@ -837,6 +844,21 @@ def sat_probe_auth_post(
     result = _run_auth_post_probe()
     _print_auth_post_probe_result(profile_id=profile, result=result)
     if result.status != "ok":
+        raise typer.Exit(code=1)
+
+
+@sat_app.command("probe-auth-matrix")
+def sat_probe_auth_matrix(
+    profile: str = typer.Option("default", "--profile", help="Local setup profile id used for readiness gates only."),
+    manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Legacy flag accepted but permit is required."),
+    permit: str | None = typer.Option(None, "--permit", help="Required one-time local auth_matrix_probe permit id."),
+) -> None:
+    """Probe SAT auth transport matrix without e.firma material or metadata requests."""
+
+    _validate_live_auth_matrix_probe_guard(profile_id=profile, manual_real_sat=manual_real_sat, permit_ref=permit)
+    results = _run_auth_matrix_probe()
+    _print_auth_matrix_probe_results(profile_id=profile, results=results)
+    if any(result.status != "ok" for result in results):
         raise typer.Exit(code=1)
 
 
@@ -1562,6 +1584,66 @@ def _validate_live_auth_post_probe_guard(
     typer.echo("sat_real_execution=auth_post_probe_enabled", err=True)
 
 
+def _validate_live_auth_matrix_probe_guard(
+    *,
+    profile_id: str,
+    manual_real_sat: bool,
+    permit_ref: str | None,
+) -> None:
+    if permit_ref is None:
+        typer.echo("error=live_permit_denied", err=True)
+        typer.echo("reason=permit-required", err=True)
+        raise typer.Exit(code=1)
+    profile = _load_download_profile(profile_id)
+    doctor_ok = _live_smoke_doctor_ok(profile)
+    repo_clean, scanner_passed = _checkout_guard_status()
+    try:
+        permit = load_live_execution_permit(permit_ref, env=os.environ)
+        validate_and_consume_live_permit(
+            permit_ref,
+            scope="auth_matrix_probe",
+            profile_id=profile_id,
+            kind="metadata",
+            direction=permit.direction,
+            date_from=permit.date_from,
+            date_to=permit.date_to,
+            env=os.environ,
+            repo_root=_find_checkout_root(Path.cwd()),
+        )
+    except LivePermitError as exc:
+        typer.echo("error=live_permit_denied", err=True)
+        typer.echo(f"reason={exc.reason}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    try:
+        validate_live_sat_guard(
+            LiveSatGuardInput(
+                manual_real_sat=manual_real_sat,
+                terminal_interactive=True,
+                confirmation_verified=True,
+                profile_ready=profile.status == setup_flow.LocalProfileStatus.READY,
+                credentials_ready=False,
+                doctor_ok=doctor_ok,
+                scanner_passed=scanner_passed,
+                repo_clean=repo_clean,
+                metadata_only=True,
+                range_within_limit=True,
+                live_permit_verified=True,
+                live_permit_allows_real_credentials=False,
+                real_credentials_required=False,
+                environ=os.environ,
+            )
+        )
+    except LiveSatGuardError as exc:
+        typer.echo("error=live_sat_guard_denied", err=True)
+        for reason in exc.reasons:
+            typer.echo(f"reason={reason}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo("warning=live_sat_auth_matrix_probe_guards_passed", err=True)
+    typer.echo("sat_real_execution=auth_matrix_probe_enabled", err=True)
+
+
 def _live_smoke_doctor_ok(profile: setup_flow.LocalProfile) -> bool:
     service = _download_profile_service(profile)
     try:
@@ -1663,6 +1745,10 @@ def _run_transport_probe() -> tuple[SatProbeResult, ...]:
 
 def _run_auth_post_probe() -> SatAuthPostProbeResult:
     return run_sat_auth_post_probe()
+
+
+def _run_auth_matrix_probe() -> tuple[SatAuthMatrixProbeResult, ...]:
+    return run_sat_auth_matrix_probe()
 
 
 def _live_smoke_transport(*, live_permit_verified: bool = False) -> GuardedSoapHttpTransport:
@@ -1803,6 +1889,55 @@ def _print_auth_post_probe_result(*, profile_id: str, result: SatAuthPostProbeRe
     typer.echo("raw_response_printed=no")
     typer.echo("raw_soap_printed=no")
     typer.echo("raw_headers_printed=no")
+
+
+def _print_auth_matrix_probe_results(*, profile_id: str, results: tuple[SatAuthMatrixProbeResult, ...]) -> None:
+    typer.echo("mode=auth-matrix-probe")
+    typer.echo(f"profile={profile_id}")
+    typer.echo(f"probe_status={'failed' if any(result.status != 'ok' for result in results) else 'ok'}")
+    for result in results:
+        fields = [
+            f"client_kind={result.client_kind}",
+            f"method={result.method}",
+            f"endpoint={result.logical_endpoint}",
+            f"check={result.check}",
+            f"scheme={result.scheme}",
+            f"host={result.host}",
+            f"port={result.port}",
+            f"path={result.path}",
+            f"query_present={'yes' if result.query_present else 'no'}",
+            f"sni_host={result.sni_host}",
+            f"tls_result={result.tls_result}",
+            f"status={result.status}",
+            f"error_kind={result.error_kind}",
+            f"safe_hint={result.safe_hint}",
+            f"proxy_detected={'yes' if result.proxy_detected else 'no'}",
+            f"ca_mode={result.ca_mode}",
+            f"timeout={result.timeout_seconds:g}",
+            f"duration_ms={result.duration_ms}",
+            f"correlation_id={result.correlation_id}",
+        ]
+        if result.http_status is not None:
+            fields.append(f"http_status={result.http_status}")
+        if result.soap_fault_present is not None:
+            fields.append(f"soap_fault_present={'yes' if result.soap_fault_present else 'no'}")
+        if result.exception_class is not None:
+            fields.append(f"exception_class={result.exception_class}")
+        if result.exception_errno is not None:
+            fields.append(f"exception_errno={result.exception_errno}")
+        typer.echo("matrix_result=" + "|".join(fields))
+    typer.echo("efirma_loaded=no")
+    typer.echo("credential_material_loaded=no")
+    typer.echo("credential_reference_resolved=no")
+    typer.echo("metadata_requested=no")
+    typer.echo("xml_downloaded=no")
+    typer.echo("zip_downloaded=no")
+    typer.echo("raw_request_printed=no")
+    typer.echo("raw_response_printed=no")
+    typer.echo("raw_soap_printed=no")
+    typer.echo("raw_headers_printed=no")
+    typer.echo("raw_wsdl_printed=no")
+    typer.echo("raw_html_printed=no")
 
 
 def _print_live_adapter_error(exc: SatLiveSmokeError) -> None:
