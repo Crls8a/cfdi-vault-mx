@@ -1811,6 +1811,9 @@ def _print_live_adapter_error(exc: SatLiveSmokeError) -> None:
         ("sat_code", diagnostic.sat_code),
         ("payload_size", diagnostic.payload_size),
         ("envelope_sha256", diagnostic.envelope_sha256),
+        ("exception_class", diagnostic.exception_class),
+        ("exception_errno", diagnostic.exception_errno),
+        ("transport_layer", diagnostic.transport_layer),
         ("duration_ms", diagnostic.duration_ms),
     ):
         if value is not None:

@@ -571,6 +571,8 @@ def test_download_live_smoke_adapter_failure_prints_redacted_diagnostic(
             http_status=500,
             payload_size=123,
             envelope_sha256="a" * 64,
+            exception_class="SSLError",
+            transport_layer="tls",
             duration_ms=7,
             correlation_id="diag-synthetic",
         )
@@ -592,6 +594,8 @@ def test_download_live_smoke_adapter_failure_prints_redacted_diagnostic(
     assert lines["endpoint"] == "auth"
     assert lines["http_status"] == "500"
     assert lines["payload_size"] == "123"
+    assert lines["exception_class"] == "SSLError"
+    assert lines["transport_layer"] == "tls"
     assert lines["correlation_id"] == "diag-synthetic"
     assert "raw adapter detail" not in result.output
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
