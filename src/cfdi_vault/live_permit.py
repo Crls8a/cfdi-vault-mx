@@ -16,7 +16,7 @@ from typing import Mapping
 from cfdi_vault.domain import DownloadDirection, DownloadQuery, RequestType
 from cfdi_vault.setup_core import SetupError, find_repo_root, resolve_appdata_root, validate_profile_id
 
-ALLOWED_SCOPES = frozenset({"transport_probe", "auth_post_probe", "metadata_live_smoke"})
+ALLOWED_SCOPES = frozenset({"transport_probe", "auth_post_probe", "auth_matrix_probe", "metadata_live_smoke"})
 PERMIT_INDENT = 2
 MAX_EXPIRES_MINUTES = 15
 MAX_RANGE_DAYS = 1
@@ -345,7 +345,7 @@ def _validate_document_policy(permit: LiveExecutionPermit, *, now: datetime, rep
         raise LivePermitError("permit-real-sat-not-allowed")
     if permit.scope == "metadata_live_smoke" and permit.allow_real_credentials is not True:
         raise LivePermitError("permit-real-credentials-not-allowed")
-    if permit.scope == "transport_probe" and permit.allow_real_credentials is True:
+    if permit.scope in {"transport_probe", "auth_post_probe", "auth_matrix_probe"} and permit.allow_real_credentials is True:
         raise LivePermitError("permit-unneeded-credentials")
     if permit.scope not in ALLOWED_SCOPES:
         raise LivePermitError("invalid-scope")
