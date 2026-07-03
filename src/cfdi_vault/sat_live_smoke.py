@@ -123,7 +123,10 @@ class SatLiveMetadataSmokeAdapter:
         }
         if authorization:
             headers["Authorization"] = _wrap_authorization(authorization)
-        response = self._transport.send(SoapTransportRequest(endpoint=endpoint, body=body, headers=headers, timeout_seconds=self._timeout_seconds))
+        try:
+            response = self._transport.send(SoapTransportRequest(endpoint=endpoint, body=body, headers=headers, timeout_seconds=self._timeout_seconds))
+        except Exception:
+            raise SatLiveSmokeError("SAT transport failed") from None
         if not 200 <= response.status_code < 300:
             raise SatLiveSmokeError("SAT transport returned a non-success status")
         return response.body
