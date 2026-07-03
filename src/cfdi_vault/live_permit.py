@@ -16,7 +16,7 @@ from typing import Mapping
 from cfdi_vault.domain import DownloadDirection, DownloadQuery, RequestType
 from cfdi_vault.setup_core import SetupError, find_repo_root, resolve_appdata_root, validate_profile_id
 
-ALLOWED_SCOPES = frozenset({"transport_probe", "metadata_live_smoke"})
+ALLOWED_SCOPES = frozenset({"transport_probe", "auth_post_probe", "metadata_live_smoke"})
 PERMIT_INDENT = 2
 MAX_EXPIRES_MINUTES = 15
 MAX_RANGE_DAYS = 1

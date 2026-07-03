@@ -37,11 +37,13 @@ from cfdi_vault.service import ImportBatchResult, ImportRecord, SummaryRow, Vaul
 from cfdi_vault.sat_orchestration import DownloadRequestOrchestrator
 from cfdi_vault.sat_simulator import FakeSatScenario, FakeSatScenarioClient
 from cfdi_vault.sat_live_smoke import DIAGNOSTIC_STAGES, SatLiveMetadataSmokeAdapter, SatLiveSmokeError
+from cfdi_vault.sat_auth_post_probe import SatAuthPostProbeResult, run_sat_auth_post_probe
 from cfdi_vault.sat_transport_probe import SatProbeResult, run_sat_transport_probe
 from cfdi_vault.live_permit import (
     LivePermitError,
     LivePermitRequest,
     create_live_execution_permit,
+    load_live_execution_permit,
     permit_expectation_from_query,
     transport_probe_permit_expectation,
     validate_and_consume_live_permit,
@@ -195,10 +197,16 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "example": "cfdi-vault sat probe-transport --profile default --permit PERMIT_ID",
     },
     {
+        "command": "sat probe-auth-post",
+        "purpose": "Probe auth HTTPS POST transport without loading e.firma material or requesting metadata.",
+        "when": "Run after public transport passes and before any metadata-only smoke retry.",
+        "example": "cfdi-vault sat probe-auth-post --profile default --permit PERMIT_ID",
+    },
+    {
         "command": "live permit create",
         "purpose": "Create one AppData-local, one-time, expiring permit for a scoped live SAT operation.",
         "when": "Use instead of an interactive confirmation prompt for an explicitly authorized live attempt.",
-        "example": "cfdi-vault live permit create --scope transport_probe --profile default --kind metadata --direction received --from YYYY-MM-DD --to YYYY-MM-DD --expires-minutes 15 --reason \"Carlos authorized post-86 transport probe\"",
+        "example": "cfdi-vault live permit create --scope auth_post_probe --profile default --kind metadata --direction received --from YYYY-MM-DD --to YYYY-MM-DD --expires-minutes 15 --reason \"Carlos authorized auth POST probe\"",
     },
     {
         "command": "queue status",
@@ -456,7 +464,7 @@ live_app.add_typer(permit_app, name="permit")
 
 @permit_app.command("create")
 def live_permit_create(
-    scope: str = typer.Option(..., "--scope", help="transport_probe or metadata_live_smoke."),
+    scope: str = typer.Option(..., "--scope", help="transport_probe, auth_post_probe, or metadata_live_smoke."),
     profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
     kind: str = typer.Option(..., "--kind", help="metadata only."),
     direction: str = typer.Option(..., "--direction", help="received or issued."),
@@ -814,6 +822,21 @@ def sat_probe_transport(
     results = tuple(_run_transport_probe())
     _print_transport_probe_results(profile_id=profile, results=results)
     if _has_required_transport_probe_failure(results):
+        raise typer.Exit(code=1)
+
+
+@sat_app.command("probe-auth-post")
+def sat_probe_auth_post(
+    profile: str = typer.Option("default", "--profile", help="Local setup profile id used for readiness gates only."),
+    manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Legacy flag accepted but permit is required."),
+    permit: str | None = typer.Option(None, "--permit", help="Required one-time local auth_post_probe permit id."),
+) -> None:
+    """Probe SAT auth HTTPS POST transport without e.firma material or metadata requests."""
+
+    _validate_live_auth_post_probe_guard(profile_id=profile, manual_real_sat=manual_real_sat, permit_ref=permit)
+    result = _run_auth_post_probe()
+    _print_auth_post_probe_result(profile_id=profile, result=result)
+    if result.status != "ok":
         raise typer.Exit(code=1)
 
 
@@ -1479,6 +1502,66 @@ def _validate_live_transport_probe_guard(
     return permit_verified
 
 
+def _validate_live_auth_post_probe_guard(
+    *,
+    profile_id: str,
+    manual_real_sat: bool,
+    permit_ref: str | None,
+) -> None:
+    if permit_ref is None:
+        typer.echo("error=live_permit_denied", err=True)
+        typer.echo("reason=permit-required", err=True)
+        raise typer.Exit(code=1)
+    profile = _load_download_profile(profile_id)
+    doctor_ok = _live_smoke_doctor_ok(profile)
+    repo_clean, scanner_passed = _checkout_guard_status()
+    try:
+        permit = load_live_execution_permit(permit_ref, env=os.environ)
+        validate_and_consume_live_permit(
+            permit_ref,
+            scope="auth_post_probe",
+            profile_id=profile_id,
+            kind="metadata",
+            direction=permit.direction,
+            date_from=permit.date_from,
+            date_to=permit.date_to,
+            env=os.environ,
+            repo_root=_find_checkout_root(Path.cwd()),
+        )
+    except LivePermitError as exc:
+        typer.echo("error=live_permit_denied", err=True)
+        typer.echo(f"reason={exc.reason}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    try:
+        validate_live_sat_guard(
+            LiveSatGuardInput(
+                manual_real_sat=manual_real_sat,
+                terminal_interactive=True,
+                confirmation_verified=True,
+                profile_ready=profile.status == setup_flow.LocalProfileStatus.READY,
+                credentials_ready=False,
+                doctor_ok=doctor_ok,
+                scanner_passed=scanner_passed,
+                repo_clean=repo_clean,
+                metadata_only=True,
+                range_within_limit=True,
+                live_permit_verified=True,
+                live_permit_allows_real_credentials=False,
+                real_credentials_required=False,
+                environ=os.environ,
+            )
+        )
+    except LiveSatGuardError as exc:
+        typer.echo("error=live_sat_guard_denied", err=True)
+        for reason in exc.reasons:
+            typer.echo(f"reason={reason}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo("warning=live_sat_auth_post_probe_guards_passed", err=True)
+    typer.echo("sat_real_execution=auth_post_probe_enabled", err=True)
+
+
 def _live_smoke_doctor_ok(profile: setup_flow.LocalProfile) -> bool:
     service = _download_profile_service(profile)
     try:
@@ -1576,6 +1659,10 @@ def _run_live_diagnose(profile_id: str, query: DownloadQuery) -> LiveSmokeCliRes
 
 def _run_transport_probe() -> tuple[SatProbeResult, ...]:
     return run_sat_transport_probe()
+
+
+def _run_auth_post_probe() -> SatAuthPostProbeResult:
+    return run_sat_auth_post_probe()
 
 
 def _live_smoke_transport(*, live_permit_verified: bool = False) -> GuardedSoapHttpTransport:
@@ -1677,6 +1764,37 @@ def _print_transport_probe_results(*, profile_id: str, results: tuple[SatProbeRe
 
 def _has_required_transport_probe_failure(results: tuple[SatProbeResult, ...]) -> bool:
     return any(result.status != "ok" and result.endpoint != "package_download" for result in results)
+
+
+def _print_auth_post_probe_result(*, profile_id: str, result: SatAuthPostProbeResult) -> None:
+    typer.echo("mode=auth-post-probe")
+    typer.echo(f"profile={profile_id}")
+    typer.echo(f"probe_status={result.status}")
+    fields = [
+        f"endpoint={result.endpoint}",
+        f"check={result.check}",
+        "required=yes",
+        f"status={result.status}",
+        f"error_kind={result.error_kind}",
+        f"host={result.host}",
+        f"safe_hint={result.safe_hint}",
+        f"duration_ms={result.duration_ms}",
+        f"correlation_id={result.correlation_id}",
+    ]
+    if result.http_status is not None:
+        fields.append(f"http_status={result.http_status}")
+    if result.payload_size is not None:
+        fields.append(f"payload_size={result.payload_size}")
+    typer.echo("probe_result=" + "|".join(fields))
+    typer.echo("efirma_loaded=no")
+    typer.echo("credential_material_loaded=no")
+    typer.echo("metadata_requested=no")
+    typer.echo("xml_downloaded=no")
+    typer.echo("zip_downloaded=no")
+    typer.echo("raw_request_printed=no")
+    typer.echo("raw_response_printed=no")
+    typer.echo("raw_soap_printed=no")
+    typer.echo("raw_headers_printed=no")
 
 
 def _print_live_adapter_error(exc: SatLiveSmokeError) -> None:
