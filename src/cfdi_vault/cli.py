@@ -37,6 +37,7 @@ from cfdi_vault.service import ImportBatchResult, ImportRecord, SummaryRow, Vaul
 from cfdi_vault.sat_orchestration import DownloadRequestOrchestrator
 from cfdi_vault.sat_simulator import FakeSatScenario, FakeSatScenarioClient
 from cfdi_vault.sat_live_smoke import DIAGNOSTIC_STAGES, SatLiveMetadataSmokeAdapter, SatLiveSmokeError
+from cfdi_vault.sat_transport_probe import SatProbeResult, run_sat_transport_probe
 from cfdi_vault.sat_transport import (
     GuardedSoapHttpTransport,
     LiveSatGuardError,
@@ -178,6 +179,12 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "example": "cfdi-vault sat diagnose-live --profile default --from YYYY-MM-DD --to YYYY-MM-DD --kind metadata --direction received --manual-real-sat",
     },
     {
+        "command": "sat probe-transport",
+        "purpose": "Probe public SAT DNS/TLS/WSDL transport without loading e.firma material.",
+        "when": "Run before retrying #50 when live auth transport fails.",
+        "example": "cfdi-vault sat probe-transport --manual-real-sat",
+    },
+    {
         "command": "queue status",
         "purpose": "Show queue/job event counts from the durable event log.",
         "when": "Use when a job is pending, failed, or needs operational inspection.",
@@ -246,6 +253,7 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
 )
 
 LIVE_SMOKE_CONFIRMATION = "SAT REAL METADATA SMOKE"
+LIVE_TRANSPORT_PROBE_CONFIRMATION = "SAT REAL TRANSPORT PROBE"
 
 
 @dataclass(frozen=True)
@@ -718,6 +726,20 @@ def sat_diagnose_live(
         _print_live_diagnose_result(profile_id=profile, kind=query.request_type.value, direction=query.direction.value, result=None, failed=exc)
         raise typer.Exit(code=1) from exc
     _print_live_diagnose_result(profile_id=profile, kind=query.request_type.value, direction=query.direction.value, result=result)
+
+
+@sat_app.command("probe-transport")
+def sat_probe_transport(
+    profile: str = typer.Option("default", "--profile", help="Local setup profile id used for readiness gates only."),
+    manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Required human gate for real SAT transport probing."),
+) -> None:
+    """Probe public SAT DNS/TLS/WSDL transport without e.firma material."""
+
+    _validate_live_transport_probe_guard(profile_id=profile, manual_real_sat=manual_real_sat)
+    results = tuple(_run_transport_probe())
+    _print_transport_probe_results(profile_id=profile, results=results)
+    if any(result.status != "ok" for result in results):
+        raise typer.Exit(code=1)
 
 
 @app.command("init")
@@ -1275,6 +1297,51 @@ def _validate_live_smoke_guard(
         _print_download_query(profile_id=profile_id, query=query, will_submit=False, mode=mode)
 
 
+def _validate_live_transport_probe_guard(*, profile_id: str, manual_real_sat: bool) -> None:
+    profile = _load_download_profile(profile_id)
+    provider = _setup_provider(profile_id)
+    inspection = setup_flow.inspect_profile(profile_id, provider=provider)
+    doctor_ok = _live_smoke_doctor_ok(profile)
+    repo_clean, scanner_passed = _checkout_guard_status()
+    interactive = _terminal_is_interactive()
+    confirmed = False
+    if manual_real_sat and interactive:
+        confirmed = _confirm_live_transport_probe()
+
+    try:
+        validate_live_sat_guard(
+            LiveSatGuardInput(
+                manual_real_sat=manual_real_sat,
+                terminal_interactive=interactive,
+                confirmation_verified=confirmed,
+                profile_ready=inspection.status == setup_flow.LocalProfileStatus.READY,
+                credentials_ready=all(
+                    state == "loaded"
+                    for state in (
+                        inspection.certificate_state,
+                        inspection.private_key_state,
+                        inspection.phrase_state,
+                        inspection.storage_state,
+                    )
+                ),
+                doctor_ok=doctor_ok,
+                scanner_passed=scanner_passed,
+                repo_clean=repo_clean,
+                metadata_only=True,
+                range_within_limit=True,
+                environ=os.environ,
+            )
+        )
+    except LiveSatGuardError as exc:
+        typer.echo("error=live_sat_guard_denied", err=True)
+        for reason in exc.reasons:
+            typer.echo(f"reason={reason}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo("warning=live_sat_transport_probe_guards_passed", err=True)
+    typer.echo("sat_real_execution=transport_probe_enabled", err=True)
+
+
 def _live_smoke_doctor_ok(profile: setup_flow.LocalProfile) -> bool:
     service = _download_profile_service(profile)
     try:
@@ -1328,6 +1395,13 @@ def _confirm_live_smoke() -> bool:
     return typed == LIVE_SMOKE_CONFIRMATION
 
 
+def _confirm_live_transport_probe() -> bool:
+    typer.echo("WARNING: this command probes public SAT transport endpoints.")
+    typer.echo("Do not continue unless #50 has explicit approval for this one manual probe.")
+    typed = str(typer.prompt(f'Type "{LIVE_TRANSPORT_PROBE_CONFIRMATION}" to continue')).strip()
+    return typed == LIVE_TRANSPORT_PROBE_CONFIRMATION
+
+
 def _is_minimal_live_smoke_range(query: DownloadQuery) -> bool:
     return query.period is not None and query.period.start.date() == query.period.end.date()
 
@@ -1356,6 +1430,10 @@ def _run_live_metadata_smoke(profile_id: str, query: DownloadQuery) -> LiveSmoke
 
 def _run_live_diagnose(profile_id: str, query: DownloadQuery) -> LiveSmokeCliResult:
     return _run_live_metadata_smoke(profile_id, query)
+
+
+def _run_transport_probe() -> tuple[SatProbeResult, ...]:
+    return run_sat_transport_probe()
 
 
 def _live_smoke_transport() -> GuardedSoapHttpTransport:
@@ -1421,6 +1499,34 @@ def _print_live_diagnose_result(
     typer.echo("recurrent_automation=no")
     if failed is not None:
         _print_live_adapter_error(failed)
+
+
+def _print_transport_probe_results(*, profile_id: str, results: tuple[SatProbeResult, ...]) -> None:
+    typer.echo("mode=transport-probe")
+    typer.echo(f"profile={profile_id}")
+    typer.echo(f"probe_status={'failed' if any(result.status != 'ok' for result in results) else 'ok'}")
+    for result in results:
+        fields = [
+            f"endpoint={result.endpoint}",
+            f"check={result.check}",
+            f"status={result.status}",
+            f"error_kind={result.error_kind}",
+            f"host={result.host}",
+            f"safe_hint={result.safe_hint}",
+            f"duration_ms={result.duration_ms}",
+            f"correlation_id={result.correlation_id}",
+        ]
+        if result.http_status is not None:
+            fields.append(f"http_status={result.http_status}")
+        if result.payload_size is not None:
+            fields.append(f"payload_size={result.payload_size}")
+        typer.echo("probe_result=" + "|".join(fields))
+    typer.echo("efirma_loaded=no")
+    typer.echo("credential_material_loaded=no")
+    typer.echo("metadata_requested=no")
+    typer.echo("xml_downloaded=no")
+    typer.echo("zip_downloaded=no")
+    typer.echo("raw_wsdl_printed=no")
 
 
 def _print_live_adapter_error(exc: SatLiveSmokeError) -> None:
