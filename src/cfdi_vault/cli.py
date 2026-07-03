@@ -770,7 +770,7 @@ def sat_auth_smoke(
 ) -> None:
     """Run guarded SAT authentication smoke preflight before any live auth attempt."""
 
-    _validate_live_smoke_guard(
+    live_permit_verified = _validate_live_smoke_guard(
         profile_id=profile,
         manual_real_sat=manual_real_sat,
         query=None,
@@ -781,7 +781,7 @@ def sat_auth_smoke(
         permit_scope="auth_live_smoke",
     )
     try:
-        result = _run_live_auth_smoke(profile)
+        result = _run_live_auth_smoke(profile, live_permit_verified=live_permit_verified)
     except LiveSmokeAdapterUnavailable as exc:
         typer.echo("error=live_adapter_unavailable", err=True)
         raise typer.Exit(code=1) from exc
@@ -1759,12 +1759,12 @@ def _is_minimal_live_smoke_range(query: DownloadQuery) -> bool:
     return query.period is not None and query.period.start.date() == query.period.end.date()
 
 
-def _run_live_auth_smoke(profile_id: str) -> LiveSmokeCliResult:
+def _run_live_auth_smoke(profile_id: str, *, live_permit_verified: bool = False) -> LiveSmokeCliResult:
     profile = _load_download_profile(profile_id)
     adapter = SatLiveMetadataSmokeAdapter(
         profile=profile,
         provider=_setup_provider(profile_id),
-        transport=_live_smoke_transport(),
+        transport=_live_smoke_transport(live_permit_verified=live_permit_verified),
     )
     result = adapter.auth_smoke()
     return LiveSmokeCliResult(result=result.result, auth=result.auth, request=result.request, verification=result.verification)
