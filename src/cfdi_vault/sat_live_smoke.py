@@ -20,6 +20,7 @@ from signxml import XMLSigner, methods
 from signxml.algorithms import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 from cfdi_vault.domain import DownloadDirection, DownloadQuery
 from cfdi_vault.sat_auth_endpoints import DEFAULT_AUTH_ENDPOINT, resolve_auth_endpoint
+from cfdi_vault.sat_auth_http import build_soap11_headers
 from cfdi_vault.sat_contract import SatOutcomeAction
 from cfdi_vault.sat_soap_parse import (
     SatSoapParseError,
@@ -247,10 +248,7 @@ class SatLiveMetadataSmokeAdapter:
         endpoint_label: str,
         authorization: str | None = None,
     ) -> bytes:
-        headers = {
-            "Content-Type": "text/xml;charset=UTF-8",
-            "SOAPAction": f'"{action}"',
-        }
+        headers = build_soap11_headers(action)
         if authorization:
             headers["Authorization"] = _wrap_authorization(authorization)
         started = time.perf_counter()

@@ -13,7 +13,9 @@ from cryptography.x509.oid import NameOID
 import pytest
 
 from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType
-from cfdi_vault.sat_live_smoke import SatEfirmMaterial, SatLiveMetadataSmokeAdapter, SatLiveSmokeEndpoints, SatLiveSmokeError
+from cfdi_vault.sat_auth_contract import AuthWsdlContract
+from cfdi_vault.sat_auth_http import validate_auth_headers_for_contract
+from cfdi_vault.sat_live_smoke import AUTH_ACTION, SatEfirmMaterial, SatLiveMetadataSmokeAdapter, SatLiveSmokeEndpoints, SatLiveSmokeError
 from cfdi_vault.sat_transport import FakeSoapTransport, SoapTransportResponse
 from cfdi_vault.secrets import DummySecretProvider
 from cfdi_vault.setup_core import CredentialMode, LocalProfile, LocalProfileStatus
@@ -58,6 +60,24 @@ def test_efirma_material_stays_out_of_tls_client_transport(tmp_path: Path) -> No
     assert request.timeout_seconds == 60
     assert b"BinarySecurityToken" in request.body
     assert material.certificate_pem.decode("ascii") not in repr(request)
+
+
+def test_auth_smoke_headers_match_soap11_contract_without_sensitive_headers(tmp_path: Path) -> None:
+    transport = FakeSoapTransport([SoapTransportResponse(200, body=_soap("<sat:AutenticaResult>SYNTHETIC_TOKEN</sat:AutenticaResult>"))])
+
+    SatLiveMetadataSmokeAdapter(
+        profile=_profile(tmp_path),
+        provider=DummySecretProvider(),
+        transport=transport,
+        material=_material(),
+    ).auth_smoke()
+
+    request = transport.requests[0]
+    result = validate_auth_headers_for_contract(request.headers, _auth_contract(), body=request.body)
+    assert result.all_checks_passed is True
+    assert request.headers["Content-Type"] == "text/xml;charset=UTF-8"
+    assert request.headers["SOAPAction"] == f'"{AUTH_ACTION}"'
+    assert "Authorization" not in request.headers
 
 
 def test_transport_failure_is_redacted(tmp_path: Path) -> None:
@@ -162,6 +182,22 @@ def _profile(tmp_path: Path) -> LocalProfile:
 
 def _query() -> DownloadQuery:
     return DownloadQuery("default", "XAXX010101000", DownloadDirection.RECEIVED, RequestType.METADATA, DateTimePeriod(datetime(2024, 1, 1, tzinfo=timezone.utc), datetime(2024, 1, 1, 23, 59, tzinfo=timezone.utc)))
+
+
+def _auth_contract() -> AuthWsdlContract:
+    return AuthWsdlContract(
+        operation_name="Autentica",
+        soap_action=AUTH_ACTION,
+        soap_version="1.1",
+        binding_transport="http://schemas.xmlsoap.org/soap/http",
+        target_namespace="http://DescargaMasivaTerceros.gob.mx",
+        endpoint_scheme="https",
+        endpoint_host="auth.example.test",
+        endpoint_port=443,
+        endpoint_path="/Autenticacion/Autenticacion.svc",
+        expected_action_uri=AUTH_ACTION,
+        wsdl_size=123,
+    )
 
 
 def _soap(body: str) -> bytes:
