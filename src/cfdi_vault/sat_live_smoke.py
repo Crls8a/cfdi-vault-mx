@@ -1,9 +1,11 @@
 """Guarded live SAT metadata-smoke adapter: auth/request/verify only, no package download."""
 from __future__ import annotations
 import base64
+import errno
 import hashlib
 import os
 import socket
+import ssl
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -47,7 +49,7 @@ PARSE_HINT = "check SAT response shape with redacted diagnostics only"
 MATERIAL_HINT = "check local profile readiness and e.firma material without printing paths or values"
 BUILD_HINT = "check envelope construction and XML signature inputs without printing SOAP"
 DIAGNOSTIC_STAGES = ("preflight", "profile_load", "secret_resolve", "credential_load", "certificate_parse", "private_key_load", "xmlsig_sign", "auth_envelope_build", "auth_transport", "auth_response_parse", "token_extract", "metadata_request_build", "metadata_request_transport", "metadata_request_parse", "verify_request_build", "verify_transport", "verify_response_parse", "package_download", "package_process")
-LIVE_ERROR_KINDS = ("guard_failed", "profile_not_ready", "secret_unavailable", "credential_load_failed", "certificate_parse_failed", "private_key_load_failed", "xmlsig_failed", "envelope_build_failed", "transport_tls_failed", "transport_timeout", "transport_http_error", "soap_fault", "token_missing", "token_parse_failed", "sat_status_error", "sat_duplicate_request", "sat_unauthorized", "sat_no_data", "sat_retryable", "sat_permanent", "unexpected_response", "redaction_failure", "unknown_live_adapter_failure")
+LIVE_ERROR_KINDS = ("guard_failed", "profile_not_ready", "secret_unavailable", "credential_load_failed", "certificate_parse_failed", "private_key_load_failed", "xmlsig_failed", "envelope_build_failed", "transport_tls_failed", "tls_handshake_failed", "certificate_verify_failed", "client_cert_rejected", "proxy_connect_failed", "connection_reset", "timeout", "transport_timeout", "transport_http_error", "soap_fault", "token_missing", "token_parse_failed", "sat_status_error", "sat_duplicate_request", "sat_unauthorized", "sat_no_data", "sat_retryable", "sat_permanent", "unexpected_response", "redaction_failure", "unknown_live_adapter_failure")
 @dataclass(frozen=True)
 class SatLiveDiagnosticEntry:
     """One redacted live diagnostic stage result."""
@@ -62,6 +64,9 @@ class SatLiveDiagnosticEntry:
     sat_code: str | None = None
     payload_size: int | None = None
     envelope_sha256: str | None = None
+    exception_class: str | None = None
+    exception_errno: int | None = None
+    transport_layer: str | None = None
     correlation_id: str | None = None
 class SatLiveSmokeError(RuntimeError):
     """Safe live smoke failure without credential, token, SOAP, RFC, path, or id detail."""
@@ -78,6 +83,9 @@ class SatLiveSmokeError(RuntimeError):
         sat_code: str | None = None,
         payload_size: int | None = None,
         envelope_sha256: str | None = None,
+        exception_class: str | None = None,
+        exception_errno: int | None = None,
+        transport_layer: str | None = None,
         duration_ms: int | None = None,
         correlation_id: str | None = None,
     ) -> None:
@@ -93,6 +101,9 @@ class SatLiveSmokeError(RuntimeError):
             sat_code=sat_code,
             payload_size=payload_size,
             envelope_sha256=envelope_sha256,
+            exception_class=exception_class,
+            exception_errno=exception_errno,
+            transport_layer=transport_layer,
             correlation_id=correlation_id or _correlation_id(),
         )
         super().__init__(message)
@@ -257,14 +268,18 @@ class SatLiveMetadataSmokeAdapter:
                 duration_ms=_elapsed_ms(started),
             ) from None
         except Exception as exc:
+            failure = _classify_transport_failure(exc)
             raise SatLiveSmokeError(
                 "SAT transport failed",
                 stage=stage,
-                error_kind=_classify_transport_exception(exc),
+                error_kind=failure.error_kind,
                 safe_hint=TRANSPORT_HINT,
                 endpoint=endpoint_label,
                 payload_size=len(body),
                 envelope_sha256=_digest(body),
+                exception_class=failure.exception_class,
+                exception_errno=failure.exception_errno,
+                transport_layer=failure.transport_layer,
                 duration_ms=_elapsed_ms(started),
             ) from None
         if not 200 <= response.status_code < 300:
@@ -453,15 +468,61 @@ def _build_stage(stage: str, build: object) -> bytes:
             safe_hint=BUILD_HINT,
             duration_ms=_elapsed_ms(started),
         ) from None
+@dataclass(frozen=True)
+class TransportFailureClassification:
+    error_kind: str
+    transport_layer: str
+    exception_class: str
+    exception_errno: int | None = None
+
+
+def _classify_transport_failure(exc: BaseException) -> TransportFailureClassification:
+    root = _root_transport_exception(exc)
+    marker = _exception_marker(root)
+    exception_class = type(root).__name__
+    exception_errno = _exception_errno(root)
+    if isinstance(root, ssl.SSLCertVerificationError):
+        return TransportFailureClassification("certificate_verify_failed", "tls", exception_class, exception_errno)
+    if isinstance(root, ssl.SSLError):
+        if _looks_like_client_cert_rejection(marker):
+            return TransportFailureClassification("client_cert_rejected", "tls", exception_class, exception_errno)
+        return TransportFailureClassification("tls_handshake_failed", "tls", exception_class, exception_errno)
+    if isinstance(root, (TimeoutError, socket.timeout)) or exception_errno in {errno.ETIMEDOUT, getattr(errno, "WSAETIMEDOUT", -1)}:
+        return TransportFailureClassification("timeout", "network", exception_class, exception_errno)
+    if isinstance(root, ConnectionResetError) or exception_errno in {errno.ECONNRESET, getattr(errno, "WSAECONNRESET", -1)} or "reset" in marker:
+        return TransportFailureClassification("connection_reset", "network", exception_class, exception_errno)
+    if "proxy" in marker or "tunnel" in marker or "firewall" in marker:
+        return TransportFailureClassification("proxy_connect_failed", "proxy", exception_class, exception_errno)
+    if isinstance(root, URLError):
+        return TransportFailureClassification("proxy_connect_failed", "proxy", exception_class, exception_errno)
+    return TransportFailureClassification("unknown_live_adapter_failure", "transport", exception_class, exception_errno)
+
+
 def _classify_transport_exception(exc: BaseException) -> str:
-    names = _exception_names(exc)
-    if "timeout" in names or isinstance(exc, (TimeoutError, socket.timeout)):
-        return "transport_timeout"
-    if "ssl" in names or "tls" in names or "certificate" in names:
-        return "transport_tls_failed"
-    if isinstance(exc, URLError):
-        return "transport_timeout" if "timeout" in _exception_names(exc.reason) else "unknown_live_adapter_failure"
-    return "unknown_live_adapter_failure"
+    return _classify_transport_failure(exc).error_kind
+
+
+def _root_transport_exception(exc: BaseException) -> BaseException:
+    if isinstance(exc, URLError) and isinstance(exc.reason, BaseException):
+        return _root_transport_exception(exc.reason)
+    for attr in ("__cause__", "__context__"):
+        nested = getattr(exc, attr, None)
+        if isinstance(nested, BaseException):
+            return _root_transport_exception(nested)
+    return exc
+
+
+def _exception_marker(exc: BaseException) -> str:
+    return f"{type(exc).__module__} {type(exc).__name__} {exc}".lower()
+
+
+def _exception_errno(exc: BaseException) -> int | None:
+    value = getattr(exc, "errno", None)
+    return value if isinstance(value, int) else None
+
+
+def _looks_like_client_cert_rejection(marker: str) -> bool:
+    return "certificate required" in marker or "bad certificate" in marker or "client cert" in marker
 def _auth_parse_failure(exc: BaseException) -> tuple[str, str]:
     reason = str(exc).lower()
     if "soap fault" in reason:

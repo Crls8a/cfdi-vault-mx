@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 from datetime import datetime, timezone
 from pathlib import Path
+import ssl
+from urllib.error import URLError
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -84,6 +86,41 @@ def test_http_failure_reports_only_safe_diagnostic_fields(tmp_path: Path) -> Non
     assert diagnostic.http_status == 500
     assert diagnostic.payload_size == len(b"<synthetic>server unavailable</synthetic>")
     assert diagnostic.endpoint == "auth"
+    assert diagnostic.transport_layer is None
+
+
+@pytest.mark.parametrize(
+    ("failure", "error_kind", "transport_layer"),
+    [
+        (ssl.SSLError("synthetic TLS failure"), "tls_handshake_failed", "tls"),
+        (ssl.SSLCertVerificationError("synthetic CA failure"), "certificate_verify_failed", "tls"),
+        (ssl.SSLError("tlsv13 alert certificate required"), "client_cert_rejected", "tls"),
+        (TimeoutError("synthetic timeout"), "timeout", "network"),
+        (ConnectionResetError("synthetic reset"), "connection_reset", "network"),
+        (URLError(OSError("synthetic proxy tunnel failure")), "proxy_connect_failed", "proxy"),
+    ],
+)
+def test_transport_exception_classification_is_specific_and_redacted(
+    tmp_path: Path,
+    failure: BaseException,
+    error_kind: str,
+    transport_layer: str,
+) -> None:
+    class BrokenTransport:
+        def send(self, _request: object) -> object:
+            raise failure
+
+    adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=BrokenTransport(), material=_material())
+
+    with pytest.raises(SatLiveSmokeError) as exc:
+        adapter.auth_smoke()
+
+    diagnostic = exc.value.diagnostic
+    assert diagnostic.stage == "auth_transport"
+    assert diagnostic.error_kind == error_kind
+    assert diagnostic.transport_layer == transport_layer
+    assert diagnostic.exception_class
+    assert "synthetic" not in str(exc.value)
 
 
 def test_missing_auth_authorization_reports_token_extract_stage(tmp_path: Path) -> None:
