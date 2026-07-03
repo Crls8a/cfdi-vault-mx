@@ -36,7 +36,7 @@ from cfdi_vault.secrets import CredentialKind, CredentialProviderError, Credenti
 from cfdi_vault.service import ImportBatchResult, ImportRecord, SummaryRow, VaultService
 from cfdi_vault.sat_orchestration import DownloadRequestOrchestrator
 from cfdi_vault.sat_simulator import FakeSatScenario, FakeSatScenarioClient
-from cfdi_vault.sat_live_smoke import SatLiveMetadataSmokeAdapter, SatLiveSmokeError
+from cfdi_vault.sat_live_smoke import DIAGNOSTIC_STAGES, SatLiveMetadataSmokeAdapter, SatLiveSmokeError
 from cfdi_vault.sat_transport import (
     GuardedSoapHttpTransport,
     LiveSatGuardError,
@@ -170,6 +170,12 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "purpose": "Validate live SAT authentication smoke gates before any real SAT auth attempt.",
         "when": "Run only on the operator machine after explicit human approval.",
         "example": "cfdi-vault sat auth-smoke --profile default --manual-real-sat",
+    },
+    {
+        "command": "sat diagnose-live",
+        "purpose": "Run a guarded metadata-only SAT live diagnostic with redacted stage output.",
+        "when": "Run only after a live smoke failure and explicit human approval for one diagnostic attempt.",
+        "example": "cfdi-vault sat diagnose-live --profile default --from YYYY-MM-DD --to YYYY-MM-DD --kind metadata --direction received --manual-real-sat",
     },
     {
         "command": "queue status",
@@ -675,6 +681,43 @@ def sat_auth_smoke(
         _print_live_adapter_error(exc)
         raise typer.Exit(code=1) from exc
     _print_live_smoke_result(profile_id=profile, kind="auth", direction="n/a", result=result)
+
+
+@sat_app.command("diagnose-live")
+def sat_diagnose_live(
+    profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
+    from_date: str = typer.Option(..., "--from", help="Start date: YYYY-MM-DD."),
+    to_date: str = typer.Option(..., "--to", help="End date: YYYY-MM-DD."),
+    kind: str = typer.Option(..., "--kind", help="metadata only in this version."),
+    direction: str = typer.Option(..., "--direction", help="received or issued."),
+    manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Required human gate for real SAT diagnostic."),
+) -> None:
+    """Run a human-gated metadata-only live SAT diagnostic command."""
+
+    query, _ = _build_profile_download_query_with_profile(
+        profile_id=profile,
+        from_date=from_date,
+        to_date=to_date,
+        kind=kind,
+        direction=direction,
+    )
+    _validate_live_smoke_guard(
+        profile_id=profile,
+        manual_real_sat=manual_real_sat,
+        query=query,
+        metadata_only=query.request_type == RequestType.METADATA,
+        range_within_limit=_is_minimal_live_smoke_range(query),
+        mode="diagnose-live",
+    )
+    try:
+        result = _run_live_diagnose(profile, query)
+    except LiveSmokeAdapterUnavailable as exc:
+        typer.echo("error=live_adapter_unavailable", err=True)
+        raise typer.Exit(code=1) from exc
+    except SatLiveSmokeError as exc:
+        _print_live_diagnose_result(profile_id=profile, kind=query.request_type.value, direction=query.direction.value, result=None, failed=exc)
+        raise typer.Exit(code=1) from exc
+    _print_live_diagnose_result(profile_id=profile, kind=query.request_type.value, direction=query.direction.value, result=result)
 
 
 @app.command("init")
@@ -1184,6 +1227,7 @@ def _validate_live_smoke_guard(
     query: DownloadQuery | None,
     metadata_only: bool,
     range_within_limit: bool,
+    mode: str = "live-smoke",
 ) -> None:
     profile = _load_download_profile(profile_id)
     provider = _setup_provider(profile_id)
@@ -1228,7 +1272,7 @@ def _validate_live_smoke_guard(
     typer.echo("warning=live_sat_smoke_guards_passed", err=True)
     typer.echo("sat_real_execution=adapter_enabled", err=True)
     if query is not None:
-        _print_download_query(profile_id=profile_id, query=query, will_submit=False, mode="live-smoke")
+        _print_download_query(profile_id=profile_id, query=query, will_submit=False, mode=mode)
 
 
 def _live_smoke_doctor_ok(profile: setup_flow.LocalProfile) -> bool:
@@ -1310,6 +1354,10 @@ def _run_live_metadata_smoke(profile_id: str, query: DownloadQuery) -> LiveSmoke
     return LiveSmokeCliResult(result=result.result, auth=result.auth, request=result.request, verification=result.verification)
 
 
+def _run_live_diagnose(profile_id: str, query: DownloadQuery) -> LiveSmokeCliResult:
+    return _run_live_metadata_smoke(profile_id, query)
+
+
 def _live_smoke_transport() -> GuardedSoapHttpTransport:
     return GuardedSoapHttpTransport(
         guard_input_factory=lambda: LiveSatGuardInput(
@@ -1348,6 +1396,33 @@ def _print_live_smoke_result(
     typer.echo("recurrent_automation=no")
 
 
+def _print_live_diagnose_result(
+    *,
+    profile_id: str,
+    kind: str,
+    direction: str,
+    result: LiveSmokeCliResult | None,
+    failed: SatLiveSmokeError | None = None,
+) -> None:
+    typer.echo("mode=diagnose-live")
+    typer.echo(f"profile={profile_id}")
+    typer.echo(f"kind={kind}")
+    typer.echo(f"direction={direction}")
+    typer.echo(f"diagnostic_status={'failed' if failed else 'ok'}")
+    typer.echo(f"stages={_diagnostic_stage_summary(failed.failed_stage if failed else None)}")
+    if result is not None:
+        typer.echo(f"result={result.result}")
+        typer.echo(f"auth={result.auth}")
+        typer.echo(f"request={result.request}")
+        typer.echo(f"verification={result.verification}")
+    typer.echo("xml_downloaded=no")
+    typer.echo("zip_downloaded=no")
+    typer.echo("package_downloaded=no")
+    typer.echo("recurrent_automation=no")
+    if failed is not None:
+        _print_live_adapter_error(failed)
+
+
 def _print_live_adapter_error(exc: SatLiveSmokeError) -> None:
     diagnostic = exc.diagnostic
     typer.echo("error=live_adapter_failed", err=True)
@@ -1366,6 +1441,23 @@ def _print_live_adapter_error(exc: SatLiveSmokeError) -> None:
     ):
         if value is not None:
             typer.echo(f"{key}={value}", err=True)
+
+
+def _diagnostic_stage_summary(failed_stage: str | None) -> str:
+    statuses: list[str] = []
+    failed_seen = False
+    for stage in DIAGNOSTIC_STAGES:
+        if stage in {"package_download", "package_process"}:
+            status = "skipped"
+        elif failed_stage == stage:
+            status = "failed"
+            failed_seen = True
+        else:
+            status = "skipped" if failed_seen else "ok"
+        statuses.append(f"{stage}:{status}")
+    if failed_stage and failed_stage not in DIAGNOSTIC_STAGES:
+        statuses.append(f"{failed_stage}:failed")
+    return ",".join(statuses)
 
 
 def _load_download_profile(profile_id: str) -> setup_flow.LocalProfile:
