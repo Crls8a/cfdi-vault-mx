@@ -12,6 +12,8 @@ def test_help_command_lists_recovery_flow() -> None:
     assert "sync xml" in result.output
     assert "download sync" in result.output
     assert "download status" in result.output
+    assert "download live-smoke" in result.output
+    assert "sat auth-smoke" in result.output
     assert "Command catalog" in result.output
 
 
@@ -41,6 +43,8 @@ def test_cli_subcommand_help_builds_for_setup_and_worker() -> None:
         ["download", "request", "--help"],
         ["download", "sync", "--help"],
         ["download", "status", "--help"],
+        ["download", "live-smoke", "--help"],
+        ["sat", "auth-smoke", "--help"],
         ["worker", "run", "--help"],
     ):
         result = CliRunner().invoke(app, args)

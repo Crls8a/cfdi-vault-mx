@@ -79,9 +79,15 @@ class LiveSatGuardInput:
     """
 
     manual_real_sat: bool = False
+    terminal_interactive: bool = False
+    confirmation_verified: bool = False
     profile_ready: bool = False
+    credentials_ready: bool = False
+    doctor_ok: bool = False
     scanner_passed: bool = False
     repo_clean: bool = False
+    metadata_only: bool = False
+    range_within_limit: bool = False
     environ: Mapping[str, str] = field(default_factory=lambda: os.environ)
 
 
@@ -97,12 +103,24 @@ def validate_live_sat_guard(input: LiveSatGuardInput) -> None:
         reasons.append("missing-explicit-real-credentials-env")
     if not input.manual_real_sat:
         reasons.append("missing-manual-real-sat-flag")
+    if not input.terminal_interactive:
+        reasons.append("non-interactive-terminal")
+    if not input.confirmation_verified:
+        reasons.append("missing-live-smoke-confirmation")
     if not input.profile_ready:
         reasons.append("profile-not-ready")
+    if not input.credentials_ready:
+        reasons.append("local-credentials-not-ready")
+    if not input.doctor_ok:
+        reasons.append("doctor-not-ok")
     if not input.scanner_passed:
         reasons.append("scanner-not-passed")
     if not input.repo_clean:
         reasons.append("repo-dirty")
+    if not input.metadata_only:
+        reasons.append("metadata-only-required")
+    if not input.range_within_limit:
+        reasons.append("range-too-wide")
     if reasons:
         raise LiveSatGuardError(reasons)
 

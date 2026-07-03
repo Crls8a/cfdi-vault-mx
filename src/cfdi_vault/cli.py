@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, time, timezone
 import os
 from pathlib import Path
+import subprocess
 import sys
 
 import typer
@@ -34,6 +36,7 @@ from cfdi_vault.secrets import CredentialKind, CredentialProviderError, Credenti
 from cfdi_vault.service import ImportBatchResult, ImportRecord, SummaryRow, VaultService
 from cfdi_vault.sat_orchestration import DownloadRequestOrchestrator
 from cfdi_vault.sat_simulator import FakeSatScenario, FakeSatScenarioClient
+from cfdi_vault.sat_transport import LiveSatGuardError, LiveSatGuardInput, validate_live_sat_guard
 from cfdi_vault.worker import RecoveryWorker
 from cfdi_vault.windows_secrets import WindowsCredentialManagerSecretProvider
 
@@ -47,6 +50,7 @@ queue_app = typer.Typer(help="Inspect queue state.", no_args_is_help=True)
 worker_app = typer.Typer(help="Run recovery workers.", no_args_is_help=True)
 sync_app = typer.Typer(help="Submit SAT recovery sync jobs.", no_args_is_help=True)
 download_app = typer.Typer(help="Plan and submit fake/offline SAT download requests.", no_args_is_help=True)
+sat_app = typer.Typer(help="Run human-gated SAT live smoke checks.", no_args_is_help=True)
 custody_app = typer.Typer(help="Manage local secret references without printing values.", no_args_is_help=True)
 
 app.add_typer(config_app, name="config")
@@ -54,6 +58,7 @@ app.add_typer(queue_app, name="queue")
 app.add_typer(worker_app, name="worker")
 app.add_typer(sync_app, name="sync")
 app.add_typer(download_app, name="download")
+app.add_typer(sat_app, name="sat")
 app.add_typer(custody_app, name="secret")
 
 
@@ -149,6 +154,18 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "example": "cfdi-vault download status --profile default --job-id <job-id>",
     },
     {
+        "command": "download live-smoke",
+        "purpose": "Validate the human-gated metadata-only live SAT smoke path without allowing CFDI/XML download.",
+        "when": "Run only after #50 is explicitly approved for one local manual SAT smoke attempt.",
+        "example": "cfdi-vault download live-smoke --profile default --from YYYY-MM-DD --to YYYY-MM-DD --kind metadata --direction received --manual-real-sat",
+    },
+    {
+        "command": "sat auth-smoke",
+        "purpose": "Validate live SAT authentication smoke gates before any real SAT auth attempt.",
+        "when": "Run only on the operator machine after explicit human approval.",
+        "example": "cfdi-vault sat auth-smoke --profile default --manual-real-sat",
+    },
+    {
         "command": "queue status",
         "purpose": "Show queue/job event counts from the durable event log.",
         "when": "Use when a job is pending, failed, or needs operational inspection.",
@@ -215,6 +232,22 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "example": "cfdi-vault export-csv export.csv",
     },
 )
+
+LIVE_SMOKE_CONFIRMATION = "SAT REAL METADATA SMOKE"
+
+
+@dataclass(frozen=True)
+class LiveSmokeCliResult:
+    """Redacted CLI result for injected live smoke adapters."""
+
+    result: str
+    auth: str = "not_run"
+    request: str = "not_run"
+    verification: str = "not_run"
+
+
+class LiveSmokeAdapterUnavailable(RuntimeError):
+    """Raised after guards pass when the real live adapter is not wired yet."""
 
 
 def _db_option() -> Path:
@@ -613,6 +646,28 @@ def doctor(
         raise typer.Exit(code=1)
 
 
+@sat_app.command("auth-smoke")
+def sat_auth_smoke(
+    profile: str = typer.Option("default", "--profile", help="Local setup profile id."),
+    manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Required human gate for real SAT smoke."),
+) -> None:
+    """Run guarded SAT authentication smoke preflight before any live auth attempt."""
+
+    _validate_live_smoke_guard(
+        profile_id=profile,
+        manual_real_sat=manual_real_sat,
+        query=None,
+        metadata_only=True,
+        range_within_limit=True,
+    )
+    try:
+        result = _run_live_auth_smoke(profile)
+    except LiveSmokeAdapterUnavailable as exc:
+        typer.echo("error=live_adapter_unavailable", err=True)
+        raise typer.Exit(code=1) from exc
+    _print_live_smoke_result(profile_id=profile, kind="auth", direction="n/a", result=result)
+
+
 @app.command("init")
 def init(
     tenant_id: str = typer.Option("default", "--tenant-id", help="Tenant identifier."),
@@ -802,6 +857,39 @@ def download_sync(
     typer.echo(f"request_id={result.request_id}")
     typer.echo(f"status={result.status}")
     typer.echo(f"metadata_count={result.metadata_count}")
+
+
+@download_app.command("live-smoke")
+def download_live_smoke(
+    profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
+    from_date: str = typer.Option(..., "--from", help="Start date: YYYY-MM-DD."),
+    to_date: str = typer.Option(..., "--to", help="End date: YYYY-MM-DD."),
+    kind: str = typer.Option(..., "--kind", help="metadata only in this version."),
+    direction: str = typer.Option(..., "--direction", help="received or issued."),
+    manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Required human gate for real SAT smoke."),
+) -> None:
+    """Run a human-gated metadata-only live SAT smoke command."""
+
+    query, _ = _build_profile_download_query_with_profile(
+        profile_id=profile,
+        from_date=from_date,
+        to_date=to_date,
+        kind=kind,
+        direction=direction,
+    )
+    _validate_live_smoke_guard(
+        profile_id=profile,
+        manual_real_sat=manual_real_sat,
+        query=query,
+        metadata_only=query.request_type == RequestType.METADATA,
+        range_within_limit=_is_minimal_live_smoke_range(query),
+    )
+    try:
+        result = _run_live_metadata_smoke(profile, query)
+    except LiveSmokeAdapterUnavailable as exc:
+        typer.echo("error=live_adapter_unavailable", err=True)
+        raise typer.Exit(code=1) from exc
+    _print_live_smoke_result(profile_id=profile, kind=query.request_type.value, direction=query.direction.value, result=result)
 
 
 @download_app.command("status")
@@ -1077,6 +1165,147 @@ def _download_profile_service(profile: setup_flow.LocalProfile) -> RecoveryServi
     return RecoveryService(sqlite_path=recovery_db, storage_root=profile.storage_root)
 
 
+def _validate_live_smoke_guard(
+    *,
+    profile_id: str,
+    manual_real_sat: bool,
+    query: DownloadQuery | None,
+    metadata_only: bool,
+    range_within_limit: bool,
+) -> None:
+    profile = _load_download_profile(profile_id)
+    provider = _setup_provider(profile_id)
+    inspection = setup_flow.inspect_profile(profile_id, provider=provider)
+    doctor_ok = _live_smoke_doctor_ok(profile)
+    repo_clean, scanner_passed = _checkout_guard_status()
+    interactive = _terminal_is_interactive()
+    confirmed = False
+    if manual_real_sat and interactive:
+        confirmed = _confirm_live_smoke()
+
+    try:
+        validate_live_sat_guard(
+            LiveSatGuardInput(
+                manual_real_sat=manual_real_sat,
+                terminal_interactive=interactive,
+                confirmation_verified=confirmed,
+                profile_ready=inspection.status == setup_flow.LocalProfileStatus.READY,
+                credentials_ready=all(
+                    state == "loaded"
+                    for state in (
+                        inspection.certificate_state,
+                        inspection.private_key_state,
+                        inspection.phrase_state,
+                        inspection.storage_state,
+                    )
+                ),
+                doctor_ok=doctor_ok,
+                scanner_passed=scanner_passed,
+                repo_clean=repo_clean,
+                metadata_only=metadata_only,
+                range_within_limit=range_within_limit,
+                environ=os.environ,
+            )
+        )
+    except LiveSatGuardError as exc:
+        typer.echo("error=live_sat_guard_denied", err=True)
+        for reason in exc.reasons:
+            typer.echo(f"reason={reason}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo("warning=live_sat_smoke_guards_passed", err=True)
+    typer.echo("sat_real_execution=adapter_pending", err=True)
+    if query is not None:
+        _print_download_query(profile_id=profile_id, query=query, will_submit=False, mode="live-smoke")
+
+
+def _live_smoke_doctor_ok(profile: setup_flow.LocalProfile) -> bool:
+    service = _download_profile_service(profile)
+    try:
+        return all(check.ok for check in service.doctor())
+    finally:
+        service.close()
+
+
+def _checkout_guard_status() -> tuple[bool, bool]:
+    repo_root = _find_checkout_root(Path.cwd())
+    if repo_root is None:
+        return False, False
+
+    status = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    repo_clean = status.returncode == 0 and not status.stdout.strip()
+    scanner = repo_root / "scripts" / "scan_sensitive_fixtures.py"
+    if not scanner.is_file():
+        return repo_clean, False
+    scanner_result = subprocess.run(
+        [sys.executable, str(scanner), "--root", str(repo_root)],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return repo_clean, scanner_result.returncode == 0
+
+
+def _find_checkout_root(start: Path) -> Path | None:
+    current = start.resolve()
+    for candidate in (current, *current.parents):
+        if candidate.joinpath(".git").exists():
+            return candidate
+    return None
+
+
+def _terminal_is_interactive() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _confirm_live_smoke() -> bool:
+    typer.echo("WARNING: this command is gated for a real SAT metadata smoke.")
+    typer.echo("Do not continue unless #50 has explicit approval for this one manual run.")
+    typed = str(typer.prompt(f'Type "{LIVE_SMOKE_CONFIRMATION}" to continue')).strip()
+    return typed == LIVE_SMOKE_CONFIRMATION
+
+
+def _is_minimal_live_smoke_range(query: DownloadQuery) -> bool:
+    return query.period is not None and query.period.start.date() == query.period.end.date()
+
+
+def _run_live_auth_smoke(profile_id: str) -> LiveSmokeCliResult:
+    raise LiveSmokeAdapterUnavailable(f"live SAT auth smoke adapter is not wired for profile {profile_id!r}")
+
+
+def _run_live_metadata_smoke(profile_id: str, query: DownloadQuery) -> LiveSmokeCliResult:
+    raise LiveSmokeAdapterUnavailable(
+        f"live SAT metadata smoke adapter is not wired for profile {profile_id!r} and criteria {query.criteria_hash()}"
+    )
+
+
+def _print_live_smoke_result(
+    *,
+    profile_id: str,
+    kind: str,
+    direction: str,
+    result: LiveSmokeCliResult,
+) -> None:
+    typer.echo("mode=live-smoke")
+    typer.echo(f"profile={profile_id}")
+    typer.echo(f"kind={kind}")
+    typer.echo(f"direction={direction}")
+    typer.echo(f"result={result.result}")
+    typer.echo(f"auth={result.auth}")
+    typer.echo(f"request={result.request}")
+    typer.echo(f"verification={result.verification}")
+    typer.echo("xml_downloaded=no")
+    typer.echo("zip_downloaded=no")
+    typer.echo("recurrent_automation=no")
+
+
 def _load_download_profile(profile_id: str) -> setup_flow.LocalProfile:
     try:
         return setup_flow.load_profile(profile_id)
@@ -1115,8 +1344,8 @@ def _parse_download_date(value: str, *, label: str, end_of_day: bool) -> datetim
         raise typer.BadParameter(f"{label} must be a valid YYYY-MM-DD date") from exc
 
 
-def _print_download_query(*, profile_id: str, query: DownloadQuery, will_submit: bool) -> None:
-    typer.echo("mode=fake")
+def _print_download_query(*, profile_id: str, query: DownloadQuery, will_submit: bool, mode: str = "fake") -> None:
+    typer.echo(f"mode={mode}")
     typer.echo(f"profile={profile_id}")
     typer.echo(f"kind={query.request_type.value}")
     typer.echo(f"direction={query.direction.value}")
