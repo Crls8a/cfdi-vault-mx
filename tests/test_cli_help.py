@@ -32,7 +32,17 @@ def test_help_command_fails_for_unknown_topic() -> None:
 
 
 def test_cli_subcommand_help_builds_for_setup_and_worker() -> None:
-    for args in (["setup", "--help"], ["setup", "--no-smoke", "--help"], ["worker", "run", "--help"]):
+    for args in (
+        ["--help"],
+        ["setup", "--help"],
+        ["setup", "--no-smoke", "--help"],
+        ["doctor", "--help"],
+        ["download", "plan", "--help"],
+        ["download", "request", "--help"],
+        ["download", "sync", "--help"],
+        ["download", "status", "--help"],
+        ["worker", "run", "--help"],
+    ):
         result = CliRunner().invoke(app, args)
 
         assert result.exit_code == 0, result.output

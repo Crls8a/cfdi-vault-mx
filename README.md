@@ -77,6 +77,14 @@ Windows local setup can also use:
 .\scripts\install.ps1
 ```
 
+For the no-Docker local installer alpha, run:
+
+```powershell
+.\scripts\bootstrap_local.ps1
+```
+
+See `docs/installer/local-installer-alpha.md` for the editable install and fake/offline first-use flow.
+
 ## SAT download library documentation
 
 The repository includes design documentation for the SAT Web Service download library. Start at `docs/foundation/README.md`, then `docs/planning/README.md`, `docs/sat-download/README.md`, and `docs/recovery-v2.md`.

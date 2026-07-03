@@ -13,11 +13,12 @@ This repository is split into two documentation areas: the current local-first C
 7. Read [Safe RFC profile configuration](config/README.md) before adding local profile settings.
 8. Read [Local RFC setup and credential intake](setup.md) before changing AppData setup or credential import.
 9. Read [First-run onboarding](installer/onboarding.md) before changing installer or profile setup.
-10. Read [Idempotent local storage](storage-design.md) before writing package, metadata, or XML evidence.
-11. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
-12. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
-13. Read [Offline/local SAT download operations](sat-download/offline-local-operations.md) before validating issue #51.
-14. Read [MANUAL-SAT-001](sat-download/manual-sat-runbook.md) before requesting any human-gated live SAT smoke.
+10. Read [Local installer alpha](installer/local-installer-alpha.md) before changing editable install or bootstrap behavior.
+11. Read [Idempotent local storage](storage-design.md) before writing package, metadata, or XML evidence.
+12. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
+13. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
+14. Read [Offline/local SAT download operations](sat-download/offline-local-operations.md) before validating issue #51.
+15. Read [MANUAL-SAT-001](sat-download/manual-sat-runbook.md) before requesting any human-gated live SAT smoke.
 
 ## Documentation map
 
@@ -31,6 +32,7 @@ This repository is split into two documentation areas: the current local-first C
 | Current repo | [Safe RFC profile configuration](config/README.md) | Local multi-RFC config schema and credential-reference rules. |
 | Current repo | [Local RFC setup and credential intake](setup.md) | AppData profile creation, credential import guards, redacted status, and cleanup. |
 | Current repo | [First-run onboarding](installer/onboarding.md) | CLI setup flow for storage, RFC profile, schedule, and non-secret e.firma references. |
+| Current repo | [Local installer alpha](installer/local-installer-alpha.md) | Windows editable install, bootstrap script, installed CLI validation, and fake/offline first-use flow. |
 | Current repo | [Idempotent local storage](storage-design.md) | RFC/period storage layout, metadata-first index, idempotency rules, and pipeline states. |
 | Current repo | [SDD](sdd.md) | Initial implemented requirements. |
 | Foundation | [Foundation-first plan](foundation/README.md) | Gate before more code: scope, stories, CLI/UX, installer, unified recovery pipeline, storage, architecture, data model, ambiguity, ownership, delegation. |
