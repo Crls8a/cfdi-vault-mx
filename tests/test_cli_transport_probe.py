@@ -42,3 +42,29 @@ def test_sat_probe_transport_prints_redacted_results(monkeypatch) -> None:
     assert "metadata_requested=no" in result.output
     assert "https://" not in result.output
     assert "raw wsdl" not in result.output.lower()
+
+
+def test_sat_probe_transport_keeps_package_endpoint_non_fatal(monkeypatch) -> None:
+    monkeypatch.setattr(cli_module, "_validate_live_transport_probe_guard", lambda profile_id, manual_real_sat: None)
+    monkeypatch.setattr(
+        cli_module,
+        "_run_transport_probe",
+        lambda: (
+            SatProbeResult(
+                endpoint="package_download",
+                check="wsdl_get",
+                host="sat.example",
+                status="failed",
+                error_kind="wsdl_unavailable",
+                safe_hint="WSDL endpoint reached but did not return a successful WSDL response",
+                correlation_id="probe-package",
+            ),
+        ),
+    )
+
+    result = CliRunner().invoke(app, ["sat", "probe-transport", "--manual-real-sat"])
+
+    assert result.exit_code == 0, result.output
+    assert "probe_status=ok" in result.output
+    assert "required=no" in result.output
+    assert "error_kind=wsdl_unavailable" in result.output
