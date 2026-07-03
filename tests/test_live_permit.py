@@ -92,6 +92,30 @@ def test_live_execution_permit_is_appdata_local_one_time_and_exact_scope(tmp_pat
         )
 
 
+def test_live_execution_permit_allows_auth_post_probe_scope_without_credentials(tmp_path: Path) -> None:
+    env = {"LOCALAPPDATA": str(tmp_path / "appdata")}
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    permit = create_live_execution_permit(_request(scope="auth_post_probe"), env=env, now=NOW, repo_root=repo_root)
+
+    assert permit.scope == "auth_post_probe"
+    assert permit.allow_real_credentials is False
+    consumed = validate_and_consume_live_permit(
+        permit.permit_id,
+        scope="auth_post_probe",
+        profile_id="dummy-profile",
+        kind="metadata",
+        direction="received",
+        date_from="2026-07-03",
+        date_to="2026-07-03",
+        env=env,
+        now=NOW + timedelta(minutes=1),
+        repo_root=repo_root,
+    )
+    assert consumed.consumed is True
+
+
 @pytest.mark.parametrize(
     ("permit_request", "reason"),
     [
