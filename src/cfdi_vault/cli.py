@@ -738,7 +738,7 @@ def sat_probe_transport(
     _validate_live_transport_probe_guard(profile_id=profile, manual_real_sat=manual_real_sat)
     results = tuple(_run_transport_probe())
     _print_transport_probe_results(profile_id=profile, results=results)
-    if any(result.status != "ok" for result in results):
+    if _has_required_transport_probe_failure(results):
         raise typer.Exit(code=1)
 
 
@@ -1504,11 +1504,12 @@ def _print_live_diagnose_result(
 def _print_transport_probe_results(*, profile_id: str, results: tuple[SatProbeResult, ...]) -> None:
     typer.echo("mode=transport-probe")
     typer.echo(f"profile={profile_id}")
-    typer.echo(f"probe_status={'failed' if any(result.status != 'ok' for result in results) else 'ok'}")
+    typer.echo(f"probe_status={'failed' if _has_required_transport_probe_failure(results) else 'ok'}")
     for result in results:
         fields = [
             f"endpoint={result.endpoint}",
             f"check={result.check}",
+            f"required={'no' if result.endpoint == 'package_download' else 'yes'}",
             f"status={result.status}",
             f"error_kind={result.error_kind}",
             f"host={result.host}",
@@ -1527,6 +1528,10 @@ def _print_transport_probe_results(*, profile_id: str, results: tuple[SatProbeRe
     typer.echo("xml_downloaded=no")
     typer.echo("zip_downloaded=no")
     typer.echo("raw_wsdl_printed=no")
+
+
+def _has_required_transport_probe_failure(results: tuple[SatProbeResult, ...]) -> bool:
+    return any(result.status != "ok" and result.endpoint != "package_download" for result in results)
 
 
 def _print_live_adapter_error(exc: SatLiveSmokeError) -> None:
