@@ -1868,9 +1868,17 @@ def _print_auth_envelope_lint(fixture: str, result: AuthEnvelopeLintResult) -> N
         "timestamp_window_ok",
         "bst_present",
         "bst_der",
+        "bst_no_pem",
         "signature",
         "signed_info",
+        "c14n_method",
+        "signature_method",
+        "digest_method",
+        "reference_transforms",
+        "reference_uris",
         "references_resolve",
+        "references_use_wsu_id",
+        "signed_nodes_exist",
         "digest_value",
         "signature_value",
         "key_info",
@@ -1878,6 +1886,7 @@ def _print_auth_envelope_lint(fixture: str, result: AuthEnvelopeLintResult) -> N
         "timestamp_signed",
         "to_header_present",
         "action_header_present",
+        "local_signature_verify",
     ):
         typer.echo(f"check_{name}={'yes' if getattr(result, name) else 'no'}")
     typer.echo("raw_xml_printed=no")

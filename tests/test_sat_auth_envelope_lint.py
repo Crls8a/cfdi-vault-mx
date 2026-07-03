@@ -14,9 +14,18 @@ def test_lint_auth_envelope_reports_structure_without_raw_xml() -> None:
     assert result.soap_envelope is True
     assert result.ws_security is True
     assert result.bst_der is True
+    assert result.bst_no_pem is True
     assert result.signature is True
+    assert result.c14n_method is True
+    assert result.signature_method is True
+    assert result.digest_method is True
+    assert result.reference_transforms is True
     assert result.reference_count >= 1
+    assert result.reference_uris is True
     assert result.references_resolve is True
+    assert result.references_use_wsu_id is True
+    assert result.signed_nodes_exist is True
+    assert result.local_signature_verify is True
     rendered = repr(result)
     assert "<soap" not in rendered
     assert "BEGIN CERTIFICATE" not in rendered
@@ -33,6 +42,47 @@ def test_lint_auth_envelope_detects_broken_reference_without_raw_xml() -> None:
 
     assert result.all_checks_passed is False
     assert result.references_resolve is False
+    assert result.references_use_wsu_id is False
+    assert result.signed_nodes_exist is False
+    assert result.local_signature_verify is False
+
+
+def test_lint_auth_envelope_detects_wrong_signature_methods_without_raw_xml() -> None:
+    envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc")
+    root = etree.fromstring(envelope)
+    c14n = root.find(".//{http://www.w3.org/2000/09/xmldsig#}CanonicalizationMethod")
+    signature = root.find(".//{http://www.w3.org/2000/09/xmldsig#}SignatureMethod")
+    digest = root.find(".//{http://www.w3.org/2000/09/xmldsig#}DigestMethod")
+    assert c14n is not None
+    assert signature is not None
+    assert digest is not None
+    c14n.set("Algorithm", "urn:wrong-c14n")
+    signature.set("Algorithm", "urn:wrong-signature")
+    digest.set("Algorithm", "urn:wrong-digest")
+
+    result = lint_auth_envelope(etree.tostring(root, encoding="UTF-8", xml_declaration=True))
+
+    assert result.all_checks_passed is False
+    assert result.c14n_method is False
+    assert result.signature_method is False
+    assert result.digest_method is False
+    assert result.local_signature_verify is False
+
+
+def test_lint_auth_envelope_detects_pem_certificate_marker_without_printing_it() -> None:
+    envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc")
+    root = etree.fromstring(envelope)
+    bst = root.find(".//{http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd}BinarySecurityToken")
+    assert bst is not None
+    bst.text = "-----BEGIN " + "CERTIFICATE-----"
+
+    result = lint_auth_envelope(etree.tostring(root, encoding="UTF-8", xml_declaration=True))
+
+    assert result.all_checks_passed is False
+    assert result.bst_der is False
+    assert result.bst_no_pem is False
+    assert result.local_signature_verify is False
+    assert "-----BEGIN" not in repr(result)
 
 
 def test_lint_auth_envelope_cli_prints_redacted_checks() -> None:
@@ -42,6 +92,10 @@ def test_lint_auth_envelope_cli_prints_redacted_checks() -> None:
     assert "mode=auth-envelope-lint" in result.output
     assert "all_checks_passed=yes" in result.output
     assert "check_ws_security=yes" in result.output
+    assert "check_c14n_method=yes" in result.output
+    assert "check_signature_method=yes" in result.output
+    assert "check_digest_method=yes" in result.output
+    assert "check_local_signature_verify=yes" in result.output
     assert "raw_xml_printed=no" in result.output
     assert "certificate_printed=no" in result.output
     assert "signature_value_printed=no" in result.output
