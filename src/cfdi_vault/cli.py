@@ -131,6 +131,12 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "example": "cfdi-vault download request --profile default --from 2024-01-01 --to 2024-01-31 --kind cfdi --direction issued",
     },
     {
+        "command": "download sync",
+        "purpose": "Run a fake/offline SAT download sync from a setup profile and persist local recovery evidence.",
+        "when": "Run when you need the offline request, verification, package, metadata, and XML pipeline to finish locally.",
+        "example": "cfdi-vault download sync --profile default --from 2024-01-01 --to 2024-01-31 --kind cfdi --direction received",
+    },
+    {
         "command": "queue status",
         "purpose": "Show queue/job event counts from the durable event log.",
         "when": "Use when a job is pending, failed, or needs operational inspection.",
@@ -756,6 +762,36 @@ def download_request(
     typer.echo(f"message={registered.request_result.message}")
 
 
+@download_app.command("sync")
+def download_sync(
+    profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
+    from_date: str = typer.Option(..., "--from", help="Start date: YYYY-MM-DD."),
+    to_date: str = typer.Option(..., "--to", help="End date: YYYY-MM-DD."),
+    kind: str = typer.Option(..., "--kind", help="metadata or cfdi."),
+    direction: str = typer.Option(..., "--direction", help="received or issued."),
+) -> None:
+    """Run one fake/offline SAT download sync using the setup profile storage root."""
+
+    query, loaded_profile = _build_profile_download_query_with_profile(
+        profile_id=profile,
+        from_date=from_date,
+        to_date=to_date,
+        kind=kind,
+        direction=direction,
+    )
+    service = _download_profile_service(loaded_profile)
+    try:
+        result = service.sync_metadata(query, live=False, enqueue=False)
+    finally:
+        service.close()
+
+    _print_download_query(profile_id=profile, query=query, will_submit=True)
+    typer.echo(f"job_id={result.job_id}")
+    typer.echo(f"request_id={result.request_id}")
+    typer.echo(f"status={result.status}")
+    typer.echo(f"metadata_count={result.metadata_count}")
+
+
 @app.command("reconcile")
 def reconcile(
     tenant_id: str | None = typer.Option(None, "--tenant-id", help="Tenant identifier."),
@@ -954,6 +990,24 @@ def _build_profile_download_query(
     kind: str,
     direction: str,
 ) -> DownloadQuery:
+    query, _ = _build_profile_download_query_with_profile(
+        profile_id=profile_id,
+        from_date=from_date,
+        to_date=to_date,
+        kind=kind,
+        direction=direction,
+    )
+    return query
+
+
+def _build_profile_download_query_with_profile(
+    *,
+    profile_id: str,
+    from_date: str,
+    to_date: str,
+    kind: str,
+    direction: str,
+) -> tuple[DownloadQuery, setup_flow.LocalProfile]:
     request_type = _parse_download_kind(kind)
     download_direction = _parse_download_direction(direction)
     start = _parse_download_date(from_date, label="--from", end_of_day=False)
@@ -980,7 +1034,13 @@ def _build_profile_download_query(
         for error in errors:
             typer.echo(f"detail={error}", err=True)
         raise typer.Exit(code=1)
-    return query
+    return query, profile
+
+
+def _download_profile_service(profile: setup_flow.LocalProfile) -> RecoveryService:
+    recovery_db = profile.storage_root / "db" / "recovery.sqlite3"
+    recovery_db.parent.mkdir(parents=True, exist_ok=True)
+    return RecoveryService(sqlite_path=recovery_db, storage_root=profile.storage_root)
 
 
 def _load_download_profile(profile_id: str) -> setup_flow.LocalProfile:

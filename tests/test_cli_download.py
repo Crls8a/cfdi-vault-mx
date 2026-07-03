@@ -83,6 +83,85 @@ def test_download_request_prints_synthetic_accepted_result(tmp_path: Path) -> No
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
 
 
+def test_download_sync_cfdi_runs_fake_pipeline_without_sensitive_output(tmp_path: Path) -> None:
+    appdata_root = tmp_path / "appdata"
+    paths = _write_setup_profile(appdata_root)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "download",
+            "sync",
+            "--profile",
+            "dummy-profile",
+            "--from",
+            "2024-01-01",
+            "--to",
+            "2024-01-31",
+            "--kind",
+            "cfdi",
+            "--direction",
+            "received",
+        ],
+        env={"LOCALAPPDATA": str(appdata_root)},
+    )
+
+    assert result.exit_code == 0, result.output
+    lines = _key_value_lines(result.output)
+    assert lines["mode"] == "fake"
+    assert lines["profile"] == "dummy-profile"
+    assert lines["kind"] == "cfdi"
+    assert lines["direction"] == "received"
+    assert lines["will_submit"] == "true"
+    assert re.fullmatch(r"[0-9a-f]{64}", lines["criteria_hash"])
+    assert lines["job_id"]
+    assert lines["request_id"] == f"FAKE-{lines['criteria_hash'][:16].upper()}"
+    assert lines["status"] == "succeeded"
+    assert lines["metadata_count"] == "2"
+    assert paths.storage_root.joinpath("db", "recovery.sqlite3").is_file()
+    assert len(list(paths.storage_root.glob("*/xml/2024/01/*.xml"))) == 2
+    assert "PKG-" not in result.output
+    assert ".zip" not in result.output
+    assert ".xml" not in result.output
+    assert "recovery.sqlite3" not in result.output
+    _assert_no_profile_secrets_or_paths(result.output, appdata_root)
+
+
+def test_download_sync_replay_same_criteria_returns_stable_result(tmp_path: Path) -> None:
+    appdata_root = tmp_path / "appdata"
+    _write_setup_profile(appdata_root)
+    args = [
+        "download",
+        "sync",
+        "--profile",
+        "dummy-profile",
+        "--from",
+        "2024-02-01",
+        "--to",
+        "2024-02-29",
+        "--kind",
+        "metadata",
+        "--direction",
+        "issued",
+    ]
+    runner = CliRunner()
+
+    first = runner.invoke(app, args, env={"LOCALAPPDATA": str(appdata_root)})
+    replay = runner.invoke(app, args, env={"LOCALAPPDATA": str(appdata_root)})
+
+    assert first.exit_code == 0, first.output
+    assert replay.exit_code == 0, replay.output
+    first_lines = _key_value_lines(first.output)
+    replay_lines = _key_value_lines(replay.output)
+    assert replay_lines["criteria_hash"] == first_lines["criteria_hash"]
+    assert replay_lines["job_id"] == first_lines["job_id"]
+    assert replay_lines["request_id"] == first_lines["request_id"]
+    assert replay_lines["status"] == first_lines["status"] == "succeeded"
+    assert replay_lines["metadata_count"] == first_lines["metadata_count"] == "2"
+    _assert_no_profile_secrets_or_paths(first.output, appdata_root)
+    _assert_no_profile_secrets_or_paths(replay.output, appdata_root)
+
+
 def test_download_rejects_invalid_direction_folio(tmp_path: Path) -> None:
     appdata_root = tmp_path / "appdata"
     _write_setup_profile(appdata_root)
@@ -195,7 +274,38 @@ def test_download_live_option_is_rejected(tmp_path: Path) -> None:
     assert "mode=fake" not in result.output
 
 
-def _write_setup_profile(appdata_root: Path, *, profile_id: str = "dummy-profile") -> None:
+def test_download_sync_live_option_is_rejected_without_running(tmp_path: Path) -> None:
+    appdata_root = tmp_path / "appdata"
+    paths = _write_setup_profile(appdata_root)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "download",
+            "sync",
+            "--profile",
+            "dummy-profile",
+            "--from",
+            "2024-01-01",
+            "--to",
+            "2024-01-31",
+            "--kind",
+            "cfdi",
+            "--direction",
+            "received",
+            "--live",
+        ],
+        env={"LOCALAPPDATA": str(appdata_root)},
+    )
+
+    assert result.exit_code == 2
+    assert "job_id=" not in result.output
+    assert "request_id=" not in result.output
+    assert "mode=fake" not in result.output
+    assert not paths.storage_root.joinpath("db", "recovery.sqlite3").exists()
+
+
+def _write_setup_profile(appdata_root: Path, *, profile_id: str = "dummy-profile") -> setup_flow.AppDataPaths:
     paths = setup_flow.build_profile_paths(profile_id, env={"LOCALAPPDATA": str(appdata_root)})
     profile = setup_flow.LocalProfile(
         profile_id=profile_id,
@@ -209,6 +319,7 @@ def _write_setup_profile(appdata_root: Path, *, profile_id: str = "dummy-profile
         certificate_fingerprint="a" * 64,
     )
     setup_flow.write_profile(profile, paths.profile_json)
+    return paths
 
 
 def _key_value_lines(output: str) -> dict[str, str]:
