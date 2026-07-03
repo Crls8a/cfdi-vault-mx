@@ -9,10 +9,10 @@ from dataclasses import dataclass
 from typing import Mapping, Protocol
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
 from uuid import uuid4
 
-from cfdi_vault.sat_live_smoke import AUTH_ACTION, DEFAULT_AUTH_ENDPOINT
+from cfdi_vault.sat_auth_endpoints import RedactedEndpoint, describe_endpoint, resolve_auth_endpoint
+from cfdi_vault.sat_live_smoke import AUTH_ACTION
 
 AUTH_POST_PROBE_BODY = b'''<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:des="http://DescargaMasivaTerceros.gob.mx">
@@ -40,6 +40,10 @@ class SatAuthPostProbeResult:
     payload_size: int | None = None
     duration_ms: int = 0
     correlation_id: str = ""
+    scheme: str = ""
+    port: int = 443
+    path: str = ""
+    query_present: bool = False
 
 
 @dataclass(frozen=True)
@@ -78,17 +82,18 @@ class DefaultSatAuthPostProbeClient:
 def run_sat_auth_post_probe(
     *,
     client: SatAuthPostProbeClient | None = None,
-    endpoint: str = DEFAULT_AUTH_ENDPOINT,
+    endpoint: str | None = None,
     timeout_seconds: float = 10,
 ) -> SatAuthPostProbeResult:
     probe_client = client or DefaultSatAuthPostProbeClient()
-    host = urlsplit(endpoint).hostname or "unknown"
+    resolved_endpoint = endpoint or resolve_auth_endpoint()
+    endpoint_info = describe_endpoint("auth", resolved_endpoint)
     started = time.perf_counter()
     try:
-        response = probe_client.post(endpoint, AUTH_POST_PROBE_BODY, AUTH_POST_PROBE_HEADERS, timeout_seconds)
+        response = probe_client.post(resolved_endpoint, AUTH_POST_PROBE_BODY, AUTH_POST_PROBE_HEADERS, timeout_seconds)
     except Exception as exc:
-        return _result(host, _classify_exception(exc), _elapsed_ms(started))
-    return _result(host, _classify_response(response), _elapsed_ms(started), response)
+        return _result(endpoint_info, _classify_exception(exc), _elapsed_ms(started))
+    return _result(endpoint_info, _classify_response(response), _elapsed_ms(started), response)
 
 
 def _classify_response(response: AuthPostProbeHttpResponse) -> str:
@@ -120,15 +125,15 @@ def _classify_exception(exc: BaseException) -> str:
 
 
 def _result(
-    host: str,
+    endpoint_info: RedactedEndpoint,
     error_kind: str,
     duration_ms: int,
     response: AuthPostProbeHttpResponse | None = None,
 ) -> SatAuthPostProbeResult:
     return SatAuthPostProbeResult(
-        endpoint="auth",
+        endpoint=endpoint_info.logical_endpoint,
         check="post",
-        host=host,
+        host=endpoint_info.host,
         status="ok" if _post_reached_server(error_kind) else "failed",
         error_kind=error_kind,
         safe_hint=_safe_hint(error_kind),
@@ -136,6 +141,10 @@ def _result(
         payload_size=len(response.body) if response else None,
         duration_ms=duration_ms,
         correlation_id=f"authpost-{uuid4().hex[:12]}",
+        scheme=endpoint_info.scheme,
+        port=endpoint_info.port,
+        path=endpoint_info.path,
+        query_present=endpoint_info.query_present,
     )
 
 
