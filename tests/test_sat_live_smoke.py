@@ -44,7 +44,36 @@ def test_transport_failure_is_redacted(tmp_path: Path) -> None:
     adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=BrokenTransport(), material=_material())
     with pytest.raises(SatLiveSmokeError, match="SAT transport failed") as exc:
         adapter.auth_smoke()
+    diagnostic = exc.value.diagnostic
+    assert diagnostic.stage == "auth_transport"
+    assert diagnostic.error_kind == "unknown_live_adapter_failure"
+    assert diagnostic.endpoint == "auth"
+    assert diagnostic.envelope_sha256 is not None
     assert "raw transport detail" not in str(exc.value)
+
+
+def test_http_failure_reports_only_safe_diagnostic_fields(tmp_path: Path) -> None:
+    transport = FakeSoapTransport([SoapTransportResponse(500, body=b"<synthetic>server unavailable</synthetic>")])
+    adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
+    with pytest.raises(SatLiveSmokeError, match="SAT transport returned a non-success status") as exc:
+        adapter.auth_smoke()
+    diagnostic = exc.value.diagnostic
+    assert diagnostic.stage == "auth_transport"
+    assert diagnostic.error_kind == "transport_http_error"
+    assert diagnostic.http_status == 500
+    assert diagnostic.payload_size == len(b"<synthetic>server unavailable</synthetic>")
+    assert diagnostic.endpoint == "auth"
+
+
+def test_missing_auth_authorization_reports_token_extract_stage(tmp_path: Path) -> None:
+    transport = FakeSoapTransport([SoapTransportResponse(200, body=_soap("<sat:AutenticaResult />"))])
+    adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
+    with pytest.raises(SatLiveSmokeError, match="SAT authentication response could not be parsed") as exc:
+        adapter.auth_smoke()
+    diagnostic = exc.value.diagnostic
+    assert diagnostic.stage == "token_extract"
+    assert diagnostic.error_kind == "token_missing"
+    assert diagnostic.payload_size == len(_soap("<sat:AutenticaResult />"))
 
 
 def _material() -> SatEfirmMaterial:

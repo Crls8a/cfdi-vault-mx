@@ -498,6 +498,50 @@ def test_download_live_smoke_fake_adapter_happy_path_is_redacted(
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
 
 
+def test_download_live_smoke_adapter_failure_prints_redacted_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    _write_ready_setup_profile(appdata_root)
+    _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=True, doctor_ok=True)
+
+    def fail_live_smoke(_profile_id: str, _query: object) -> None:
+        raise cli_module.SatLiveSmokeError(
+            "raw adapter detail must stay hidden",
+            stage="auth_transport",
+            error_kind="transport_http_error",
+            safe_hint="check SOAPAction, content-type, logical endpoint, TLS, and SAT service availability",
+            endpoint="auth",
+            http_status=500,
+            payload_size=123,
+            envelope_sha256="a" * 64,
+            duration_ms=7,
+            correlation_id="diag-synthetic",
+        )
+
+    monkeypatch.setattr(cli_module, "_run_live_metadata_smoke", fail_live_smoke)
+
+    result = CliRunner().invoke(
+        app,
+        _live_smoke_args(["--manual-real-sat"]),
+        env=_live_smoke_env(appdata_root, {}),
+        input=f"{cli_module.LIVE_SMOKE_CONFIRMATION}\n",
+    )
+
+    assert result.exit_code == 1
+    lines = _key_value_lines(result.output)
+    assert lines["error"] == "live_adapter_failed"
+    assert lines["failed_stage"] == "auth_transport"
+    assert lines["error_kind"] == "transport_http_error"
+    assert lines["endpoint"] == "auth"
+    assert lines["http_status"] == "500"
+    assert lines["payload_size"] == "123"
+    assert lines["correlation_id"] == "diag-synthetic"
+    assert "raw adapter detail" not in result.output
+    _assert_no_profile_secrets_or_paths(result.output, appdata_root)
+
+
 def test_sat_auth_smoke_requires_same_manual_guard(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
