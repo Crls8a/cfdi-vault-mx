@@ -2071,9 +2071,26 @@ def _print_live_adapter_error(exc: SatLiveSmokeError) -> None:
         ("exception_errno", diagnostic.exception_errno),
         ("transport_layer", diagnostic.transport_layer),
         ("duration_ms", diagnostic.duration_ms),
+        ("request_body_bytes_len", diagnostic.request_body_bytes_len),
+        ("soap_action", diagnostic.soap_action),
+        ("content_type", diagnostic.content_type),
+        ("timestamp_window_seconds", diagnostic.timestamp_window_seconds),
+        ("has_ws_security", _yes_no(diagnostic.has_ws_security)),
+        ("has_binary_security_token", _yes_no(diagnostic.has_bst)),
+        ("cert_der_bytes_len", diagnostic.cert_der_bytes_len),
+        ("signature_method", diagnostic.signature_method),
+        ("digest_method", diagnostic.digest_method),
+        ("signed_reference_count", diagnostic.signed_reference_count),
+        ("signed_reference_targets_exist", _yes_no(diagnostic.signed_reference_targets_exist)),
     ):
         if value is not None:
             typer.echo(f"{key}={value}", err=True)
+
+
+def _yes_no(value: bool | None) -> str | None:
+    if value is None:
+        return None
+    return "yes" if value else "no"
 
 
 def _diagnostic_stage_summary(failed_stage: str | None) -> str:

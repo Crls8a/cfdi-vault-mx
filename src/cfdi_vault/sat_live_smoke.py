@@ -1,6 +1,7 @@
 """Guarded live SAT metadata-smoke adapter: auth/request/verify only, no package download."""
 from __future__ import annotations
 import base64
+from copy import deepcopy
 import errno
 import hashlib
 from http.client import RemoteDisconnected
@@ -50,7 +51,8 @@ TRANSPORT_HINT = "check SOAPAction, content-type, logical endpoint, TLS, and SAT
 PARSE_HINT = "check SAT response shape with redacted diagnostics only"
 MATERIAL_HINT = "check local profile readiness and e.firma material without printing paths or values"
 BUILD_HINT = "check envelope construction and XML signature inputs without printing SOAP"
-DIAGNOSTIC_STAGES = ("preflight", "profile_load", "secret_resolve", "credential_load", "certificate_parse", "private_key_load", "xmlsig_sign", "auth_envelope_build", "auth_transport", "auth_response_parse", "token_extract", "metadata_request_build", "metadata_request_transport", "metadata_request_parse", "verify_request_build", "verify_transport", "verify_response_parse", "package_download", "package_process")
+READINESS_HINT = "check auth SOAPAction, content-type, namespace, WS-Security, signature, and non-empty signed body"
+DIAGNOSTIC_STAGES = ("preflight", "profile_load", "secret_resolve", "credential_load", "certificate_parse", "private_key_load", "xmlsig_sign", "auth_envelope_build", "auth_request_readiness", "auth_transport", "auth_response_parse", "token_extract", "metadata_request_build", "metadata_request_transport", "metadata_request_parse", "verify_request_build", "verify_transport", "verify_response_parse", "package_download", "package_process")
 LIVE_ERROR_KINDS = ("guard_failed", "profile_not_ready", "secret_unavailable", "credential_load_failed", "certificate_parse_failed", "private_key_load_failed", "xmlsig_failed", "envelope_build_failed", "transport_tls_failed", "tls_handshake_failed", "certificate_verify_failed", "client_cert_rejected", "proxy_connect_failed", "connection_reset", "connection_reset_during_post", "remote_closed_connection", "timeout", "transport_timeout", "transport_http_error", "http_status_error", "soap_fault", "token_missing", "token_parse_failed", "sat_status_error", "sat_duplicate_request", "sat_unauthorized", "sat_no_data", "sat_retryable", "sat_permanent", "unexpected_response", "unexpected_http_response", "client_configuration_error", "redaction_failure", "unknown_live_adapter_failure")
 @dataclass(frozen=True)
 class SatLiveDiagnosticEntry:
@@ -70,6 +72,17 @@ class SatLiveDiagnosticEntry:
     exception_errno: int | None = None
     transport_layer: str | None = None
     correlation_id: str | None = None
+    request_body_bytes_len: int | None = None
+    soap_action: str | None = None
+    content_type: str | None = None
+    timestamp_window_seconds: int | None = None
+    has_ws_security: bool | None = None
+    has_bst: bool | None = None
+    cert_der_bytes_len: int | None = None
+    signature_method: str | None = None
+    digest_method: str | None = None
+    signed_reference_count: int | None = None
+    signed_reference_targets_exist: bool | None = None
 class SatLiveSmokeError(RuntimeError):
     """Safe live smoke failure without credential, token, SOAP, RFC, path, or id detail."""
     def __init__(
@@ -90,6 +103,17 @@ class SatLiveSmokeError(RuntimeError):
         transport_layer: str | None = None,
         duration_ms: int | None = None,
         correlation_id: str | None = None,
+        request_body_bytes_len: int | None = None,
+        soap_action: str | None = None,
+        content_type: str | None = None,
+        timestamp_window_seconds: int | None = None,
+        has_ws_security: bool | None = None,
+        has_bst: bool | None = None,
+        cert_der_bytes_len: int | None = None,
+        signature_method: str | None = None,
+        digest_method: str | None = None,
+        signed_reference_count: int | None = None,
+        signed_reference_targets_exist: bool | None = None,
     ) -> None:
         self.diagnostic = SatLiveDiagnosticEntry(
             stage=stage,
@@ -107,6 +131,17 @@ class SatLiveSmokeError(RuntimeError):
             exception_errno=exception_errno,
             transport_layer=transport_layer,
             correlation_id=correlation_id or _correlation_id(),
+            request_body_bytes_len=request_body_bytes_len,
+            soap_action=soap_action,
+            content_type=content_type,
+            timestamp_window_seconds=timestamp_window_seconds,
+            has_ws_security=has_ws_security,
+            has_bst=has_bst,
+            cert_der_bytes_len=cert_der_bytes_len,
+            signature_method=signature_method,
+            digest_method=digest_method,
+            signed_reference_count=signed_reference_count,
+            signed_reference_targets_exist=signed_reference_targets_exist,
         )
         super().__init__(message)
     @property
@@ -122,6 +157,38 @@ class SatEfirmMaterial:
     certificate_der_b64: str
     def __repr__(self) -> str:
         return "SatEfirmMaterial(private_key=<redacted>, certificate=<redacted>)"
+
+
+@dataclass(frozen=True)
+class AuthRequestReadiness:
+    request_body_bytes_len: int
+    envelope_sha256: str
+    soap_action: str
+    content_type: str
+    timestamp_window_seconds: int | None
+    has_ws_security: bool
+    has_bst: bool
+    cert_der_bytes_len: int | None
+    signature_method: str | None
+    digest_method: str | None
+    signed_reference_count: int
+    signed_reference_targets_exist: bool
+
+    def error_fields(self) -> dict[str, object]:
+        return {
+            "request_body_bytes_len": self.request_body_bytes_len,
+            "envelope_sha256": self.envelope_sha256,
+            "soap_action": self.soap_action,
+            "content_type": self.content_type,
+            "timestamp_window_seconds": self.timestamp_window_seconds,
+            "has_ws_security": self.has_ws_security,
+            "has_bst": self.has_bst,
+            "cert_der_bytes_len": self.cert_der_bytes_len,
+            "signature_method": self.signature_method,
+            "digest_method": self.digest_method,
+            "signed_reference_count": self.signed_reference_count,
+            "signed_reference_targets_exist": self.signed_reference_targets_exist,
+        }
 @dataclass(frozen=True)
 class SatLiveSmokeEndpoints:
     auth: str = DEFAULT_AUTH_ENDPOINT
@@ -251,6 +318,7 @@ class SatLiveMetadataSmokeAdapter:
         headers = build_soap11_headers(action)
         if authorization:
             headers["Authorization"] = _wrap_authorization(authorization)
+        readiness = _assert_auth_request_ready(body, headers) if endpoint_label == "auth" and authorization is None else None
         started = time.perf_counter()
         try:
             response = self._transport.send(SoapTransportRequest(endpoint=endpoint, body=body, headers=headers, timeout_seconds=self._timeout_seconds))
@@ -266,6 +334,7 @@ class SatLiveMetadataSmokeAdapter:
                 payload_size=len(response_body),
                 envelope_sha256=_digest(body),
                 duration_ms=_elapsed_ms(started),
+                **_readiness_error_fields(readiness),
             ) from None
         except Exception as exc:
             failure = _classify_transport_failure(exc)
@@ -281,6 +350,7 @@ class SatLiveMetadataSmokeAdapter:
                 exception_errno=failure.exception_errno,
                 transport_layer=failure.transport_layer,
                 duration_ms=_elapsed_ms(started),
+                **_readiness_error_fields(readiness),
             ) from None
         if not 200 <= response.status_code < 300:
             raise SatLiveSmokeError(
@@ -293,6 +363,7 @@ class SatLiveMetadataSmokeAdapter:
                 payload_size=len(response.body),
                 envelope_sha256=_digest(body),
                 duration_ms=_elapsed_ms(started),
+                **_readiness_error_fields(readiness),
             )
         return response.body
     def _load_material(self) -> SatEfirmMaterial:
@@ -453,6 +524,163 @@ def _wrap_authorization(authorization: str) -> str:
     if stripped.lower().startswith("wrap "):
         return stripped
     return 'WRAP {}="{}"'.format("access_" + "token", stripped)
+
+
+def _assert_auth_request_ready(body: bytes | None, headers: dict[str, str]) -> AuthRequestReadiness:
+    readiness = _auth_request_readiness(body, headers)
+    failures: list[bool] = [
+        body is None,
+        readiness.request_body_bytes_len <= 500,
+        readiness.soap_action != f'"{AUTH_ACTION}"',
+        readiness.content_type != "text/xml; charset=utf-8",
+        _header_value(headers, "Authorization") is not None,
+        not readiness.has_ws_security,
+        not readiness.has_bst,
+        readiness.cert_der_bytes_len is None or readiness.cert_der_bytes_len <= 0,
+        readiness.signature_method is None,
+        readiness.digest_method is None,
+        readiness.signed_reference_count <= 0,
+        not readiness.signed_reference_targets_exist,
+    ]
+    if body is None or _contains_placeholder_literals(body):
+        failures.append(True)
+    if _header_value(headers, "Content-Length") is not None:
+        try:
+            failures.append(int(_header_value(headers, "Content-Length") or "-1") != readiness.request_body_bytes_len)
+        except ValueError:
+            failures.append(True)
+    if any(failures):
+        raise SatLiveSmokeError(
+            "SAT auth request failed local readiness checks",
+            stage="auth_request_readiness",
+            error_kind="client_configuration_error",
+            safe_hint=READINESS_HINT,
+            payload_size=readiness.request_body_bytes_len,
+            **readiness.error_fields(),
+        ) from None
+    return readiness
+
+
+def _auth_request_readiness(body: bytes | None, headers: dict[str, str]) -> AuthRequestReadiness:
+    body_bytes = body or b""
+    envelope_sha256 = _digest(body_bytes)
+    root = _parse_xml_or_none(body_bytes)
+    header = _find(root, SOAP11_NS, "Header")
+    security = _find(header, WSSE_NS, "Security")
+    timestamp = _find(security, WSU_NS, "Timestamp")
+    bst = _find(security, WSSE_NS, "BinarySecurityToken")
+    signature = _find(security, DS_NS, "Signature")
+    body_node = _find(root, SOAP11_NS, "Body")
+    operation = _find(body_node, SAT_AUTH_NS, "Autentica")
+    references = list(signature.findall(f".//{{{DS_NS}}}Reference")) if signature is not None else []
+    signature_method = _algorithm(signature, "SignatureMethod")
+    digest_method = _algorithm(signature, "DigestMethod")
+    return AuthRequestReadiness(
+        request_body_bytes_len=len(body_bytes),
+        envelope_sha256=envelope_sha256,
+        soap_action=_header_value(headers, "SOAPAction") or "",
+        content_type=_header_value(headers, "Content-Type") or "",
+        timestamp_window_seconds=_timestamp_window_seconds(timestamp),
+        has_ws_security=security is not None,
+        has_bst=bst is not None,
+        cert_der_bytes_len=_cert_der_bytes_len(bst),
+        signature_method=signature_method,
+        digest_method=digest_method,
+        signed_reference_count=len(references),
+        signed_reference_targets_exist=operation is not None and _references_target_existing_ids(root, references),
+    )
+
+
+def _readiness_error_fields(readiness: AuthRequestReadiness | None) -> dict[str, object]:
+    if readiness is None:
+        return {}
+    fields = readiness.error_fields()
+    fields.pop("envelope_sha256", None)
+    return fields
+
+
+def _header_value(headers: dict[str, str], name: str) -> str | None:
+    lowered = name.lower()
+    for key, value in headers.items():
+        if key.lower() == lowered:
+            return value
+    return None
+
+
+def _parse_xml_or_none(body: bytes) -> etree._Element | None:
+    try:
+        return etree.fromstring(body)
+    except etree.XMLSyntaxError:
+        return None
+
+
+def _find(node: etree._Element | None, namespace: str, local_name: str) -> etree._Element | None:
+    return node.find(f"{{{namespace}}}{local_name}") if node is not None else None
+
+
+def _algorithm(node: etree._Element | None, local_name: str) -> str | None:
+    item = _find(node, DS_NS, "SignedInfo")
+    if item is None:
+        item = node
+    child = item.find(f".//{{{DS_NS}}}{local_name}") if item is not None else None
+    return child.get("Algorithm") if child is not None else None
+
+
+def _timestamp_window_seconds(timestamp: etree._Element | None) -> int | None:
+    created = _parse_utc(_text(_find(timestamp, WSU_NS, "Created")))
+    expires = _parse_utc(_text(_find(timestamp, WSU_NS, "Expires")))
+    if created is None or expires is None:
+        return None
+    return round((expires - created).total_seconds())
+
+
+def _parse_utc(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _cert_der_bytes_len(bst: etree._Element | None) -> int | None:
+    value = _text(bst)
+    if value is None:
+        return None
+    try:
+        return len(base64.b64decode(value.encode("ascii"), validate=True))
+    except (ValueError, TypeError):
+        return None
+
+
+def _references_target_existing_ids(root: etree._Element | None, references: list[etree._Element]) -> bool:
+    if root is None or not references:
+        return False
+    ids = {
+        value
+        for item in root.iter()
+        for value in (item.get("Id"), item.get(f"{{{WSU_NS}}}Id"))
+        if value
+    }
+    return all((reference.get("URI") or "").startswith("#") and (reference.get("URI") or "")[1:] in ids for reference in references)
+
+
+def _contains_placeholder_literals(body: bytes) -> bool:
+    root = _parse_xml_or_none(body)
+    if root is None:
+        return True
+    redacted = deepcopy(root)
+    for item in redacted.iter():
+        if etree.QName(item).localname in {"BinarySecurityToken", "SignatureValue", "DigestValue", "X509Certificate"}:
+            item.text = ""
+    safe_body = etree.tostring(redacted, encoding="UTF-8")
+    return any(marker in safe_body for marker in (b"None", b"null", b"undefined", b"MISSING", b"TODO"))
+
+
+def _text(node: etree._Element | None) -> str | None:
+    return node.text.strip() if node is not None and node.text else None
+
+
 def _build_stage(stage: str, build: object) -> bytes:
     started = time.perf_counter()
     try:
