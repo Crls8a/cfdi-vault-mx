@@ -93,6 +93,8 @@ def validate_live_sat_guard(input: LiveSatGuardInput) -> None:
         reasons.append("ci-enabled")
     if input.environ.get("CFDI_VAULT_ALLOW_REAL_SAT") != "1":
         reasons.append("missing-explicit-real-sat-env")
+    if input.environ.get("CFDI_VAULT_ALLOW_REAL_CREDENTIALS") != "1":
+        reasons.append("missing-explicit-real-credentials-env")
     if not input.manual_real_sat:
         reasons.append("missing-manual-real-sat-flag")
     if not input.profile_ready:
