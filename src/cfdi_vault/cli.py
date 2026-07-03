@@ -37,6 +37,7 @@ from cfdi_vault.service import ImportBatchResult, ImportRecord, SummaryRow, Vaul
 from cfdi_vault.sat_orchestration import DownloadRequestOrchestrator
 from cfdi_vault.sat_simulator import FakeSatScenario, FakeSatScenarioClient
 from cfdi_vault.sat_live_smoke import DIAGNOSTIC_STAGES, SatLiveMetadataSmokeAdapter, SatLiveSmokeError
+from cfdi_vault.sat_auth_envelope_lint import AuthEnvelopeLintResult, build_dummy_auth_envelope, lint_auth_envelope
 from cfdi_vault.sat_auth_contract import AuthWsdlContract, fetch_auth_wsdl_contract
 from cfdi_vault.sat_auth_matrix_probe import SatAuthMatrixProbeResult, run_sat_auth_matrix_probe
 from cfdi_vault.sat_auth_post_probe import SatAuthPostProbeResult, run_sat_auth_post_probe
@@ -191,6 +192,12 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "purpose": "Fetch the public SAT auth WSDL and print only a redacted contract summary.",
         "when": "Run before auth envelope compatibility work; never stores or prints raw WSDL.",
         "example": "cfdi-vault sat inspect-auth-contract",
+    },
+    {
+        "command": "sat lint-auth-envelope",
+        "purpose": "Build a dummy SAT auth envelope and print redacted structural lint checks.",
+        "when": "Run before any live auth retry; never prints raw XML, cert material, or signature values.",
+        "example": "cfdi-vault sat lint-auth-envelope --fixture dummy",
     },
     {
         "command": "sat diagnose-live",
@@ -790,6 +797,20 @@ def sat_inspect_auth_contract() -> None:
         typer.echo(f"reason={exc}", err=True)
         raise typer.Exit(code=1) from exc
     _print_auth_contract(contract)
+
+
+@sat_app.command("lint-auth-envelope")
+def sat_lint_auth_envelope(
+    fixture: str = typer.Option("dummy", "--fixture", help="Only dummy is supported for normal offline lint."),
+) -> None:
+    """Lint a SAT auth envelope offline without printing XML."""
+
+    if fixture != "dummy":
+        typer.echo("error=auth_envelope_lint_denied", err=True)
+        typer.echo("reason=dummy-fixture-required", err=True)
+        raise typer.Exit(code=1)
+    envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc")
+    _print_auth_envelope_lint("dummy", lint_auth_envelope(envelope))
 
 
 @sat_app.command("diagnose-live")
@@ -1827,6 +1848,42 @@ def _print_auth_contract(contract: AuthWsdlContract) -> None:
     typer.echo(f"wsdl_size={contract.wsdl_size}")
     typer.echo("raw_wsdl_printed=no")
     typer.echo("raw_headers_printed=no")
+
+
+def _print_auth_envelope_lint(fixture: str, result: AuthEnvelopeLintResult) -> None:
+    typer.echo("mode=auth-envelope-lint")
+    typer.echo(f"fixture={fixture}")
+    typer.echo(f"all_checks_passed={'yes' if result.all_checks_passed else 'no'}")
+    typer.echo(f"envelope_sha256={result.envelope_sha256}")
+    typer.echo(f"envelope_size={result.envelope_size}")
+    typer.echo(f"reference_count={result.reference_count}")
+    typer.echo(f"bst_size={result.bst_size}")
+    for name in (
+        "soap_envelope",
+        "soap_header",
+        "soap_body",
+        "operation_auth",
+        "ws_security",
+        "timestamp",
+        "timestamp_window_ok",
+        "bst_present",
+        "bst_der",
+        "signature",
+        "signed_info",
+        "references_resolve",
+        "digest_value",
+        "signature_value",
+        "key_info",
+        "sec_ref",
+        "timestamp_signed",
+        "to_header_present",
+        "action_header_present",
+    ):
+        typer.echo(f"check_{name}={'yes' if getattr(result, name) else 'no'}")
+    typer.echo("raw_xml_printed=no")
+    typer.echo("certificate_printed=no")
+    typer.echo("signature_value_printed=no")
+    typer.echo("key_material_printed=no")
 
 
 def _print_live_diagnose_result(
