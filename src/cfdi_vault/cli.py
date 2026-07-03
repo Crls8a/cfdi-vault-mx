@@ -23,7 +23,13 @@ from cfdi_vault.onboarding import (
     run_onboarding,
 )
 from cfdi_vault.queueing import RabbitMqQueue
-from cfdi_vault.recovery_service import RecoveryService, build_default_query, write_minimal_pdf
+from cfdi_vault.recovery_service import (
+    DownloadStatus,
+    RecoveryService,
+    build_default_query,
+    read_download_status,
+    write_minimal_pdf,
+)
 from cfdi_vault.secrets import CredentialKind, CredentialProviderError, CredentialReference, DummySecretProvider
 from cfdi_vault.service import ImportBatchResult, ImportRecord, SummaryRow, VaultService
 from cfdi_vault.sat_orchestration import DownloadRequestOrchestrator
@@ -135,6 +141,12 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "purpose": "Run a fake/offline SAT download sync from a setup profile and persist local recovery evidence.",
         "when": "Run when you need the offline request, verification, package, metadata, and XML pipeline to finish locally.",
         "example": "cfdi-vault download sync --profile default --from 2024-01-01 --to 2024-01-31 --kind cfdi --direction received",
+    },
+    {
+        "command": "download status",
+        "purpose": "Read safe persisted fake/offline download status aggregates by job id.",
+        "when": "Run after download sync when you need durable local readback without printing storage paths or package details.",
+        "example": "cfdi-vault download status --profile default --job-id <job-id>",
     },
     {
         "command": "queue status",
@@ -792,6 +804,28 @@ def download_sync(
     typer.echo(f"metadata_count={result.metadata_count}")
 
 
+@download_app.command("status")
+def download_status(
+    profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
+    job_id: str = typer.Option(..., "--job-id", help="Local download job id from download sync."),
+) -> None:
+    """Read safe persisted fake/offline download status aggregates."""
+
+    loaded_profile = _load_download_profile(profile)
+    status = read_download_status(
+        loaded_profile.storage_root / "db" / "recovery.sqlite3",
+        tenant_id=loaded_profile.profile_id,
+        job_id=job_id,
+    )
+    if status is None:
+        typer.echo("mode=fake", err=True)
+        typer.echo(f"profile={profile}", err=True)
+        typer.echo(f"job_id={job_id}", err=True)
+        typer.echo("error=status_not_found", err=True)
+        raise typer.Exit(code=1)
+    _print_download_status(profile_id=profile, status=status)
+
+
 @app.command("reconcile")
 def reconcile(
     tenant_id: str | None = typer.Option(None, "--tenant-id", help="Tenant identifier."),
@@ -1091,6 +1125,22 @@ def _print_download_query(*, profile_id: str, query: DownloadQuery, will_submit:
         typer.echo(f"to={query.period.end.isoformat()}")
     typer.echo(f"will_submit={str(will_submit).lower()}")
     typer.echo(f"criteria_hash={query.criteria_hash()}")
+
+
+def _print_download_status(*, profile_id: str, status: DownloadStatus) -> None:
+    typer.echo("mode=fake")
+    typer.echo(f"profile={profile_id}")
+    typer.echo(f"job_id={status.job_id}")
+    typer.echo(f"request_id={status.request_id}")
+    typer.echo(f"status={status.status}")
+    typer.echo(f"sat_state={status.sat_state}")
+    typer.echo(f"kind={status.kind}")
+    typer.echo(f"direction={status.direction}")
+    typer.echo(f"criteria_hash={status.criteria_hash}")
+    typer.echo(f"metadata_count={status.metadata_count}")
+    typer.echo(f"package_count={status.package_count}")
+    typer.echo(f"downloaded_package_count={status.downloaded_package_count}")
+    typer.echo(f"xml_count={status.xml_count}")
 
 
 def _parse_cli_datetime(value: str, *, end_of_day: bool) -> datetime:
