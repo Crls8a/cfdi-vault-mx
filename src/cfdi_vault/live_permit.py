@@ -16,7 +16,8 @@ from typing import Mapping
 from cfdi_vault.domain import DownloadDirection, DownloadQuery, RequestType
 from cfdi_vault.setup_core import SetupError, find_repo_root, resolve_appdata_root, validate_profile_id
 
-ALLOWED_SCOPES = frozenset({"transport_probe", "auth_post_probe", "auth_matrix_probe", "metadata_live_smoke"})
+ALLOWED_SCOPES = frozenset({"transport_probe", "auth_post_probe", "auth_matrix_probe", "auth_live_smoke", "metadata_live_smoke"})
+CREDENTIAL_REQUIRED_SCOPES = frozenset({"auth_live_smoke", "metadata_live_smoke"})
 PERMIT_INDENT = 2
 MAX_EXPIRES_MINUTES = 15
 MAX_RANGE_DAYS = 1
@@ -178,7 +179,7 @@ def create_live_execution_permit(
         max_range_days=MAX_RANGE_DAYS,
         max_attempts=MAX_ATTEMPTS,
         allow_real_sat=True,
-        allow_real_credentials=safe_request.scope == "metadata_live_smoke",
+        allow_real_credentials=safe_request.scope in CREDENTIAL_REQUIRED_SCOPES,
         created_at=created_at,
         expires_at=created_at + timedelta(minutes=safe_request.expires_minutes),
         issued_by=safe_request.issued_by,
@@ -301,6 +302,20 @@ def transport_probe_permit_expectation(profile_id: str, permit_ref: str | Path, 
     }
 
 
+def auth_live_smoke_permit_expectation(profile_id: str, permit_ref: str | Path, *, env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Build the exact auth-only live smoke expectation from the permit itself."""
+
+    permit = load_live_execution_permit(permit_ref, env=env)
+    return {
+        "scope": "auth_live_smoke",
+        "profile_id": profile_id,
+        "kind": RequestType.METADATA.value,
+        "direction": permit.direction,
+        "date_from": permit.date_from,
+        "date_to": permit.date_to,
+    }
+
+
 def _validated_request(request: LivePermitRequest) -> LivePermitRequest:
     if request.scope not in ALLOWED_SCOPES:
         raise LivePermitError("invalid-scope")
@@ -343,7 +358,7 @@ def _validate_document_policy(permit: LiveExecutionPermit, *, now: datetime, rep
     _validate_one_day_range(permit.date_from, permit.date_to)
     if permit.allow_real_sat is not True:
         raise LivePermitError("permit-real-sat-not-allowed")
-    if permit.scope == "metadata_live_smoke" and permit.allow_real_credentials is not True:
+    if permit.scope in CREDENTIAL_REQUIRED_SCOPES and permit.allow_real_credentials is not True:
         raise LivePermitError("permit-real-credentials-not-allowed")
     if permit.scope in {"transport_probe", "auth_post_probe", "auth_matrix_probe"} and permit.allow_real_credentials is True:
         raise LivePermitError("permit-unneeded-credentials")
