@@ -533,6 +533,7 @@ def _assert_auth_request_ready(body: bytes | None, headers: dict[str, str]) -> A
         readiness.request_body_bytes_len <= 500,
         readiness.soap_action != f'"{AUTH_ACTION}"',
         readiness.content_type != "text/xml; charset=utf-8",
+        _header_value(headers, "Accept") != "text/xml",
         _header_value(headers, "Authorization") is not None,
         not readiness.has_ws_security,
         not readiness.has_bst,

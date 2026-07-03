@@ -106,6 +106,25 @@ def test_auth_smoke_fails_before_transport_when_request_body_is_empty(tmp_path: 
     assert transport.requests == []
 
 
+def test_auth_smoke_fails_before_transport_when_accept_header_is_missing(tmp_path: Path) -> None:
+    transport = FakeSoapTransport([])
+    adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
+
+    def headers_without_accept(action: str) -> dict[str, str]:
+        return {"Content-Type": "text/xml; charset=utf-8", "SOAPAction": f'"{action}"'}
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr("cfdi_vault.sat_live_smoke.build_soap11_headers", headers_without_accept)
+        with pytest.raises(SatLiveSmokeError, match="SAT auth request failed local readiness checks") as exc:
+            adapter.auth_smoke()
+
+    diagnostic = exc.value.diagnostic
+    assert diagnostic.stage == "auth_request_readiness"
+    assert diagnostic.request_body_bytes_len is not None
+    assert diagnostic.request_body_bytes_len > 500
+    assert transport.requests == []
+
+
 def test_auth_http_failure_reports_redacted_request_readiness(tmp_path: Path) -> None:
     transport = FakeSoapTransport([SoapTransportResponse(400, body=b"")])
     adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
