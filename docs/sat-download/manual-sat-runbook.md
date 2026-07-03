@@ -4,7 +4,7 @@ This runbook defines the approval and evidence rules for any future real SAT smo
 
 ## Current status
 
-Live SAT remains blocked in this repository.
+Live SAT access is available only behind the human-gated smoke/diagnostic commands below. This runbook does not approve a run by itself.
 
 Before any real SAT/e.firma action, all of these must be true:
 
@@ -44,11 +44,53 @@ cfdi-vault download live-smoke `
   --kind metadata `
   --direction received `
   --manual-real-sat
+
+cfdi-vault sat diagnose-live `
+  --profile <PROFILE_ID> `
+  --from <YYYY-MM-DD> `
+  --to <YYYY-MM-DD> `
+  --kind metadata `
+  --direction received `
+  --manual-real-sat
 ```
 
 Use `--direction issued` only when that exact direction is approved for the manual run.
 
-If the command returns `error=live_adapter_unavailable`, stop. That means the safety gates passed, but the real SAT adapter is not wired for execution yet. Do not fall back to `sync metadata --live`.
+If `download live-smoke` fails with `error=live_adapter_failed`, run `sat diagnose-live` once only if the same approval still covers diagnostics. Do not retry automatically.
+
+If any command returns `error=live_adapter_unavailable`, stop. That means the safety gates passed, but the real SAT adapter is not wired for execution. Do not fall back to `sync metadata --live`.
+
+## Diagnostic path after a failed smoke
+
+Use `sat diagnose-live` to identify the failed stage without copying raw SOAP:
+
+```powershell
+cfdi-vault sat diagnose-live `
+  --profile <PROFILE_ID> `
+  --from <YYYY-MM-DD> `
+  --to <YYYY-MM-DD> `
+  --kind metadata `
+  --direction received `
+  --manual-real-sat
+```
+
+Allowed diagnostic fields to copy into #50:
+
+- `diagnostic_status`
+- `stages`
+- `failed_stage`
+- `error_kind`
+- `safe_hint`
+- `endpoint`
+- `http_status`
+- `soap_fault_code`
+- `sat_code`
+- `payload_size`
+- `envelope_sha256`
+- `duration_ms`
+- `correlation_id`
+
+Do not copy raw SOAP, headers, terminal transcript, RFCs, request ids, package ids, UUIDs, file paths, or credential details.
 
 ## Safe preflight
 
@@ -127,6 +169,14 @@ Use this template in the issue or PR after a manually approved smoke:
 - Scope: metadata-only, smallest approved date range
 - Result: passed / failed / blocked
 - Request outcome: redacted
+- Diagnostic command: not run / `sat diagnose-live`
+- Diagnostic status: redacted
+- Failed stage: redacted or n/a
+- Error kind: redacted or n/a
+- Safe hint: redacted or n/a
+- HTTP status: redacted or n/a
+- SAT code: redacted or n/a
+- Correlation id: synthetic local id or n/a
 - Package/XML persistence: none for metadata-only smoke, or redacted counts only if separately approved later
 - Live env vars cleared after run: yes
 - Scanner after run: passed
@@ -167,7 +217,8 @@ Stop the smoke and do not retry automatically if:
 - a command attempts to read real SAT material from the repository;
 - output would print tokens, passwords, private keys, certificates, headers, RFCs, paths, XML, ZIPs, or raw SAT payloads;
 - real fiscal data appears in any repository path;
-- the live command is unavailable or still blocked by product code.
+- the live command is unavailable or still blocked by product code;
+- a second diagnostic retry would be needed without a new explicit approval.
 
 ## Rollback and cleanup
 
@@ -178,6 +229,15 @@ After any approved manual attempt:
 3. Run the sensitive fixture scanner again.
 4. Confirm `git status --short` is clean.
 5. Record only the redacted evidence template above.
+
+PowerShell cleanup:
+
+```powershell
+Remove-Item Env:CFDI_VAULT_ALLOW_REAL_SAT -ErrorAction SilentlyContinue
+Remove-Item Env:CFDI_VAULT_ALLOW_REAL_CREDENTIALS -ErrorAction SilentlyContinue
+git status --short
+py scripts/scan_sensitive_fixtures.py --root .
+```
 
 ## Next step
 
