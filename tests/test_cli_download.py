@@ -705,11 +705,14 @@ def test_sat_auth_smoke_requires_same_manual_guard(
     appdata_root = tmp_path / "appdata"
     _write_ready_setup_profile(appdata_root)
     _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=True, doctor_ok=True)
-    monkeypatch.setattr(
-        cli_module,
-        "_run_live_auth_smoke",
-        lambda profile_id: cli_module.LiveSmokeCliResult(result="synthetic-auth-ok", auth="attempted"),
-    )
+    seen: dict[str, object] = {}
+
+    def fake_auth_smoke(profile_id: str, *, live_permit_verified: bool = False) -> cli_module.LiveSmokeCliResult:
+        seen["profile_id"] = profile_id
+        seen["live_permit_verified"] = live_permit_verified
+        return cli_module.LiveSmokeCliResult(result="synthetic-auth-ok", auth="attempted")
+
+    monkeypatch.setattr(cli_module, "_run_live_auth_smoke", fake_auth_smoke)
 
     result = CliRunner().invoke(
         app,
@@ -723,6 +726,7 @@ def test_sat_auth_smoke_requires_same_manual_guard(
     assert lines["mode"] == "live-smoke"
     assert lines["kind"] == "auth"
     assert lines["result"] == "synthetic-auth-ok"
+    assert seen == {"profile_id": "dummy-profile", "live_permit_verified": False}
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
 
 
@@ -746,11 +750,14 @@ def test_sat_auth_smoke_permit_replaces_interactive_prompt_once(
         env={"LOCALAPPDATA": str(appdata_root)},
     )
     calls: list[str] = []
-    monkeypatch.setattr(
-        cli_module,
-        "_run_live_auth_smoke",
-        lambda profile_id: calls.append(profile_id) or cli_module.LiveSmokeCliResult(result="synthetic-auth-ok", auth="attempted"),
-    )
+    seen: dict[str, object] = {}
+
+    def fake_auth_smoke(profile_id: str, *, live_permit_verified: bool = False) -> cli_module.LiveSmokeCliResult:
+        calls.append(profile_id)
+        seen["live_permit_verified"] = live_permit_verified
+        return cli_module.LiveSmokeCliResult(result="synthetic-auth-ok", auth="attempted")
+
+    monkeypatch.setattr(cli_module, "_run_live_auth_smoke", fake_auth_smoke)
 
     result = CliRunner().invoke(
         app,
@@ -766,6 +773,7 @@ def test_sat_auth_smoke_permit_replaces_interactive_prompt_once(
 
     assert result.exit_code == 0, result.output
     assert calls == ["dummy-profile"]
+    assert seen["live_permit_verified"] is True
     assert "Type \"SAT REAL METADATA SMOKE\"" not in result.output
     assert "xml_downloaded=no" in result.output
     assert "zip_downloaded=no" in result.output
