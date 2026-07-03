@@ -608,6 +608,7 @@ def _live_smoke_args(overrides: list[str]) -> list[str]:
 def _live_smoke_env(appdata_root: Path, overrides: dict[str, str | None]) -> dict[str, str]:
     env = {
         "LOCALAPPDATA": str(appdata_root),
+        "CI": "",
         "CFDI_VAULT_ALLOW_REAL_SAT": "1",
         "CFDI_VAULT_ALLOW_REAL_CREDENTIALS": "1",
     }
