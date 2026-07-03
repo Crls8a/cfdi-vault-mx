@@ -75,9 +75,83 @@ def test_auth_smoke_headers_match_soap11_contract_without_sensitive_headers(tmp_
     request = transport.requests[0]
     result = validate_auth_headers_for_contract(request.headers, _auth_contract(), body=request.body)
     assert result.all_checks_passed is True
-    assert request.headers["Content-Type"] == "text/xml;charset=UTF-8"
+    assert request.headers["Content-Type"] == "text/xml; charset=utf-8"
     assert request.headers["SOAPAction"] == f'"{AUTH_ACTION}"'
+    assert request.headers["Accept"] == "text/xml"
     assert "Authorization" not in request.headers
+
+
+def test_auth_smoke_fails_before_transport_when_request_body_is_empty(tmp_path: Path) -> None:
+    class EmptyAuthEnvelopeAdapter(SatLiveMetadataSmokeAdapter):
+        def _load_material(self) -> SatEfirmMaterial:
+            return _material()
+
+    transport = FakeSoapTransport([])
+    adapter = EmptyAuthEnvelopeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr("cfdi_vault.sat_live_smoke._build_auth_envelope", lambda *_args: b"")
+        with pytest.raises(SatLiveSmokeError, match="SAT auth request failed local readiness checks") as exc:
+            adapter.auth_smoke()
+
+    diagnostic = exc.value.diagnostic
+    assert diagnostic.stage == "auth_request_readiness"
+    assert diagnostic.error_kind == "client_configuration_error"
+    assert diagnostic.request_body_bytes_len == 0
+    assert diagnostic.payload_size == 0
+    assert diagnostic.envelope_sha256 is not None
+    assert diagnostic.soap_action == f'"{AUTH_ACTION}"'
+    assert diagnostic.content_type == "text/xml; charset=utf-8"
+    assert diagnostic.has_ws_security is False
+    assert transport.requests == []
+
+
+def test_auth_smoke_fails_before_transport_when_accept_header_is_missing(tmp_path: Path) -> None:
+    transport = FakeSoapTransport([])
+    adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
+
+    def headers_without_accept(action: str) -> dict[str, str]:
+        return {"Content-Type": "text/xml; charset=utf-8", "SOAPAction": f'"{action}"'}
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr("cfdi_vault.sat_live_smoke.build_soap11_headers", headers_without_accept)
+        with pytest.raises(SatLiveSmokeError, match="SAT auth request failed local readiness checks") as exc:
+            adapter.auth_smoke()
+
+    diagnostic = exc.value.diagnostic
+    assert diagnostic.stage == "auth_request_readiness"
+    assert diagnostic.request_body_bytes_len is not None
+    assert diagnostic.request_body_bytes_len > 500
+    assert transport.requests == []
+
+
+def test_auth_http_failure_reports_redacted_request_readiness(tmp_path: Path) -> None:
+    transport = FakeSoapTransport([SoapTransportResponse(400, body=b"")])
+    adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
+
+    with pytest.raises(SatLiveSmokeError, match="SAT transport returned a non-success status") as exc:
+        adapter.auth_smoke()
+
+    request = transport.requests[0]
+    diagnostic = exc.value.diagnostic
+    assert diagnostic.stage == "auth_transport"
+    assert diagnostic.error_kind == "http_status_error"
+    assert diagnostic.http_status == 400
+    assert diagnostic.payload_size == 0
+    assert diagnostic.request_body_bytes_len == len(request.body)
+    assert diagnostic.request_body_bytes_len > 500
+    assert diagnostic.envelope_sha256 is not None
+    assert diagnostic.soap_action == f'"{AUTH_ACTION}"'
+    assert diagnostic.content_type == "text/xml; charset=utf-8"
+    assert diagnostic.timestamp_window_seconds == 300
+    assert diagnostic.has_ws_security is True
+    assert diagnostic.has_bst is True
+    assert diagnostic.cert_der_bytes_len is not None
+    assert diagnostic.cert_der_bytes_len > 0
+    assert diagnostic.signature_method == "http://www.w3.org/2000/09/xmldsig#rsa-sha1"
+    assert diagnostic.digest_method == "http://www.w3.org/2000/09/xmldsig#sha1"
+    assert diagnostic.signed_reference_count >= 1
+    assert diagnostic.signed_reference_targets_exist is True
 
 
 def test_transport_failure_is_redacted(tmp_path: Path) -> None:

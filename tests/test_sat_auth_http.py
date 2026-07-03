@@ -13,8 +13,9 @@ def test_builds_soap11_headers_with_quoted_action() -> None:
     headers = build_soap11_headers(AUTH_ACTION, user_agent="cfdi-vault-test")
 
     assert headers == {
-        "Content-Type": "text/xml;charset=UTF-8",
+        "Content-Type": "text/xml; charset=utf-8",
         "SOAPAction": f'"{AUTH_ACTION}"',
+        "Accept": "text/xml",
         "User-Agent": "cfdi-vault-test",
     }
 
@@ -24,7 +25,7 @@ def test_auth_headers_match_soap11_wsdl_contract() -> None:
 
     assert result.all_checks_passed is True
     assert result.media_type == "text/xml"
-    assert result.charset == "UTF-8"
+    assert result.charset == "utf-8"
     assert result.soap_action == AUTH_ACTION
     assert result.soap_action_quoted is True
     assert result.body_size == len(b"<synthetic/>")

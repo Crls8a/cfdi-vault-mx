@@ -575,6 +575,17 @@ def test_download_live_smoke_adapter_failure_prints_redacted_diagnostic(
             transport_layer="tls",
             duration_ms=7,
             correlation_id="diag-synthetic",
+            request_body_bytes_len=2048,
+            soap_action='"http://DescargaMasivaTerceros.gob.mx/IAutenticacion/Autentica"',
+            content_type="text/xml; charset=utf-8",
+            timestamp_window_seconds=300,
+            has_ws_security=True,
+            has_bst=True,
+            cert_der_bytes_len=700,
+            signature_method="http://www.w3.org/2000/09/xmldsig#rsa-sha1",
+            digest_method="http://www.w3.org/2000/09/xmldsig#sha1",
+            signed_reference_count=1,
+            signed_reference_targets_exist=True,
         )
 
     monkeypatch.setattr(cli_module, "_run_live_metadata_smoke", fail_live_smoke)
@@ -597,6 +608,17 @@ def test_download_live_smoke_adapter_failure_prints_redacted_diagnostic(
     assert lines["exception_class"] == "SSLError"
     assert lines["transport_layer"] == "tls"
     assert lines["correlation_id"] == "diag-synthetic"
+    assert lines["request_body_bytes_len"] == "2048"
+    assert lines["soap_action"] == '"http://DescargaMasivaTerceros.gob.mx/IAutenticacion/Autentica"'
+    assert lines["content_type"] == "text/xml; charset=utf-8"
+    assert lines["timestamp_window_seconds"] == "300"
+    assert lines["has_ws_security"] == "yes"
+    assert lines["has_binary_security_token"] == "yes"
+    assert lines["cert_der_bytes_len"] == "700"
+    assert lines["signature_method"] == "http://www.w3.org/2000/09/xmldsig#rsa-sha1"
+    assert lines["digest_method"] == "http://www.w3.org/2000/09/xmldsig#sha1"
+    assert lines["signed_reference_count"] == "1"
+    assert lines["signed_reference_targets_exist"] == "yes"
     assert "raw adapter detail" not in result.output
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
 
