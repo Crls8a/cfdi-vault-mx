@@ -22,7 +22,17 @@ from cfdi_vault.sat_auth_constants import (
 )
 from cfdi_vault.sat_auth_envelope_lint import lint_auth_envelope
 from cfdi_vault.sat_auth_http import validate_auth_headers_for_contract
-from cfdi_vault.sat_live_smoke import AUTH_ACTION, SatEfirmMaterial, SatLiveMetadataSmokeAdapter, SatLiveSmokeEndpoints, SatLiveSmokeError
+from cfdi_vault.sat_live_smoke import (
+    AUTH_ACTION,
+    SatEfirmMaterial,
+    SatLiveMetadataSmokeAdapter,
+    SatLiveSmokeEndpoints,
+    SatLiveSmokeError,
+    SatV15RequestOperation,
+    _build_request_envelope,
+    resolve_v15_request_operation,
+    v15_request_soap_action,
+)
 from cfdi_vault.sat_transport import FakeSoapTransport, SoapTransportResponse
 from cfdi_vault.secrets import DummySecretProvider
 from cfdi_vault.setup_core import CredentialMode, LocalProfile, LocalProfileStatus
@@ -31,7 +41,7 @@ from cfdi_vault.setup_core import CredentialMode, LocalProfile, LocalProfileStat
 def test_metadata_smoke_uses_real_adapter_shape_without_package_download(tmp_path: Path) -> None:
     responses = [
         SoapTransportResponse(200, body=_soap("<sat:AutenticaResult>SYNTHETIC_TOKEN</sat:AutenticaResult>")),
-        SoapTransportResponse(200, body=_soap('<sat:SolicitaDescargaResult IdSolicitud="SYN-REQ-001" CodEstatus="5000" Mensaje="Accepted" />')),
+        SoapTransportResponse(200, body=_soap('<sat:SolicitaDescargaRecibidosResult IdSolicitud="SYN-REQ-001" CodEstatus="5000" Mensaje="Accepted" />')),
         SoapTransportResponse(200, body=_soap('<sat:VerificaSolicitudDescargaResult CodEstatus="5000" EstadoSolicitud="2" Mensaje="Working" />')),
     ]
     transport = FakeSoapTransport(responses)
@@ -42,12 +52,96 @@ def test_metadata_smoke_uses_real_adapter_shape_without_package_download(tmp_pat
     ).metadata_smoke(_query())
 
     assert (result.result, result.auth, result.request, result.verification) == ("metadata-smoke-ok", "authenticated", "accepted", "in_progress")
+    assert result.operation == "SolicitaDescargaRecibidos"
+    assert result.id_solicitud_redacted == "SYN-...-001"
+    assert result.request_body_bytes_len is not None
+    assert result.envelope_sha256 is not None
+    assert result.signed_reference_count == 1
     assert [request.endpoint for request in transport.requests] == [endpoints.auth, endpoints.request, endpoints.verify]
-    assert b"SolicitaDescarga" in transport.requests[1].body
+    assert transport.requests[1].headers["SOAPAction"] == '"http://DescargaMasivaTerceros.sat.gob.mx/ISolicitaDescargaService/SolicitaDescargaRecibidos"'
+    assert _body_operation_names(transport.requests[1].body) == ["SolicitaDescargaRecibidos"]
+    assert "SolicitaDescarga" not in _body_operation_names(transport.requests[1].body)
     assert b'TipoSolicitud="Metadata"' in transport.requests[1].body
+    assert b'RfcReceptor="XAXX010101000"' in transport.requests[1].body
     assert b"VerificaSolicitudDescarga" in transport.requests[2].body
     assert "SYNTHETIC_TOKEN" not in repr(transport.requests[1])
     assert "SYN-REQ-001" not in repr(transport.requests[2])
+
+
+def test_metadata_request_smoke_does_not_verify_or_download(tmp_path: Path) -> None:
+    responses = [
+        SoapTransportResponse(200, body=_soap("<sat:AutenticaResult>SYNTHETIC_TOKEN</sat:AutenticaResult>")),
+        SoapTransportResponse(200, body=_soap('<sat:SolicitaDescargaRecibidosResult IdSolicitud="SYN-REQ-002" CodEstatus="5000" Mensaje="Accepted" />')),
+    ]
+    transport = FakeSoapTransport(responses)
+
+    result = SatLiveMetadataSmokeAdapter(
+        profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material()
+    ).metadata_request_smoke(_query())
+
+    assert (result.result, result.request, result.verification) == ("metadata-request-submitted", "accepted", "not_run")
+    assert result.operation == "SolicitaDescargaRecibidos"
+    assert result.id_solicitud_redacted == "SYN-...-002"
+    assert len(transport.requests) == 2
+
+
+def test_v15_request_operation_routing_has_no_legacy_fallback() -> None:
+    issued = DownloadQuery(
+        "default",
+        "XAXX010101000",
+        DownloadDirection.ISSUED,
+        RequestType.METADATA,
+        DateTimePeriod(datetime(2024, 1, 1, tzinfo=timezone.utc), datetime(2024, 1, 1, 0, 0, 2, tzinfo=timezone.utc)),
+    )
+    folio = DownloadQuery("default", "XAXX010101000", DownloadDirection.FOLIO, RequestType.METADATA, uuid="SYNTHETIC-UUID")
+
+    assert resolve_v15_request_operation(_query()) == SatV15RequestOperation.RECEIVED
+    assert resolve_v15_request_operation(issued) == SatV15RequestOperation.ISSUED
+    assert resolve_v15_request_operation(folio) == SatV15RequestOperation.FOLIO
+    assert v15_request_soap_action(SatV15RequestOperation.RECEIVED).endswith("/SolicitaDescargaRecibidos")
+
+
+def test_v15_request_builder_emits_operation_specific_payloads() -> None:
+    material = _material()
+    issued = DownloadQuery(
+        "default",
+        "XAXX010101000",
+        DownloadDirection.ISSUED,
+        RequestType.METADATA,
+        DateTimePeriod(datetime(2024, 1, 1, tzinfo=timezone.utc), datetime(2024, 1, 1, 0, 0, 2, tzinfo=timezone.utc)),
+    )
+    folio = DownloadQuery("default", "XAXX010101000", DownloadDirection.FOLIO, RequestType.METADATA, uuid="SYNTHETIC-UUID")
+
+    assert _body_operation_names(_build_request_envelope(_query(), material)) == ["SolicitaDescargaRecibidos"]
+    assert _body_operation_names(_build_request_envelope(issued, material)) == ["SolicitaDescargaEmitidos"]
+    assert _body_operation_names(_build_request_envelope(folio, material)) == ["SolicitaDescargaFolio"]
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "safe_hint"),
+    [
+        (datetime(2024, 1, 1, tzinfo=timezone.utc), datetime(2024, 1, 1, tzinfo=timezone.utc), "fecha-inicial-must-be-before-fecha-final"),
+        (datetime(2024, 1, 1, tzinfo=timezone.utc), datetime(2024, 1, 1, 0, 0, 1, tzinfo=timezone.utc), "minimum-two-second-range-required"),
+        (datetime(2024, 1, 1, tzinfo=timezone.utc), datetime(2024, 1, 2, 0, 0, 1, tzinfo=timezone.utc), "range-too-wide"),
+    ],
+)
+def test_v15_live_metadata_date_rules_fail_before_transport(
+    tmp_path: Path,
+    start: datetime,
+    end: datetime,
+    safe_hint: str,
+) -> None:
+    query = DownloadQuery("default", "XAXX010101000", DownloadDirection.RECEIVED, RequestType.METADATA, DateTimePeriod(start, end))
+    transport = FakeSoapTransport([])
+    adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
+
+    with pytest.raises(SatLiveSmokeError) as exc:
+        adapter.metadata_request_smoke(query)
+
+    assert exc.value.failed_stage == "preflight"
+    assert exc.value.error_kind == "guard_failed"
+    assert exc.value.diagnostic.safe_hint == safe_hint
+    assert transport.requests == []
 
 
 def test_efirma_material_stays_out_of_tls_client_transport(tmp_path: Path) -> None:
@@ -343,6 +437,13 @@ def _auth_contract() -> AuthWsdlContract:
         expected_action_uri=AUTH_ACTION,
         wsdl_size=123,
     )
+
+
+def _body_operation_names(body: bytes) -> list[str]:
+    root = etree.fromstring(body)
+    soap_body = root.find("{http://schemas.xmlsoap.org/soap/envelope/}Body")
+    assert soap_body is not None
+    return [etree.QName(child).localname for child in soap_body]
 
 
 def _soap(body: str) -> bytes:

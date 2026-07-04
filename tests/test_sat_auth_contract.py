@@ -16,7 +16,7 @@ from cfdi_vault.sat_auth_constants import (
 from cfdi_vault.sat_auth_contract import AuthWsdlContract, parse_auth_wsdl_contract
 from cfdi_vault.sat_auth_endpoints import DEFAULT_AUTH_ENDPOINT
 from cfdi_vault.sat_auth_post_probe import AUTH_POST_PROBE_BODY, AUTH_POST_PROBE_HEADERS
-from cfdi_vault.sat_live_smoke import REQUEST_ACTION, SAT_REQUEST_NS, VERIFY_ACTION
+from cfdi_vault.sat_live_smoke import SAT_REQUEST_NS, VERIFY_ACTION, SatV15RequestOperation, v15_request_soap_action
 
 
 def test_auth_contract_constants_match_sat_auth_wsdl_shape() -> None:
@@ -42,7 +42,8 @@ def test_auth_post_probe_uses_central_auth_contract_constants() -> None:
 
 def test_auth_contract_constants_do_not_reuse_request_or_verify_contract() -> None:
     assert AUTH_NAMESPACE != SAT_REQUEST_NS
-    assert AUTH_SOAP_ACTION not in {REQUEST_ACTION, VERIFY_ACTION}
+    request_actions = {v15_request_soap_action(operation) for operation in SatV15RequestOperation}
+    assert AUTH_SOAP_ACTION not in request_actions | {VERIFY_ACTION}
     assert AUTH_OPERATION not in {"SolicitaDescarga", "VerificaSolicitudDescarga", "Descargar"}
 
 
