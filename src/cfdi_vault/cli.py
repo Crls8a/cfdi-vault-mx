@@ -47,6 +47,12 @@ from cfdi_vault.sat_auth_envelope_lint import AuthEnvelopeLintResult, build_dumm
 from cfdi_vault.sat_auth_contract import AuthWsdlContract, fetch_auth_wsdl_contract
 from cfdi_vault.sat_auth_endpoints import resolve_auth_endpoint
 from cfdi_vault.sat_auth_matrix_probe import SatAuthMatrixProbeResult, run_sat_auth_matrix_probe
+from cfdi_vault.sat_auth_oracle import (
+    AuthEnvelopeFingerprint,
+    PhpCfdiOracleFingerprint,
+    fingerprint_auth_envelope,
+    fingerprint_phpcfdi_oracle,
+)
 from cfdi_vault.sat_auth_post_probe import SatAuthPostProbeResult, run_sat_auth_post_probe
 from cfdi_vault.sat_transport_probe import SatProbeResult, run_sat_transport_probe
 from cfdi_vault.live_permit import (
@@ -207,6 +213,12 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "purpose": "Build a dummy SAT auth envelope and print redacted structural lint checks.",
         "when": "Run before any live auth retry; never prints raw XML, cert material, or signature values.",
         "example": "cfdi-vault sat lint-auth-envelope --fixture dummy",
+    },
+    {
+        "command": "sat oracle-auth-fingerprint",
+        "purpose": "Compare a redacted local auth envelope fingerprint with a phpcfdi oracle source when available.",
+        "when": "Run before any further auth-smoke retry; never prints raw SOAP or credential material.",
+        "example": "cfdi-vault sat oracle-auth-fingerprint --fixture dummy",
     },
     {
         "command": "sat diagnose-live",
@@ -862,6 +874,29 @@ def sat_lint_auth_envelope(
         raise typer.Exit(code=1)
     envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc", auth_envelope_variant=auth_envelope_variant)
     _print_auth_envelope_lint("dummy", lint_auth_envelope(envelope, expected_header_action_order=auth_envelope_variant))
+
+
+@sat_app.command("oracle-auth-fingerprint")
+def sat_oracle_auth_fingerprint(
+    fixture: str = typer.Option("dummy", "--fixture", help="Only dummy is supported for local offline fingerprinting."),
+    auth_envelope_variant: str = typer.Option(DEFAULT_AUTH_ENVELOPE_VARIANT, "--auth-envelope-variant", help="Local auth envelope variant to fingerprint."),
+    phpcfdi_builder_source: Path | None = typer.Option(None, "--phpcfdi-builder-source", help="External path to phpcfdi FielRequestBuilder.php; never vendor it in this repo."),
+) -> None:
+    """Print redacted local/phpcfdi auth envelope fingerprints without SOAP or secrets."""
+
+    if fixture != "dummy":
+        typer.echo("error=auth_oracle_denied", err=True)
+        typer.echo("reason=dummy-fixture-required", err=True)
+        raise typer.Exit(code=1)
+    if auth_envelope_variant not in AUTH_ENVELOPE_VARIANTS:
+        typer.echo("error=auth_oracle_denied", err=True)
+        typer.echo("reason=invalid-auth-envelope-variant", err=True)
+        raise typer.Exit(code=1)
+    envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc", auth_envelope_variant=auth_envelope_variant)
+    _print_auth_oracle_fingerprint(
+        fingerprint_auth_envelope(envelope),
+        fingerprint_phpcfdi_oracle(phpcfdi_builder_source),
+    )
 
 
 @sat_app.command("diagnose-live")
@@ -1990,6 +2025,51 @@ def _print_auth_envelope_lint(fixture: str, result: AuthEnvelopeLintResult) -> N
     typer.echo("certificate_printed=no")
     typer.echo("signature_value_printed=no")
     typer.echo("key_material_printed=no")
+
+
+def _print_auth_oracle_fingerprint(local: AuthEnvelopeFingerprint, oracle: PhpCfdiOracleFingerprint) -> None:
+    typer.echo("mode=auth-oracle-fingerprint")
+    typer.echo("local_available=yes")
+    for key, value in (
+        ("local_envelope_sha256", local.envelope_sha256),
+        ("local_envelope_size", local.envelope_size),
+        ("local_ordered_element_paths", _join_lint_values(local.ordered_element_paths)),
+        ("local_namespaces", _join_lint_values(local.namespaces)),
+        ("local_attributes", _join_lint_values(local.attributes)),
+        ("local_c14n_algorithm", local.c14n_algorithm),
+        ("local_signature_algorithm", local.signature_algorithm),
+        ("local_digest_algorithms", _join_lint_values(local.digest_algorithms)),
+        ("local_reference_uris", _join_lint_values(local.reference_uris_redacted)),
+        ("local_bst_length", local.bst_length),
+        ("local_signature_value_length", local.signature_value_length),
+        ("local_digest_value_lengths", _join_lint_values(tuple(str(value) for value in local.digest_value_lengths))),
+        ("local_has_header_action", _yes_no(local.has_header_action)),
+        ("local_header_action_order", local.header_action_order),
+        ("local_sec_ref_shape", local.sec_ref_shape),
+    ):
+        typer.echo(f"{key}={value}")
+    typer.echo(f"phpcfdi_available={'yes' if oracle.available else 'no'}")
+    typer.echo(f"php_available={'yes' if oracle.php_available else 'no'}")
+    typer.echo(f"composer_available={'yes' if oracle.composer_available else 'no'}")
+    typer.echo(f"phpcfdi_reason={oracle.reason}")
+    if oracle.available:
+        for key, value in (
+            ("phpcfdi_source_sha256", oracle.source_sha256),
+            ("phpcfdi_has_header_action", _yes_no(oracle.has_header_action)),
+            ("phpcfdi_header_action_order", oracle.header_action_order),
+            ("phpcfdi_c14n_algorithm", oracle.c14n_algorithm),
+            ("phpcfdi_signature_algorithm", oracle.signature_algorithm),
+            ("phpcfdi_digest_algorithm", oracle.digest_algorithm),
+            ("phpcfdi_reference_uri", oracle.reference_uri_redacted),
+            ("phpcfdi_sec_ref_shape", oracle.sec_ref_shape),
+            ("phpcfdi_request_operations", _join_lint_values(oracle.request_operations)),
+        ):
+            typer.echo(f"{key}={value}")
+    else:
+        for index, step in enumerate(oracle.setup_steps, start=1):
+            typer.echo(f"phpcfdi_setup_step_{index}={step}")
+    for flag in ("sat_real_executed", "raw_xml_printed", "certificate_printed", "signature_value_printed", "digest_value_printed", "key_material_printed"):
+        typer.echo(f"{flag}=no")
 
 
 def _join_lint_values(values: tuple[str, ...]) -> str:
