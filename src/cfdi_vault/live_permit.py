@@ -14,7 +14,7 @@ import subprocess
 from typing import Mapping
 
 from cfdi_vault.domain import DownloadDirection, DownloadQuery, RequestType
-from cfdi_vault.sat_auth_constants import DEFAULT_AUTH_ENVELOPE_VARIANT, AUTH_ENVELOPE_VARIANTS
+from cfdi_vault.sat_auth_constants import AUTH_ENVELOPE_VARIANT_SECURITY_ONLY, DEFAULT_AUTH_ENVELOPE_VARIANT, AUTH_ENVELOPE_VARIANTS
 from cfdi_vault.setup_core import SetupError, find_repo_root, resolve_appdata_root, validate_profile_id
 
 ALLOWED_SCOPES = frozenset({"transport_probe", "auth_post_probe", "auth_matrix_probe", "auth_live_smoke", "metadata_live_smoke"})
@@ -362,8 +362,10 @@ def _validated_request(request: LivePermitRequest) -> LivePermitRequest:
         auth_envelope_variant = request.auth_envelope_variant or DEFAULT_AUTH_ENVELOPE_VARIANT
         if auth_envelope_variant not in AUTH_ENVELOPE_VARIANTS:
             raise LivePermitError("invalid-auth-envelope-variant")
-        wcf_action_header_enabled = True if request.wcf_action_header_enabled is None else request.wcf_action_header_enabled
-        if wcf_action_header_enabled is not True:
+        wcf_action_header_enabled = request.wcf_action_header_enabled
+        if wcf_action_header_enabled is None:
+            wcf_action_header_enabled = auth_envelope_variant != AUTH_ENVELOPE_VARIANT_SECURITY_ONLY
+        if auth_envelope_variant != AUTH_ENVELOPE_VARIANT_SECURITY_ONLY and wcf_action_header_enabled is not True:
             raise LivePermitError("wcf-action-header-required")
     elif request.auth_envelope_variant is not None or request.wcf_action_header_enabled is not None:
         raise LivePermitError("auth-envelope-options-not-applicable")
@@ -405,7 +407,7 @@ def _validate_document_policy(permit: LiveExecutionPermit, *, now: datetime, rep
     if permit.scope == "auth_live_smoke":
         if permit.auth_envelope_variant not in AUTH_ENVELOPE_VARIANTS:
             raise LivePermitError("permit-auth-envelope-variant-required")
-        if permit.wcf_action_header_enabled is not True:
+        if permit.auth_envelope_variant != AUTH_ENVELOPE_VARIANT_SECURITY_ONLY and permit.wcf_action_header_enabled is not True:
             raise LivePermitError("permit-wcf-action-header-required")
     elif permit.auth_envelope_variant is not None or permit.wcf_action_header_enabled is not None:
         raise LivePermitError("permit-auth-envelope-options-not-applicable")

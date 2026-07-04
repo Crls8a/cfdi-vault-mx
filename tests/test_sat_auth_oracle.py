@@ -3,6 +3,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from cfdi_vault.cli import app
+from cfdi_vault.sat_auth_constants import AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY
 from cfdi_vault.sat_auth_envelope_lint import build_dummy_auth_envelope
 from cfdi_vault.sat_auth_oracle import diff_auth_oracle, fingerprint_auth_envelope, fingerprint_phpcfdi_oracle
 
@@ -14,8 +15,8 @@ def test_auth_envelope_fingerprint_is_redacted_without_raw_xml() -> None:
 
     assert result.envelope_size > 500
     assert result.envelope_sha256
-    assert result.has_header_action is True
-    assert result.header_action_order == "action_before_security"
+    assert result.has_header_action is False
+    assert result.header_action_order == "security_only"
     assert result.sec_ref_shape == "wsse-reference-to-bst"
     assert result.bst_length > 0
     assert result.signature_value_length > 0
@@ -78,7 +79,12 @@ def test_auth_oracle_diff_reports_action_difference_without_raw_xml(tmp_path: Pa
         """,
         encoding="utf-8",
     )
-    local = fingerprint_auth_envelope(build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc"))
+    local = fingerprint_auth_envelope(
+        build_dummy_auth_envelope(
+            "https://auth.example.test/Autenticacion/Autenticacion.svc",
+            auth_envelope_variant=AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
+        )
+    )
 
     result = diff_auth_oracle(local, fingerprint_phpcfdi_oracle(source))
 
@@ -113,7 +119,7 @@ def test_oracle_auth_fingerprint_cli_prints_safe_unavailable_status() -> None:
     assert result.exit_code == 0, result.output
     assert "mode=auth-oracle-fingerprint" in result.output
     assert "local_available=yes" in result.output
-    assert "local_has_header_action=yes" in result.output
+    assert "local_has_header_action=no" in result.output
     assert "phpcfdi_available=no" in result.output
     assert "sat_real_executed=no" in result.output
     assert "raw_xml_printed=no" in result.output

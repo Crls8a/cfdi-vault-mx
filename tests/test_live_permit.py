@@ -16,6 +16,7 @@ from cfdi_vault.live_permit import (
 )
 from cfdi_vault.sat_auth_constants import (
     AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
+    AUTH_ENVELOPE_VARIANT_SECURITY_ONLY,
     AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION,
 )
 
@@ -153,11 +154,11 @@ def test_live_execution_permit_allows_auth_live_smoke_scope_with_credentials(tmp
 
     assert permit.scope == "auth_live_smoke"
     assert permit.allow_real_credentials is True
-    assert permit.auth_envelope_variant == AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY
-    assert permit.wcf_action_header_enabled is True
+    assert permit.auth_envelope_variant == AUTH_ENVELOPE_VARIANT_SECURITY_ONLY
+    assert permit.wcf_action_header_enabled is False
     document = json.loads(permit.path.read_text(encoding="utf-8"))  # type: ignore[union-attr]
-    assert document["authEnvelopeVariant"] == AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY
-    assert document["wcfActionHeaderEnabled"] is True
+    assert document["authEnvelopeVariant"] == AUTH_ENVELOPE_VARIANT_SECURITY_ONLY
+    assert document["wcfActionHeaderEnabled"] is False
     consumed = validate_and_consume_live_permit(
         permit.permit_id,
         scope="auth_live_smoke",
@@ -166,15 +167,15 @@ def test_live_execution_permit_allows_auth_live_smoke_scope_with_credentials(tmp
         direction="received",
         date_from="2026-07-03",
         date_to="2026-07-03",
-        auth_envelope_variant=AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
-        wcf_action_header_enabled=True,
+        auth_envelope_variant=AUTH_ENVELOPE_VARIANT_SECURITY_ONLY,
+        wcf_action_header_enabled=False,
         env=env,
         now=NOW + timedelta(minutes=1),
         repo_root=repo_root,
     )
     assert consumed.consumed is True
-    assert consumed.auth_envelope_variant == AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY
-    assert consumed.wcf_action_header_enabled is True
+    assert consumed.auth_envelope_variant == AUTH_ENVELOPE_VARIANT_SECURITY_ONLY
+    assert consumed.wcf_action_header_enabled is False
 
 
 @pytest.mark.parametrize(
@@ -186,7 +187,7 @@ def test_live_execution_permit_allows_auth_live_smoke_scope_with_credentials(tmp
         (_request(reason=" "), "reason-required"),
         (_request(issued_by="someone-else"), "invalid-issuer"),
         (_request(scope="auth_live_smoke", auth_envelope_variant="unsupported"), "invalid-auth-envelope-variant"),
-        (_request(scope="auth_live_smoke", wcf_action_header_enabled=False), "wcf-action-header-required"),
+        (_request(scope="auth_live_smoke", auth_envelope_variant=AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY, wcf_action_header_enabled=False), "wcf-action-header-required"),
         (_request(scope="transport_probe", auth_envelope_variant=AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY), "auth-envelope-options-not-applicable"),
     ],
 )
