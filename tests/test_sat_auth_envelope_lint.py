@@ -1,6 +1,7 @@
 from lxml import etree
 from typer.testing import CliRunner
 
+from cfdi_vault import cli as cli_module
 from cfdi_vault.cli import app
 from cfdi_vault.sat_auth_envelope_lint import (
     EXPECTED_C14N_METHOD,
@@ -189,6 +190,7 @@ def test_lint_auth_envelope_cli_prints_redacted_checks() -> None:
     assert result.exit_code == 0, result.output
     assert "mode=auth-envelope-lint" in result.output
     assert "all_checks_passed=yes" in result.output
+    assert "request_body_bytes_len=" in result.output
     assert "check_ws_security=yes" in result.output
     assert "check_c14n_method=yes" in result.output
     assert "check_signature_method=yes" in result.output
@@ -223,3 +225,35 @@ def test_lint_auth_envelope_cli_prints_redacted_checks() -> None:
     assert "signature_value_printed=no" in result.output
     assert "<soap" not in result.output
     assert "BEGIN CERTIFICATE" not in result.output
+
+
+def test_lint_auth_envelope_profile_requires_redacted(monkeypatch) -> None:
+    called = False
+
+    def fail_if_called(_profile: str) -> bytes:
+        nonlocal called
+        called = True
+        return b"SHOULD_NOT_HAPPEN"
+
+    monkeypatch.setattr(cli_module, "_build_profile_auth_envelope", fail_if_called)
+
+    result = CliRunner().invoke(app, ["sat", "lint-auth-envelope", "--profile", "dummy-profile"])
+
+    assert result.exit_code == 1
+    assert "reason=redacted-required-for-profile" in result.output
+    assert called is False
+
+
+def test_lint_auth_envelope_profile_redacted_prints_safe_checks(monkeypatch) -> None:
+    envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc")
+    monkeypatch.setattr(cli_module, "_build_profile_auth_envelope", lambda _profile: envelope)
+
+    result = CliRunner().invoke(app, ["sat", "lint-auth-envelope", "--profile", "dummy-profile", "--redacted"])
+
+    assert result.exit_code == 0, result.output
+    assert "fixture=profile-redacted" in result.output
+    assert "all_checks_passed=yes" in result.output
+    assert "request_body_bytes_len=" in result.output
+    assert "<soap" not in result.output
+    assert "BEGIN CERTIFICATE" not in result.output
+    assert "SignatureValue" not in result.output
