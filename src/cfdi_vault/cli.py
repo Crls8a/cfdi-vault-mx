@@ -1873,6 +1873,7 @@ def _print_auth_envelope_lint(fixture: str, result: AuthEnvelopeLintResult) -> N
     typer.echo(f"reference_uris={_join_lint_values(result.reference_uris_redacted)}")
     typer.echo(f"reference_transform_algorithms={_join_lint_values(result.reference_transform_algorithms)}")
     typer.echo(f"key_info_reference_uri={result.key_info_reference_uri_redacted}")
+    typer.echo(f"header_action_order={result.header_action_order}")
     typer.echo(f"reference_count={result.reference_count}")
     typer.echo(f"bst_size={result.bst_size}")
     for name in (
@@ -1903,6 +1904,11 @@ def _print_auth_envelope_lint(fixture: str, result: AuthEnvelopeLintResult) -> N
         "timestamp_signed",
         "to_header_present",
         "action_header_present",
+        "action_header_value",
+        "action_header_namespace",
+        "action_header_must_understand",
+        "action_header_before_security",
+        "security_must_understand",
         "local_signature_verify",
     ):
         typer.echo(f"check_{name}={'yes' if getattr(result, name) else 'no'}")
@@ -2093,6 +2099,11 @@ def _print_live_adapter_error(exc: SatLiveSmokeError) -> None:
         ("digest_method", diagnostic.digest_method),
         ("signed_reference_count", diagnostic.signed_reference_count),
         ("signed_reference_targets_exist", _yes_no(diagnostic.signed_reference_targets_exist)),
+        ("has_header_action", _yes_no(diagnostic.has_header_action)),
+        ("header_action_value_ok", _yes_no(diagnostic.header_action_value_ok)),
+        ("header_action_must_understand", _yes_no(diagnostic.header_action_must_understand)),
+        ("header_action_order", diagnostic.header_action_order),
+        ("security_must_understand", _yes_no(diagnostic.security_must_understand)),
     ):
         if value is not None:
             typer.echo(f"{key}={value}", err=True)

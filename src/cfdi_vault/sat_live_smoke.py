@@ -84,6 +84,11 @@ class SatLiveDiagnosticEntry:
     digest_method: str | None = None
     signed_reference_count: int | None = None
     signed_reference_targets_exist: bool | None = None
+    has_header_action: bool | None = None
+    header_action_value_ok: bool | None = None
+    header_action_must_understand: bool | None = None
+    header_action_order: str | None = None
+    security_must_understand: bool | None = None
 class SatLiveSmokeError(RuntimeError):
     """Safe live smoke failure without credential, token, SOAP, RFC, path, or id detail."""
     def __init__(
@@ -115,6 +120,11 @@ class SatLiveSmokeError(RuntimeError):
         digest_method: str | None = None,
         signed_reference_count: int | None = None,
         signed_reference_targets_exist: bool | None = None,
+        has_header_action: bool | None = None,
+        header_action_value_ok: bool | None = None,
+        header_action_must_understand: bool | None = None,
+        header_action_order: str | None = None,
+        security_must_understand: bool | None = None,
     ) -> None:
         self.diagnostic = SatLiveDiagnosticEntry(
             stage=stage,
@@ -143,6 +153,11 @@ class SatLiveSmokeError(RuntimeError):
             digest_method=digest_method,
             signed_reference_count=signed_reference_count,
             signed_reference_targets_exist=signed_reference_targets_exist,
+            has_header_action=has_header_action,
+            header_action_value_ok=header_action_value_ok,
+            header_action_must_understand=header_action_must_understand,
+            header_action_order=header_action_order,
+            security_must_understand=security_must_understand,
         )
         super().__init__(message)
     @property
@@ -174,6 +189,11 @@ class AuthRequestReadiness:
     digest_method: str | None
     signed_reference_count: int
     signed_reference_targets_exist: bool
+    has_header_action: bool
+    header_action_value_ok: bool
+    header_action_must_understand: bool
+    header_action_order: str
+    security_must_understand: bool
 
     def error_fields(self) -> dict[str, object]:
         return {
@@ -189,6 +209,11 @@ class AuthRequestReadiness:
             "digest_method": self.digest_method,
             "signed_reference_count": self.signed_reference_count,
             "signed_reference_targets_exist": self.signed_reference_targets_exist,
+            "has_header_action": self.has_header_action,
+            "header_action_value_ok": self.header_action_value_ok,
+            "header_action_must_understand": self.header_action_must_understand,
+            "header_action_order": self.header_action_order,
+            "security_must_understand": self.security_must_understand,
         }
 @dataclass(frozen=True)
 class SatLiveSmokeEndpoints:
@@ -444,6 +469,7 @@ def _build_auth_envelope(material: SatEfirmMaterial, endpoint: str) -> bytes:
     envelope = _envelope(SAT_AUTH_NS)
     header = envelope.find(f"{{{SOAP11_NS}}}Header")
     assert header is not None
+    etree.SubElement(header, f"{{{ADDR_NS}}}Action", {f"{{{SOAP11_NS}}}mustUnderstand": "1"}).text = AUTH_ACTION
     security = etree.SubElement(header, f"{{{WSSE_NS}}}Security", {f"{{{SOAP11_NS}}}mustUnderstand": "1"})
     timestamp = etree.SubElement(security, f"{{{WSU_NS}}}Timestamp", {f"{{{WSU_NS}}}Id": "_0"})
     etree.SubElement(timestamp, f"{{{WSU_NS}}}Created").text = _fmt(created)
@@ -460,7 +486,6 @@ def _build_auth_envelope(material: SatEfirmMaterial, endpoint: str) -> bytes:
     ).text = material.certificate_der_b64
     security.append(_sign_auth_timestamp(envelope, material, bst_id))
     etree.SubElement(header, f"{{{ADDR_NS}}}To", {f"{{{SOAP11_NS}}}mustUnderstand": "1"}).text = endpoint
-    etree.SubElement(header, f"{{{ADDR_NS}}}Action", {f"{{{SOAP11_NS}}}mustUnderstand": "1"}).text = AUTH_ACTION
     body = envelope.find(f"{{{SOAP11_NS}}}Body")
     assert body is not None
     etree.SubElement(body, f"{{{SAT_AUTH_NS}}}{AUTH_OPERATION}")
@@ -543,6 +568,11 @@ def _assert_auth_request_ready(body: bytes | None, headers: dict[str, str]) -> A
         readiness.digest_method is None,
         readiness.signed_reference_count <= 0,
         not readiness.signed_reference_targets_exist,
+        not readiness.has_header_action,
+        not readiness.header_action_value_ok,
+        not readiness.header_action_must_understand,
+        readiness.header_action_order != "action_before_security",
+        not readiness.security_must_understand,
     ]
     if body is None or _contains_placeholder_literals(body):
         failures.append(True)
@@ -574,6 +604,7 @@ def _auth_request_readiness(body: bytes | None, headers: dict[str, str]) -> Auth
     signature = _find(security, DS_NS, "Signature")
     body_node = _find(root, SOAP11_NS, "Body")
     operation = _find(body_node, SAT_AUTH_NS, AUTH_OPERATION)
+    action = _find(header, ADDR_NS, "Action")
     references = list(signature.findall(f".//{{{DS_NS}}}Reference")) if signature is not None else []
     signature_method = _algorithm(signature, "SignatureMethod")
     digest_method = _algorithm(signature, "DigestMethod")
@@ -590,6 +621,11 @@ def _auth_request_readiness(body: bytes | None, headers: dict[str, str]) -> Auth
         digest_method=digest_method,
         signed_reference_count=len(references),
         signed_reference_targets_exist=operation is not None and _references_target_existing_ids(root, references),
+        has_header_action=action is not None,
+        header_action_value_ok=_text(action) == AUTH_ACTION,
+        header_action_must_understand=_must_understand(action),
+        header_action_order=_auth_header_action_order(header),
+        security_must_understand=_must_understand(security),
     )
 
 
@@ -665,6 +701,26 @@ def _references_target_existing_ids(root: etree._Element | None, references: lis
         if value
     }
     return all((reference.get("URI") or "").startswith("#") and (reference.get("URI") or "")[1:] in ids for reference in references)
+
+
+def _must_understand(node: etree._Element | None) -> bool:
+    return node is not None and node.get(f"{{{SOAP11_NS}}}mustUnderstand") == "1"
+
+
+def _auth_header_action_order(header: etree._Element | None) -> str:
+    if header is None:
+        return "missing_header"
+    action_index: int | None = None
+    security_index: int | None = None
+    for index, child in enumerate(header):
+        name = etree.QName(child)
+        if name.namespace == ADDR_NS and name.localname == "Action":
+            action_index = index
+        if name.namespace == WSSE_NS and name.localname == "Security":
+            security_index = index
+    if action_index is None or security_index is None:
+        return "missing_action_or_security"
+    return "action_before_security" if action_index < security_index else "security_before_action"
 
 
 def _contains_placeholder_literals(body: bytes) -> bool:

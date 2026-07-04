@@ -5,6 +5,7 @@ from cfdi_vault.cli import app
 from cfdi_vault.sat_auth_envelope_lint import (
     EXPECTED_C14N_METHOD,
     EXPECTED_DIGEST_METHOD,
+    EXPECTED_HEADER_ACTION_ORDER,
     EXPECTED_SIGNATURE_METHOD,
     EXPECTED_XMLSIG_PROFILE,
     build_dummy_auth_envelope,
@@ -25,7 +26,14 @@ def test_lint_auth_envelope_reports_structure_without_raw_xml() -> None:
     assert result.reference_uris_redacted == ("#<id>",)
     assert result.reference_transform_algorithms == (EXPECTED_C14N_METHOD,)
     assert result.key_info_reference_uri_redacted == "#<id>"
+    assert result.header_action_order == EXPECTED_HEADER_ACTION_ORDER
     assert result.soap_envelope is True
+    assert result.action_header_present is True
+    assert result.action_header_value is True
+    assert result.action_header_namespace is True
+    assert result.action_header_must_understand is True
+    assert result.action_header_before_security is True
+    assert result.security_must_understand is True
     assert result.ws_security is True
     assert result.bst_der is True
     assert result.bst_no_pem is True
@@ -44,6 +52,50 @@ def test_lint_auth_envelope_reports_structure_without_raw_xml() -> None:
     assert "<soap" not in rendered
     assert "BEGIN CERTIFICATE" not in rendered
     assert "SignatureValue" not in rendered
+
+
+def test_lint_auth_envelope_requires_wcf_action_header_without_raw_xml() -> None:
+    envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc")
+    root = etree.fromstring(envelope)
+    action = root.find(".//{http://schemas.microsoft.com/ws/2005/05/addressing/none}Action")
+    assert action is not None
+    action.getparent().remove(action)
+
+    result = lint_auth_envelope(etree.tostring(root, encoding="UTF-8", xml_declaration=True))
+
+    assert result.all_checks_passed is False
+    assert result.action_header_present is False
+    assert result.action_header_value is False
+    assert result.action_header_namespace is False
+    assert result.action_header_must_understand is False
+    assert result.action_header_before_security is False
+    assert result.header_action_order == "missing_action_or_security"
+    assert "<soap" not in repr(result)
+
+
+def test_lint_auth_envelope_rejects_wrong_wcf_action_shape_without_raw_xml() -> None:
+    envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc")
+    root = etree.fromstring(envelope)
+    header = root.find("{http://schemas.xmlsoap.org/soap/envelope/}Header")
+    action = root.find(".//{http://schemas.microsoft.com/ws/2005/05/addressing/none}Action")
+    security = root.find(".//{http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd}Security")
+    assert header is not None
+    assert action is not None
+    assert security is not None
+    action.text = "urn:wrong-action"
+    action.attrib.pop("{http://schemas.xmlsoap.org/soap/envelope/}mustUnderstand")
+    header.remove(action)
+    header.insert(list(header).index(security) + 1, action)
+
+    result = lint_auth_envelope(etree.tostring(root, encoding="UTF-8", xml_declaration=True))
+
+    assert result.all_checks_passed is False
+    assert result.action_header_present is True
+    assert result.action_header_value is False
+    assert result.action_header_namespace is True
+    assert result.action_header_must_understand is False
+    assert result.action_header_before_security is False
+    assert result.header_action_order == "security_before_action"
 
 
 def test_lint_auth_envelope_detects_broken_reference_without_raw_xml() -> None:
@@ -119,6 +171,13 @@ def test_lint_auth_envelope_cli_prints_redacted_checks() -> None:
     assert "reference_uris=#<id>" in result.output
     assert f"reference_transform_algorithms={EXPECTED_C14N_METHOD}" in result.output
     assert "key_info_reference_uri=#<id>" in result.output
+    assert f"header_action_order={EXPECTED_HEADER_ACTION_ORDER}" in result.output
+    assert "check_action_header_present=yes" in result.output
+    assert "check_action_header_value=yes" in result.output
+    assert "check_action_header_namespace=yes" in result.output
+    assert "check_action_header_must_understand=yes" in result.output
+    assert "check_action_header_before_security=yes" in result.output
+    assert "check_security_must_understand=yes" in result.output
     assert "check_local_signature_verify=yes" in result.output
     assert "raw_xml_printed=no" in result.output
     assert "certificate_printed=no" in result.output

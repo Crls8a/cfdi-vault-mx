@@ -11,6 +11,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
+from lxml import etree
 import pytest
 
 from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType
@@ -126,6 +127,32 @@ def test_auth_smoke_fails_before_transport_when_accept_header_is_missing(tmp_pat
     assert transport.requests == []
 
 
+def test_auth_smoke_fails_before_transport_when_wcf_action_header_is_missing(tmp_path: Path) -> None:
+    transport = FakeSoapTransport([])
+    adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
+    from cfdi_vault import sat_live_smoke as live_smoke_module
+    original_build_auth_envelope = live_smoke_module._build_auth_envelope
+
+    def envelope_without_action(*args: object) -> bytes:
+        envelope = original_build_auth_envelope(*args)
+        root = etree.fromstring(envelope)
+        action = root.find(".//{http://schemas.microsoft.com/ws/2005/05/addressing/none}Action")
+        assert action is not None
+        action.getparent().remove(action)
+        return etree.tostring(root, encoding="UTF-8", xml_declaration=True)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(live_smoke_module, "_build_auth_envelope", envelope_without_action)
+        with pytest.raises(SatLiveSmokeError, match="SAT auth request failed local readiness checks") as exc:
+            adapter.auth_smoke()
+
+    diagnostic = exc.value.diagnostic
+    assert diagnostic.stage == "auth_request_readiness"
+    assert diagnostic.has_header_action is False
+    assert diagnostic.header_action_order == "missing_action_or_security"
+    assert transport.requests == []
+
+
 def test_auth_http_failure_reports_redacted_request_readiness(tmp_path: Path) -> None:
     transport = FakeSoapTransport([SoapTransportResponse(400, body=b"")])
     adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
@@ -153,6 +180,11 @@ def test_auth_http_failure_reports_redacted_request_readiness(tmp_path: Path) ->
     assert diagnostic.digest_method == "http://www.w3.org/2000/09/xmldsig#sha1"
     assert diagnostic.signed_reference_count >= 1
     assert diagnostic.signed_reference_targets_exist is True
+    assert diagnostic.has_header_action is True
+    assert diagnostic.header_action_value_ok is True
+    assert diagnostic.header_action_must_understand is True
+    assert diagnostic.header_action_order == "action_before_security"
+    assert diagnostic.security_must_understand is True
 
 
 def test_transport_failure_is_redacted(tmp_path: Path) -> None:

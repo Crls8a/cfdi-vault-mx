@@ -16,7 +16,7 @@ from signxml import XMLVerifier
 from signxml.algorithms import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 from signxml.verifier import SignatureConfiguration
 
-from cfdi_vault.sat_auth_constants import AUTH_OPERATION
+from cfdi_vault.sat_auth_constants import AUTH_OPERATION, AUTH_SOAP_ACTION
 from cfdi_vault.sat_live_smoke import (
     ADDR_NS,
     DS_NS,
@@ -32,6 +32,7 @@ EXPECTED_C14N_METHOD = CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0
 EXPECTED_SIGNATURE_METHOD = SignatureMethod.RSA_SHA1.value
 EXPECTED_DIGEST_METHOD = DigestAlgorithm.SHA1.value
 EXPECTED_XMLSIG_PROFILE = "sat_legacy_wssecurity"
+EXPECTED_HEADER_ACTION_ORDER = "action_before_security"
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ class AuthEnvelopeLintResult:
     reference_uris_redacted: tuple[str, ...]
     reference_transform_algorithms: tuple[str, ...]
     key_info_reference_uri_redacted: str
+    header_action_order: str
     soap_envelope: bool
     soap_header: bool
     soap_body: bool
@@ -74,6 +76,11 @@ class AuthEnvelopeLintResult:
     timestamp_signed: bool
     to_header_present: bool
     action_header_present: bool
+    action_header_value: bool
+    action_header_namespace: bool
+    action_header_must_understand: bool
+    action_header_before_security: bool
+    security_must_understand: bool
     local_signature_verify: bool
     all_checks_passed: bool
 
@@ -91,6 +98,7 @@ def lint_auth_envelope(envelope: bytes, *, now: datetime | None = None) -> AuthE
     bst = security.find(f"{{{WSSE_NS}}}BinarySecurityToken") if security is not None else None
     signature = security.find(f"{{{DS_NS}}}Signature") if security is not None else None
     signed_info = signature.find(f"{{{DS_NS}}}SignedInfo") if signature is not None else None
+    action = header.find(f"{{{ADDR_NS}}}Action") if header is not None else None
     references = signed_info.findall(f".//{{{DS_NS}}}Reference") if signed_info is not None else []
     existing_ids = _collect_ids(root)
     wsu_ids = _collect_wsu_ids(root)
@@ -104,6 +112,7 @@ def lint_auth_envelope(envelope: bytes, *, now: datetime | None = None) -> AuthE
         reference_uris_redacted=tuple(_redact_reference_uri(ref.get("URI") or "") for ref in references),
         reference_transform_algorithms=tuple(algorithm for ref in references for algorithm in _reference_transform_algorithms(ref)),
         key_info_reference_uri_redacted=_key_info_reference_uri_redacted(signature),
+        header_action_order=_header_action_order(header),
         soap_envelope=root.tag == f"{{{SOAP11_NS}}}Envelope",
         soap_header=header is not None,
         soap_body=body is not None,
@@ -132,7 +141,12 @@ def lint_auth_envelope(envelope: bytes, *, now: datetime | None = None) -> AuthE
         sec_ref=signature.find(f".//{{{WSSE_NS}}}SecurityTokenReference") is not None if signature is not None else False,
         timestamp_signed=any((ref.get("URI") or "").lstrip("#") == (timestamp.get(f"{{{WSU_NS}}}Id") if timestamp is not None else "") for ref in references),
         to_header_present=header.find(f"{{{ADDR_NS}}}To") is not None if header is not None else False,
-        action_header_present=header.find(f"{{{ADDR_NS}}}Action") is not None if header is not None else False,
+        action_header_present=action is not None,
+        action_header_value=(action.text or "").strip() == AUTH_SOAP_ACTION if action is not None else False,
+        action_header_namespace=action.tag == f"{{{ADDR_NS}}}Action" if action is not None else False,
+        action_header_must_understand=_must_understand(action),
+        action_header_before_security=_header_action_order(header) == EXPECTED_HEADER_ACTION_ORDER,
+        security_must_understand=_must_understand(security),
         local_signature_verify=_verify_signature_with_bst(root, bst),
         all_checks_passed=False,
     )
@@ -166,6 +180,26 @@ def _timestamp_window_ok(timestamp: etree._Element | None, *, now: datetime) -> 
     if created is None or expires is None:
         return False
     return created <= now <= expires and 0 < (expires - created).total_seconds() <= 600
+
+
+def _must_understand(node: etree._Element | None) -> bool:
+    return node is not None and node.get(f"{{{SOAP11_NS}}}mustUnderstand") == "1"
+
+
+def _header_action_order(header: etree._Element | None) -> str:
+    if header is None:
+        return "missing_header"
+    action_index: int | None = None
+    security_index: int | None = None
+    for index, child in enumerate(header):
+        name = etree.QName(child)
+        if name.namespace == ADDR_NS and name.localname == "Action":
+            action_index = index
+        if name.namespace == WSSE_NS and name.localname == "Security":
+            security_index = index
+    if action_index is None or security_index is None:
+        return "missing_action_or_security"
+    return EXPECTED_HEADER_ACTION_ORDER if action_index < security_index else "security_before_action"
 
 
 def _parse_time(value: str | None) -> datetime | None:
