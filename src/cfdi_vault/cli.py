@@ -1874,6 +1874,8 @@ def _print_auth_envelope_lint(fixture: str, result: AuthEnvelopeLintResult) -> N
     typer.echo(f"reference_transform_algorithms={_join_lint_values(result.reference_transform_algorithms)}")
     typer.echo(f"key_info_reference_uri={result.key_info_reference_uri_redacted}")
     typer.echo(f"header_action_order={result.header_action_order}")
+    if result.timestamp_window_seconds is not None:
+        typer.echo(f"timestamp_window_seconds={result.timestamp_window_seconds}")
     typer.echo(f"reference_count={result.reference_count}")
     typer.echo(f"bst_size={result.bst_size}")
     for name in (
@@ -1883,10 +1885,16 @@ def _print_auth_envelope_lint(fixture: str, result: AuthEnvelopeLintResult) -> N
         "operation_auth",
         "ws_security",
         "timestamp",
+        "timestamp_id_present",
+        "timestamp_created_utc_z",
+        "timestamp_expires_utc_z",
         "timestamp_window_ok",
         "bst_present",
+        "bst_id_present",
         "bst_der",
         "bst_no_pem",
+        "bst_value_type",
+        "bst_encoding_type",
         "signature",
         "signed_info",
         "c14n_method",
@@ -1901,6 +1909,9 @@ def _print_auth_envelope_lint(fixture: str, result: AuthEnvelopeLintResult) -> N
         "signature_value",
         "key_info",
         "sec_ref",
+        "sec_ref_uri",
+        "sec_ref_value_type",
+        "sec_ref_resolves_bst",
         "timestamp_signed",
         "to_header_present",
         "action_header_present",

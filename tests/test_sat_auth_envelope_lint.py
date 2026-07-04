@@ -36,7 +36,14 @@ def test_lint_auth_envelope_reports_structure_without_raw_xml() -> None:
     assert result.security_must_understand is True
     assert result.ws_security is True
     assert result.bst_der is True
+    assert result.bst_id_present is True
     assert result.bst_no_pem is True
+    assert result.bst_value_type is True
+    assert result.bst_encoding_type is True
+    assert result.timestamp_id_present is True
+    assert result.timestamp_created_utc_z is True
+    assert result.timestamp_expires_utc_z is True
+    assert result.timestamp_window_seconds == 300
     assert result.signature is True
     assert result.c14n_method is True
     assert result.signature_method is True
@@ -48,6 +55,9 @@ def test_lint_auth_envelope_reports_structure_without_raw_xml() -> None:
     assert result.references_use_wsu_id is True
     assert result.signed_nodes_exist is True
     assert result.local_signature_verify is True
+    assert result.sec_ref_uri is True
+    assert result.sec_ref_value_type is True
+    assert result.sec_ref_resolves_bst is True
     rendered = repr(result)
     assert "<soap" not in rendered
     assert "BEGIN CERTIFICATE" not in rendered
@@ -114,6 +124,23 @@ def test_lint_auth_envelope_detects_broken_reference_without_raw_xml() -> None:
     assert result.local_signature_verify is False
 
 
+def test_lint_auth_envelope_detects_broken_bst_reference_without_raw_xml() -> None:
+    envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc")
+    root = etree.fromstring(envelope)
+    reference = root.find(".//{http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd}SecurityTokenReference/{http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd}Reference")
+    assert reference is not None
+    reference.set("URI", "#missing-bst")
+    reference.set("ValueType", "urn:wrong-value-type")
+
+    result = lint_auth_envelope(etree.tostring(root, encoding="UTF-8", xml_declaration=True))
+
+    assert result.all_checks_passed is False
+    assert result.sec_ref_uri is True
+    assert result.sec_ref_value_type is False
+    assert result.sec_ref_resolves_bst is False
+    assert result.local_signature_verify is True
+
+
 def test_lint_auth_envelope_detects_wrong_signature_methods_without_raw_xml() -> None:
     envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc")
     root = etree.fromstring(envelope)
@@ -150,6 +177,8 @@ def test_lint_auth_envelope_detects_pem_certificate_marker_without_printing_it()
     assert result.all_checks_passed is False
     assert result.bst_der is False
     assert result.bst_no_pem is False
+    assert result.bst_value_type is True
+    assert result.bst_encoding_type is True
     assert result.local_signature_verify is False
     assert "-----BEGIN" not in repr(result)
 
@@ -172,12 +201,22 @@ def test_lint_auth_envelope_cli_prints_redacted_checks() -> None:
     assert f"reference_transform_algorithms={EXPECTED_C14N_METHOD}" in result.output
     assert "key_info_reference_uri=#<id>" in result.output
     assert f"header_action_order={EXPECTED_HEADER_ACTION_ORDER}" in result.output
+    assert "timestamp_window_seconds=300" in result.output
     assert "check_action_header_present=yes" in result.output
     assert "check_action_header_value=yes" in result.output
     assert "check_action_header_namespace=yes" in result.output
     assert "check_action_header_must_understand=yes" in result.output
     assert "check_action_header_before_security=yes" in result.output
     assert "check_security_must_understand=yes" in result.output
+    assert "check_timestamp_id_present=yes" in result.output
+    assert "check_timestamp_created_utc_z=yes" in result.output
+    assert "check_timestamp_expires_utc_z=yes" in result.output
+    assert "check_bst_id_present=yes" in result.output
+    assert "check_bst_value_type=yes" in result.output
+    assert "check_bst_encoding_type=yes" in result.output
+    assert "check_sec_ref_uri=yes" in result.output
+    assert "check_sec_ref_value_type=yes" in result.output
+    assert "check_sec_ref_resolves_bst=yes" in result.output
     assert "check_local_signature_verify=yes" in result.output
     assert "raw_xml_printed=no" in result.output
     assert "certificate_printed=no" in result.output

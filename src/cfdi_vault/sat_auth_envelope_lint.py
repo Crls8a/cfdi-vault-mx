@@ -19,11 +19,13 @@ from signxml.verifier import SignatureConfiguration
 from cfdi_vault.sat_auth_constants import AUTH_OPERATION, AUTH_SOAP_ACTION
 from cfdi_vault.sat_live_smoke import (
     ADDR_NS,
+    BASE64_ENCODING_TYPE,
     DS_NS,
     SAT_AUTH_NS,
     SOAP11_NS,
     WSSE_NS,
     WSU_NS,
+    X509_VALUE_TYPE,
     SatEfirmMaterial,
     _build_auth_envelope,
 )
@@ -47,16 +49,23 @@ class AuthEnvelopeLintResult:
     reference_transform_algorithms: tuple[str, ...]
     key_info_reference_uri_redacted: str
     header_action_order: str
+    timestamp_window_seconds: int | None
     soap_envelope: bool
     soap_header: bool
     soap_body: bool
     operation_auth: bool
     ws_security: bool
     timestamp: bool
+    timestamp_id_present: bool
+    timestamp_created_utc_z: bool
+    timestamp_expires_utc_z: bool
     timestamp_window_ok: bool
     bst_present: bool
+    bst_id_present: bool
     bst_der: bool
     bst_no_pem: bool
+    bst_value_type: bool
+    bst_encoding_type: bool
     bst_size: int
     signature: bool
     signed_info: bool
@@ -73,6 +82,9 @@ class AuthEnvelopeLintResult:
     signature_value: bool
     key_info: bool
     sec_ref: bool
+    sec_ref_uri: bool
+    sec_ref_value_type: bool
+    sec_ref_resolves_bst: bool
     timestamp_signed: bool
     to_header_present: bool
     action_header_present: bool
@@ -99,6 +111,7 @@ def lint_auth_envelope(envelope: bytes, *, now: datetime | None = None) -> AuthE
     signature = security.find(f"{{{DS_NS}}}Signature") if security is not None else None
     signed_info = signature.find(f"{{{DS_NS}}}SignedInfo") if signature is not None else None
     action = header.find(f"{{{ADDR_NS}}}Action") if header is not None else None
+    sec_ref_reference = _sec_ref_reference(signature)
     references = signed_info.findall(f".//{{{DS_NS}}}Reference") if signed_info is not None else []
     existing_ids = _collect_ids(root)
     wsu_ids = _collect_wsu_ids(root)
@@ -113,16 +126,23 @@ def lint_auth_envelope(envelope: bytes, *, now: datetime | None = None) -> AuthE
         reference_transform_algorithms=tuple(algorithm for ref in references for algorithm in _reference_transform_algorithms(ref)),
         key_info_reference_uri_redacted=_key_info_reference_uri_redacted(signature),
         header_action_order=_header_action_order(header),
+        timestamp_window_seconds=_timestamp_window_seconds(timestamp),
         soap_envelope=root.tag == f"{{{SOAP11_NS}}}Envelope",
         soap_header=header is not None,
         soap_body=body is not None,
         operation_auth=body.find(f"{{{SAT_AUTH_NS}}}{AUTH_OPERATION}") is not None if body is not None else False,
         ws_security=security is not None,
         timestamp=timestamp is not None,
+        timestamp_id_present=bool(_wsu_id(timestamp)),
+        timestamp_created_utc_z=_is_utc_z(timestamp.findtext(f"{{{WSU_NS}}}Created") if timestamp is not None else None),
+        timestamp_expires_utc_z=_is_utc_z(timestamp.findtext(f"{{{WSU_NS}}}Expires") if timestamp is not None else None),
         timestamp_window_ok=_timestamp_window_ok(timestamp, now=now or datetime.now(timezone.utc)),
         bst_present=bst is not None,
+        bst_id_present=bool(_wsu_id(bst)),
         bst_der=_bst_is_der_base64(bst.text if bst is not None else ""),
         bst_no_pem=_bst_has_no_pem_marker(bst.text if bst is not None else ""),
+        bst_value_type=bst.get("ValueType") == X509_VALUE_TYPE if bst is not None else False,
+        bst_encoding_type=bst.get("EncodingType") == BASE64_ENCODING_TYPE if bst is not None else False,
         bst_size=len((bst.text or "")) if bst is not None else 0,
         signature=signature is not None,
         signed_info=signed_info is not None,
@@ -139,6 +159,9 @@ def lint_auth_envelope(envelope: bytes, *, now: datetime | None = None) -> AuthE
         signature_value=signature.find(f".//{{{DS_NS}}}SignatureValue") is not None if signature is not None else False,
         key_info=signature.find(f"{{{DS_NS}}}KeyInfo") is not None if signature is not None else False,
         sec_ref=signature.find(f".//{{{WSSE_NS}}}SecurityTokenReference") is not None if signature is not None else False,
+        sec_ref_uri=bool(_uri_target(sec_ref_reference)),
+        sec_ref_value_type=sec_ref_reference.get("ValueType") == X509_VALUE_TYPE if sec_ref_reference is not None else False,
+        sec_ref_resolves_bst=_uri_target(sec_ref_reference) == _wsu_id(bst),
         timestamp_signed=any((ref.get("URI") or "").lstrip("#") == (timestamp.get(f"{{{WSU_NS}}}Id") if timestamp is not None else "") for ref in references),
         to_header_present=header.find(f"{{{ADDR_NS}}}To") is not None if header is not None else False,
         action_header_present=action is not None,
@@ -180,6 +203,20 @@ def _timestamp_window_ok(timestamp: etree._Element | None, *, now: datetime) -> 
     if created is None or expires is None:
         return False
     return created <= now <= expires and 0 < (expires - created).total_seconds() <= 600
+
+
+def _timestamp_window_seconds(timestamp: etree._Element | None) -> int | None:
+    if timestamp is None:
+        return None
+    created = _parse_time(timestamp.findtext(f"{{{WSU_NS}}}Created"))
+    expires = _parse_time(timestamp.findtext(f"{{{WSU_NS}}}Expires"))
+    if created is None or expires is None:
+        return None
+    return round((expires - created).total_seconds())
+
+
+def _is_utc_z(value: str | None) -> bool:
+    return bool(value and value.endswith("Z") and _parse_time(value) is not None)
 
 
 def _must_understand(node: etree._Element | None) -> bool:
@@ -253,15 +290,30 @@ def _redact_reference_uri(uri: str) -> str:
 
 
 def _key_info_reference_uri_redacted(signature: etree._Element | None) -> str:
-    reference = signature.find(f".//{{{WSSE_NS}}}SecurityTokenReference/{{{WSSE_NS}}}Reference") if signature is not None else None
+    reference = _sec_ref_reference(signature)
     if reference is None:
         return ""
     return _redact_reference_uri(reference.get("URI") or "")
 
 
+def _sec_ref_reference(signature: etree._Element | None) -> etree._Element | None:
+    return signature.find(f".//{{{WSSE_NS}}}SecurityTokenReference/{{{WSSE_NS}}}Reference") if signature is not None else None
+
+
+def _uri_target(reference: etree._Element | None) -> str:
+    uri = reference.get("URI") if reference is not None else ""
+    return uri[1:] if uri and uri.startswith("#") else ""
+
+
 def _reference_uri(reference: etree._Element) -> str:
     uri = reference.get("URI") or ""
     return uri[1:] if uri.startswith("#") else ""
+
+
+def _wsu_id(node: etree._Element | None) -> str:
+    if node is None:
+        return ""
+    return node.get(f"{{{WSU_NS}}}Id") or ""
 
 
 def _verify_signature_with_bst(root: etree._Element, bst: etree._Element | None) -> bool:
