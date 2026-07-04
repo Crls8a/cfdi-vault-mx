@@ -17,6 +17,7 @@ from signxml.algorithms import CanonicalizationMethod, DigestAlgorithm, Signatur
 from signxml.verifier import SignatureConfiguration
 
 from cfdi_vault.sat_auth_constants import AUTH_OPERATION, AUTH_SOAP_ACTION
+from cfdi_vault.sat_auth_constants import DEFAULT_AUTH_ENVELOPE_VARIANT
 from cfdi_vault.sat_live_smoke import (
     ADDR_NS,
     BASE64_ENCODING_TYPE,
@@ -49,6 +50,7 @@ class AuthEnvelopeLintResult:
     reference_transform_algorithms: tuple[str, ...]
     key_info_reference_uri_redacted: str
     header_action_order: str
+    expected_header_action_order: str
     timestamp_window_seconds: int | None
     soap_envelope: bool
     soap_header: bool
@@ -92,16 +94,22 @@ class AuthEnvelopeLintResult:
     action_header_namespace: bool
     action_header_must_understand: bool
     action_header_before_security: bool
+    action_header_order_ok: bool
     security_must_understand: bool
     local_signature_verify: bool
     all_checks_passed: bool
 
 
-def build_dummy_auth_envelope(endpoint: str) -> bytes:
-    return _build_auth_envelope(_dummy_material(), endpoint)
+def build_dummy_auth_envelope(endpoint: str, *, auth_envelope_variant: str = DEFAULT_AUTH_ENVELOPE_VARIANT) -> bytes:
+    return _build_auth_envelope(_dummy_material(), endpoint, auth_envelope_variant=auth_envelope_variant)
 
 
-def lint_auth_envelope(envelope: bytes, *, now: datetime | None = None) -> AuthEnvelopeLintResult:
+def lint_auth_envelope(
+    envelope: bytes,
+    *,
+    now: datetime | None = None,
+    expected_header_action_order: str = EXPECTED_HEADER_ACTION_ORDER,
+) -> AuthEnvelopeLintResult:
     root = etree.fromstring(envelope)
     header = root.find(f"{{{SOAP11_NS}}}Header")
     body = root.find(f"{{{SOAP11_NS}}}Body")
@@ -115,6 +123,7 @@ def lint_auth_envelope(envelope: bytes, *, now: datetime | None = None) -> AuthE
     references = signed_info.findall(f".//{{{DS_NS}}}Reference") if signed_info is not None else []
     existing_ids = _collect_ids(root)
     wsu_ids = _collect_wsu_ids(root)
+    header_action_order = _header_action_order(header)
     result = AuthEnvelopeLintResult(
         envelope_sha256=hashlib.sha256(envelope).hexdigest(),
         envelope_size=len(envelope),
@@ -125,7 +134,8 @@ def lint_auth_envelope(envelope: bytes, *, now: datetime | None = None) -> AuthE
         reference_uris_redacted=tuple(_redact_reference_uri(ref.get("URI") or "") for ref in references),
         reference_transform_algorithms=tuple(algorithm for ref in references for algorithm in _reference_transform_algorithms(ref)),
         key_info_reference_uri_redacted=_key_info_reference_uri_redacted(signature),
-        header_action_order=_header_action_order(header),
+        header_action_order=header_action_order,
+        expected_header_action_order=expected_header_action_order,
         timestamp_window_seconds=_timestamp_window_seconds(timestamp),
         soap_envelope=root.tag == f"{{{SOAP11_NS}}}Envelope",
         soap_header=header is not None,
@@ -168,12 +178,17 @@ def lint_auth_envelope(envelope: bytes, *, now: datetime | None = None) -> AuthE
         action_header_value=(action.text or "").strip() == AUTH_SOAP_ACTION if action is not None else False,
         action_header_namespace=action.tag == f"{{{ADDR_NS}}}Action" if action is not None else False,
         action_header_must_understand=_must_understand(action),
-        action_header_before_security=_header_action_order(header) == EXPECTED_HEADER_ACTION_ORDER,
+        action_header_before_security=header_action_order == EXPECTED_HEADER_ACTION_ORDER,
+        action_header_order_ok=header_action_order == expected_header_action_order,
         security_must_understand=_must_understand(security),
         local_signature_verify=_verify_signature_with_bst(root, bst),
         all_checks_passed=False,
     )
-    checks = [value for key, value in result.__dict__.items() if isinstance(value, bool) and key != "all_checks_passed"]
+    checks = [
+        value
+        for key, value in result.__dict__.items()
+        if isinstance(value, bool) and key not in {"all_checks_passed", "action_header_before_security"}
+    ]
     return AuthEnvelopeLintResult(**{**result.__dict__, "all_checks_passed": all(checks)})
 
 

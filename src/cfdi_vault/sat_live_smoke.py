@@ -20,7 +20,17 @@ from lxml import etree
 from signxml import XMLSigner, methods
 from signxml.algorithms import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 from cfdi_vault.domain import DownloadDirection, DownloadQuery
-from cfdi_vault.sat_auth_constants import AUTH_ACCEPT, AUTH_CONTENT_TYPE, AUTH_NAMESPACE, AUTH_OPERATION, AUTH_SOAP_ACTION
+from cfdi_vault.sat_auth_constants import (
+    AUTH_ACCEPT,
+    AUTH_CONTENT_TYPE,
+    AUTH_ENVELOPE_VARIANTS,
+    AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
+    AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION,
+    AUTH_NAMESPACE,
+    AUTH_OPERATION,
+    AUTH_SOAP_ACTION,
+    DEFAULT_AUTH_ENVELOPE_VARIANT,
+)
 from cfdi_vault.sat_auth_endpoints import DEFAULT_AUTH_ENDPOINT, resolve_auth_endpoint
 from cfdi_vault.sat_auth_http import build_soap11_headers
 from cfdi_vault.sat_contract import SatOutcomeAction
@@ -237,6 +247,8 @@ class SatLiveMetadataSmokeAdapter:
         material: SatEfirmMaterial | None = None,
         endpoints: SatLiveSmokeEndpoints | None = None,
         timeout_seconds: float = 60,
+        auth_envelope_variant: str = DEFAULT_AUTH_ENVELOPE_VARIANT,
+        wcf_action_header_enabled: bool = True,
     ) -> None:
         self._profile = profile
         self._provider = provider
@@ -248,6 +260,8 @@ class SatLiveMetadataSmokeAdapter:
             os.getenv("CFDI_VAULT_SAT_VERIFY_ENDPOINT", DEFAULT_VERIFY_ENDPOINT),
         )
         self._timeout_seconds = timeout_seconds
+        self._auth_envelope_variant = _validated_auth_envelope_variant(auth_envelope_variant)
+        self._wcf_action_header_enabled = wcf_action_header_enabled
     def auth_smoke(self) -> SatLiveSmokeSummary:
         self._authenticate()
         return SatLiveSmokeSummary(result="auth-ok", auth="authenticated")
@@ -268,7 +282,12 @@ class SatLiveMetadataSmokeAdapter:
     def _authenticate(self) -> str:
         body = _build_stage(
             "auth_envelope_build",
-            lambda: _build_auth_envelope(self._load_material(), self._endpoints.auth),
+            lambda: _build_auth_envelope(
+                self._load_material(),
+                self._endpoints.auth,
+                auth_envelope_variant=self._auth_envelope_variant,
+                wcf_action_header_enabled=self._wcf_action_header_enabled,
+            ),
         )
         response = self._send(self._endpoints.auth, AUTH_ACTION, body, stage="auth_transport", endpoint_label="auth")
         started = time.perf_counter()
@@ -344,7 +363,16 @@ class SatLiveMetadataSmokeAdapter:
         headers = build_soap11_headers(action)
         if authorization:
             headers["Authorization"] = _wrap_authorization(authorization)
-        readiness = _assert_auth_request_ready(body, headers) if endpoint_label == "auth" and authorization is None else None
+        readiness = (
+            _assert_auth_request_ready(
+                body,
+                headers,
+                auth_envelope_variant=self._auth_envelope_variant,
+                wcf_action_header_enabled=self._wcf_action_header_enabled,
+            )
+            if endpoint_label == "auth" and authorization is None
+            else None
+        )
         started = time.perf_counter()
         try:
             response = self._transport.send(SoapTransportRequest(endpoint=endpoint, body=body, headers=headers, timeout_seconds=self._timeout_seconds))
@@ -463,14 +491,24 @@ def load_sat_efirma_material(profile: LocalProfile, provider: ExistenceProvider)
 class _SatSha1XmlSigner(XMLSigner):
     def check_deprecated_methods(self) -> None:
         return None
-def _build_auth_envelope(material: SatEfirmMaterial, endpoint: str) -> bytes:
+def _build_auth_envelope(
+    material: SatEfirmMaterial,
+    endpoint: str,
+    *,
+    auth_envelope_variant: str = DEFAULT_AUTH_ENVELOPE_VARIANT,
+    wcf_action_header_enabled: bool = True,
+) -> bytes:
+    variant = _validated_auth_envelope_variant(auth_envelope_variant)
     created = datetime.now(timezone.utc)
     expires = created + timedelta(minutes=5)
     envelope = _envelope(SAT_AUTH_NS)
     header = envelope.find(f"{{{SOAP11_NS}}}Header")
     assert header is not None
-    etree.SubElement(header, f"{{{ADDR_NS}}}Action", {f"{{{SOAP11_NS}}}mustUnderstand": "1"}).text = AUTH_ACTION
+    if wcf_action_header_enabled and variant == AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY:
+        _append_wcf_action_header(header)
     security = etree.SubElement(header, f"{{{WSSE_NS}}}Security", {f"{{{SOAP11_NS}}}mustUnderstand": "1"})
+    if wcf_action_header_enabled and variant == AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION:
+        _append_wcf_action_header(header)
     timestamp = etree.SubElement(security, f"{{{WSU_NS}}}Timestamp", {f"{{{WSU_NS}}}Id": "_0"})
     etree.SubElement(timestamp, f"{{{WSU_NS}}}Created").text = _fmt(created)
     etree.SubElement(timestamp, f"{{{WSU_NS}}}Expires").text = _fmt(expires)
@@ -490,6 +528,16 @@ def _build_auth_envelope(material: SatEfirmMaterial, endpoint: str) -> bytes:
     assert body is not None
     etree.SubElement(body, f"{{{SAT_AUTH_NS}}}{AUTH_OPERATION}")
     return etree.tostring(envelope, encoding="UTF-8", xml_declaration=True)
+
+
+def _append_wcf_action_header(header: etree._Element) -> None:
+    etree.SubElement(header, f"{{{ADDR_NS}}}Action", {f"{{{SOAP11_NS}}}mustUnderstand": "1"}).text = AUTH_ACTION
+
+
+def _validated_auth_envelope_variant(value: str) -> str:
+    if value not in AUTH_ENVELOPE_VARIANTS:
+        raise ValueError("invalid-auth-envelope-variant")
+    return value
 def _sign_auth_timestamp(envelope: etree._Element, material: SatEfirmMaterial, bst_id: str) -> etree._Element:
     key_info = etree.Element(f"{{{DS_NS}}}KeyInfo")
     reference = etree.SubElement(etree.SubElement(key_info, f"{{{WSSE_NS}}}SecurityTokenReference"), f"{{{WSSE_NS}}}Reference")
@@ -552,8 +600,18 @@ def _wrap_authorization(authorization: str) -> str:
     return 'WRAP {}="{}"'.format("access_" + "token", stripped)
 
 
-def _assert_auth_request_ready(body: bytes | None, headers: dict[str, str]) -> AuthRequestReadiness:
-    readiness = _auth_request_readiness(body, headers)
+def _assert_auth_request_ready(
+    body: bytes | None,
+    headers: dict[str, str],
+    *,
+    auth_envelope_variant: str = DEFAULT_AUTH_ENVELOPE_VARIANT,
+    wcf_action_header_enabled: bool = True,
+) -> AuthRequestReadiness:
+    expected_order = _validated_auth_envelope_variant(auth_envelope_variant)
+    readiness = _auth_request_readiness(
+        body,
+        headers,
+    )
     failures: list[bool] = [
         body is None,
         readiness.request_body_bytes_len <= 500,
@@ -571,8 +629,9 @@ def _assert_auth_request_ready(body: bytes | None, headers: dict[str, str]) -> A
         not readiness.has_header_action,
         not readiness.header_action_value_ok,
         not readiness.header_action_must_understand,
-        readiness.header_action_order != "action_before_security",
+        readiness.header_action_order != expected_order,
         not readiness.security_must_understand,
+        not wcf_action_header_enabled,
     ]
     if body is None or _contains_placeholder_literals(body):
         failures.append(True)
@@ -593,7 +652,10 @@ def _assert_auth_request_ready(body: bytes | None, headers: dict[str, str]) -> A
     return readiness
 
 
-def _auth_request_readiness(body: bytes | None, headers: dict[str, str]) -> AuthRequestReadiness:
+def _auth_request_readiness(
+    body: bytes | None,
+    headers: dict[str, str],
+) -> AuthRequestReadiness:
     body_bytes = body or b""
     envelope_sha256 = _digest(body_bytes)
     root = _parse_xml_or_none(body_bytes)
@@ -608,6 +670,7 @@ def _auth_request_readiness(body: bytes | None, headers: dict[str, str]) -> Auth
     references = list(signature.findall(f".//{{{DS_NS}}}Reference")) if signature is not None else []
     signature_method = _algorithm(signature, "SignatureMethod")
     digest_method = _algorithm(signature, "DigestMethod")
+    header_action_order = _auth_header_action_order(header)
     return AuthRequestReadiness(
         request_body_bytes_len=len(body_bytes),
         envelope_sha256=envelope_sha256,
@@ -624,7 +687,7 @@ def _auth_request_readiness(body: bytes | None, headers: dict[str, str]) -> Auth
         has_header_action=action is not None,
         header_action_value_ok=_text(action) == AUTH_ACTION,
         header_action_must_understand=_must_understand(action),
-        header_action_order=_auth_header_action_order(header),
+        header_action_order=header_action_order,
         security_must_understand=_must_understand(security),
     )
 

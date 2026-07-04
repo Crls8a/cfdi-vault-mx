@@ -59,6 +59,7 @@ from cfdi_vault.live_permit import (
     transport_probe_permit_expectation,
     validate_and_consume_live_permit,
 )
+from cfdi_vault.sat_auth_constants import AUTH_ENVELOPE_VARIANTS, DEFAULT_AUTH_ENVELOPE_VARIANT
 from cfdi_vault.sat_transport import (
     GuardedSoapHttpTransport,
     LiveSatGuardError,
@@ -501,6 +502,8 @@ def live_permit_create(
     to_date: str = typer.Option(..., "--to", help="YYYY-MM-DD."),
     expires_minutes: int = typer.Option(15, "--expires-minutes", min=1, max=15),
     reason: str = typer.Option(..., "--reason", help="Auditable local reason."),
+    auth_envelope_variant: str | None = typer.Option(None, "--auth-envelope-variant", help="auth_live_smoke only: action_before_security or security_before_action."),
+    wcf_action_header_enabled: bool = typer.Option(True, "--wcf-action-header-enabled/--no-wcf-action-header-enabled", help="auth_live_smoke only; must stay enabled for WCF Action compatibility."),
 ) -> None:
     """Create a one-time local permit outside the repository for one live operation."""
 
@@ -515,6 +518,8 @@ def live_permit_create(
                 date_to=to_date,
                 expires_minutes=expires_minutes,
                 reason=reason,
+                auth_envelope_variant=auth_envelope_variant if scope == "auth_live_smoke" else None,
+                wcf_action_header_enabled=wcf_action_header_enabled if scope == "auth_live_smoke" else None,
             )
         )
     except LivePermitError as exc:
@@ -535,6 +540,10 @@ def live_permit_create(
     typer.echo("permit_storage=appdata-local")
     typer.echo("consumed=false")
     typer.echo("redaction_required=true")
+    if permit.auth_envelope_variant is not None:
+        typer.echo(f"auth_envelope_variant={permit.auth_envelope_variant}")
+    if permit.wcf_action_header_enabled is not None:
+        typer.echo(f"wcf_action_header_enabled={'true' if permit.wcf_action_header_enabled else 'false'}")
 
 
 @app.command("onboard")
@@ -787,8 +796,19 @@ def sat_auth_smoke(
         permit_ref=permit,
         permit_scope="auth_live_smoke",
     )
+    auth_envelope_variant = DEFAULT_AUTH_ENVELOPE_VARIANT
+    wcf_action_header_enabled = True
+    if permit is not None:
+        consumed_permit = load_live_execution_permit(permit, env=os.environ)
+        auth_envelope_variant = consumed_permit.auth_envelope_variant or DEFAULT_AUTH_ENVELOPE_VARIANT
+        wcf_action_header_enabled = consumed_permit.wcf_action_header_enabled is True
     try:
-        result = _run_live_auth_smoke(profile, live_permit_verified=live_permit_verified)
+        result = _run_live_auth_smoke(
+            profile,
+            live_permit_verified=live_permit_verified,
+            auth_envelope_variant=auth_envelope_variant,
+            wcf_action_header_enabled=wcf_action_header_enabled,
+        )
     except LiveSmokeAdapterUnavailable as exc:
         typer.echo("error=live_adapter_unavailable", err=True)
         raise typer.Exit(code=1) from exc
@@ -816,27 +836,32 @@ def sat_lint_auth_envelope(
     fixture: str = typer.Option("dummy", "--fixture", help="Only dummy is supported for normal offline lint."),
     profile: str | None = typer.Option(None, "--profile", help="Local setup profile id for redacted offline lint."),
     redacted: bool = typer.Option(False, "--redacted", help="Required for profile-backed offline lint."),
+    auth_envelope_variant: str = typer.Option(DEFAULT_AUTH_ENVELOPE_VARIANT, "--auth-envelope-variant", help="Expected auth envelope variant."),
 ) -> None:
     """Lint a SAT auth envelope offline without printing XML."""
 
+    if auth_envelope_variant not in AUTH_ENVELOPE_VARIANTS:
+        typer.echo("error=auth_envelope_lint_denied", err=True)
+        typer.echo("reason=invalid-auth-envelope-variant", err=True)
+        raise typer.Exit(code=1)
     if profile is not None:
         if not redacted:
             typer.echo("error=auth_envelope_lint_denied", err=True)
             typer.echo("reason=redacted-required-for-profile", err=True)
             raise typer.Exit(code=1)
         try:
-            envelope = _build_profile_auth_envelope(profile)
+            envelope = _build_profile_auth_envelope(profile, auth_envelope_variant=auth_envelope_variant)
         except SatLiveSmokeError as exc:
             _print_live_adapter_error(exc)
             raise typer.Exit(code=1) from exc
-        _print_auth_envelope_lint("profile-redacted", lint_auth_envelope(envelope))
+        _print_auth_envelope_lint("profile-redacted", lint_auth_envelope(envelope, expected_header_action_order=auth_envelope_variant))
         return
     if fixture != "dummy":
         typer.echo("error=auth_envelope_lint_denied", err=True)
         typer.echo("reason=dummy-fixture-required", err=True)
         raise typer.Exit(code=1)
-    envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc")
-    _print_auth_envelope_lint("dummy", lint_auth_envelope(envelope))
+    envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc", auth_envelope_variant=auth_envelope_variant)
+    _print_auth_envelope_lint("dummy", lint_auth_envelope(envelope, expected_header_action_order=auth_envelope_variant))
 
 
 @sat_app.command("diagnose-live")
@@ -1780,18 +1805,26 @@ def _is_minimal_live_smoke_range(query: DownloadQuery) -> bool:
     return query.period is not None and query.period.start.date() == query.period.end.date()
 
 
-def _build_profile_auth_envelope(profile_id: str) -> bytes:
+def _build_profile_auth_envelope(profile_id: str, *, auth_envelope_variant: str = DEFAULT_AUTH_ENVELOPE_VARIANT) -> bytes:
     profile = _load_download_profile(profile_id)
     material = load_sat_efirma_material(profile, _setup_provider(profile_id))
-    return _build_auth_envelope(material, resolve_auth_endpoint(os.environ))
+    return _build_auth_envelope(material, resolve_auth_endpoint(os.environ), auth_envelope_variant=auth_envelope_variant)
 
 
-def _run_live_auth_smoke(profile_id: str, *, live_permit_verified: bool = False) -> LiveSmokeCliResult:
+def _run_live_auth_smoke(
+    profile_id: str,
+    *,
+    live_permit_verified: bool = False,
+    auth_envelope_variant: str = DEFAULT_AUTH_ENVELOPE_VARIANT,
+    wcf_action_header_enabled: bool = True,
+) -> LiveSmokeCliResult:
     profile = _load_download_profile(profile_id)
     adapter = SatLiveMetadataSmokeAdapter(
         profile=profile,
         provider=_setup_provider(profile_id),
         transport=_live_smoke_transport(live_permit_verified=live_permit_verified),
+        auth_envelope_variant=auth_envelope_variant,
+        wcf_action_header_enabled=wcf_action_header_enabled,
     )
     result = adapter.auth_smoke()
     return LiveSmokeCliResult(result=result.result, auth=result.auth, request=result.request, verification=result.verification)
@@ -1902,6 +1935,7 @@ def _print_auth_envelope_lint(fixture: str, result: AuthEnvelopeLintResult) -> N
     typer.echo(f"reference_transform_algorithms={_join_lint_values(result.reference_transform_algorithms)}")
     typer.echo(f"key_info_reference_uri={result.key_info_reference_uri_redacted}")
     typer.echo(f"header_action_order={result.header_action_order}")
+    typer.echo(f"expected_header_action_order={result.expected_header_action_order}")
     if result.timestamp_window_seconds is not None:
         typer.echo(f"timestamp_window_seconds={result.timestamp_window_seconds}")
     typer.echo(f"reference_count={result.reference_count}")
@@ -1947,6 +1981,7 @@ def _print_auth_envelope_lint(fixture: str, result: AuthEnvelopeLintResult) -> N
         "action_header_namespace",
         "action_header_must_understand",
         "action_header_before_security",
+        "action_header_order_ok",
         "security_must_understand",
         "local_signature_verify",
     ):

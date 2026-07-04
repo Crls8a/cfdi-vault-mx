@@ -16,6 +16,10 @@ import pytest
 
 from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType
 from cfdi_vault.sat_auth_contract import AuthWsdlContract
+from cfdi_vault.sat_auth_constants import (
+    AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION,
+)
+from cfdi_vault.sat_auth_envelope_lint import lint_auth_envelope
 from cfdi_vault.sat_auth_http import validate_auth_headers_for_contract
 from cfdi_vault.sat_live_smoke import AUTH_ACTION, SatEfirmMaterial, SatLiveMetadataSmokeAdapter, SatLiveSmokeEndpoints, SatLiveSmokeError
 from cfdi_vault.sat_transport import FakeSoapTransport, SoapTransportResponse
@@ -83,6 +87,27 @@ def test_auth_smoke_headers_match_soap11_contract_without_sensitive_headers(tmp_
     assert "Authorization" not in request.headers
 
 
+def test_auth_smoke_uses_explicit_security_before_action_variant(tmp_path: Path) -> None:
+    transport = FakeSoapTransport([SoapTransportResponse(200, body=_soap("<sat:AutenticaResult>SYNTHETIC_TOKEN</sat:AutenticaResult>"))])
+
+    SatLiveMetadataSmokeAdapter(
+        profile=_profile(tmp_path),
+        provider=DummySecretProvider(),
+        transport=transport,
+        material=_material(),
+        auth_envelope_variant=AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION,
+    ).auth_smoke()
+
+    request = transport.requests[0]
+    result = lint_auth_envelope(request.body, expected_header_action_order=AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION)
+    assert result.all_checks_passed is True
+    assert result.header_action_order == AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION
+    assert result.action_header_before_security is False
+    assert result.action_header_order_ok is True
+    assert "<soap" not in repr(result)
+    assert "SignatureValue" not in repr(result)
+
+
 def test_auth_smoke_fails_before_transport_when_request_body_is_empty(tmp_path: Path) -> None:
     class EmptyAuthEnvelopeAdapter(SatLiveMetadataSmokeAdapter):
         def _load_material(self) -> SatEfirmMaterial:
@@ -92,7 +117,7 @@ def test_auth_smoke_fails_before_transport_when_request_body_is_empty(tmp_path: 
     adapter = EmptyAuthEnvelopeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
 
     with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr("cfdi_vault.sat_live_smoke._build_auth_envelope", lambda *_args: b"")
+        monkeypatch.setattr("cfdi_vault.sat_live_smoke._build_auth_envelope", lambda *_args, **_kwargs: b"")
         with pytest.raises(SatLiveSmokeError, match="SAT auth request failed local readiness checks") as exc:
             adapter.auth_smoke()
 
@@ -133,8 +158,8 @@ def test_auth_smoke_fails_before_transport_when_wcf_action_header_is_missing(tmp
     from cfdi_vault import sat_live_smoke as live_smoke_module
     original_build_auth_envelope = live_smoke_module._build_auth_envelope
 
-    def envelope_without_action(*args: object) -> bytes:
-        envelope = original_build_auth_envelope(*args)
+    def envelope_without_action(*args: object, **kwargs: object) -> bytes:
+        envelope = original_build_auth_envelope(*args, **kwargs)
         root = etree.fromstring(envelope)
         action = root.find(".//{http://schemas.microsoft.com/ws/2005/05/addressing/none}Action")
         assert action is not None
