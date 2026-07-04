@@ -13,6 +13,12 @@ Last verified: 2026-07-01.
 | Tier 3: Provider/community guides | Cross-checking v1.5 changes and operational notes. | SW Developers and similar provider notes. |
 | Tier 4: Repository inference | Product architecture decisions derived from Tier 1-3 evidence. | Metadata-led reconciliation, criteria hashes, custody modes. |
 
+## Python ownership of auth diagnostics
+
+`phpcfdi/sat-ws-descarga-masiva` was used as an external structural oracle during development. `cfdi-vault-mx` does not depend on PHP or Composer at runtime. The accepted structure is represented by Python builders and tests.
+
+The optional phpcfdi oracle diagnostics are local/developer-only. Normal `cfdi-vault` usage, tests, and CI do not install PHP, Composer, `vendor/`, or generated PHP fixtures. External oracle source input is disabled in CI, and diagnostics must remain redacted: no raw SOAP, real credentials, certificates, SAT metadata, CFDI XML, or ZIP payloads are saved in this repository.
+
 ## Claim verification matrix
 
 | Claim used by this repo | Status | Primary source | Secondary source |

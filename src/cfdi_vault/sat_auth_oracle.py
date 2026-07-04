@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import os
 from pathlib import Path
 import re
 import shutil
@@ -20,6 +21,8 @@ _PREFIXES = {
     DS_NS: "ds",
     SAT_AUTH_NS: "sat",
 }
+_CI_ENV_VARS = ("CI", "GITHUB_ACTIONS", "TF_BUILD")
+PHP_CFDI_BUILDER_SOURCE_DISABLED_IN_CI = "phpcfdi-builder-source-disabled-in-ci"
 
 
 @dataclass(frozen=True)
@@ -126,6 +129,13 @@ def fingerprint_phpcfdi_oracle(source_path: Path | None = None) -> PhpCfdiOracle
     setup_steps = ("Install PHP and Composer outside this repository.", "Create an external composer project with phpcfdi/sat-ws-descarga-masiva.", "Pass FielRequestBuilder.php with --phpcfdi-builder-source.")
     if source_path is None:
         return _phpcfdi_unavailable(php_available, composer_available, "phpcfdi-builder-source-not-provided", setup_steps)
+    if _ci_detected():
+        return _phpcfdi_unavailable(
+            php_available,
+            composer_available,
+            PHP_CFDI_BUILDER_SOURCE_DISABLED_IN_CI,
+            ("Run external phpcfdi oracle source checks only from a local developer machine.",),
+        )
     try:
         source = source_path.read_text(encoding="utf-8")
     except OSError:
@@ -204,6 +214,10 @@ def _phpcfdi_unavailable(
         comparable_fields=(),
         setup_steps=setup_steps,
     )
+
+
+def _ci_detected() -> bool:
+    return any(os.getenv(name) for name in _CI_ENV_VARS)
 
 
 def _local_comparable_fields(

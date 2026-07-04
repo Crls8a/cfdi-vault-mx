@@ -50,6 +50,7 @@ from cfdi_vault.sat_auth_matrix_probe import SatAuthMatrixProbeResult, run_sat_a
 from cfdi_vault.sat_auth_oracle import (
     AuthEnvelopeFingerprint,
     AuthOracleDiffResult,
+    PHP_CFDI_BUILDER_SOURCE_DISABLED_IN_CI,
     PhpCfdiOracleFingerprint,
     diff_auth_oracle,
     fingerprint_auth_envelope,
@@ -900,10 +901,12 @@ def sat_oracle_auth_fingerprint(
         typer.echo("error=auth_oracle_denied", err=True)
         typer.echo("reason=invalid-auth-envelope-variant", err=True)
         raise typer.Exit(code=1)
+    oracle_fingerprint = fingerprint_phpcfdi_oracle(phpcfdi_builder_source)
+    _abort_disabled_phpcfdi_external_oracle(oracle_fingerprint, "auth_oracle_denied")
     envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc", auth_envelope_variant=auth_envelope_variant)
     _print_auth_oracle_fingerprint(
         fingerprint_auth_envelope(envelope),
-        fingerprint_phpcfdi_oracle(phpcfdi_builder_source),
+        oracle_fingerprint,
     )
 
 
@@ -925,11 +928,13 @@ def sat_diff_auth_oracle(
         typer.echo("error=auth_oracle_diff_denied", err=True)
         typer.echo("reason=invalid-auth-envelope-variant", err=True)
         raise typer.Exit(code=1)
+    oracle_fingerprint = fingerprint_phpcfdi_oracle(phpcfdi_builder_source)
+    _abort_disabled_phpcfdi_external_oracle(oracle_fingerprint, "auth_oracle_diff_denied")
     envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc", auth_envelope_variant=auth_envelope_variant)
     _print_auth_oracle_diff(
         diff_auth_oracle(
             fingerprint_auth_envelope(envelope),
-            fingerprint_phpcfdi_oracle(phpcfdi_builder_source),
+            oracle_fingerprint,
         )
     )
 
@@ -2060,6 +2065,18 @@ def _print_auth_envelope_lint(fixture: str, result: AuthEnvelopeLintResult) -> N
     typer.echo("certificate_printed=no")
     typer.echo("signature_value_printed=no")
     typer.echo("key_material_printed=no")
+
+
+def _abort_disabled_phpcfdi_external_oracle(oracle: PhpCfdiOracleFingerprint, error: str) -> None:
+    if oracle.reason != PHP_CFDI_BUILDER_SOURCE_DISABLED_IN_CI:
+        return
+    typer.echo(f"error={error}", err=True)
+    typer.echo(f"reason={oracle.reason}", err=True)
+    typer.echo("sat_real_executed=no", err=True)
+    typer.echo("raw_xml_printed=no", err=True)
+    typer.echo("raw_xml_saved=no", err=True)
+    typer.echo("key_material_printed=no", err=True)
+    raise typer.Exit(code=1)
 
 
 def _print_auth_oracle_fingerprint(local: AuthEnvelopeFingerprint, oracle: PhpCfdiOracleFingerprint) -> None:

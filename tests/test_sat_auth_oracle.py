@@ -5,7 +5,17 @@ from typer.testing import CliRunner
 from cfdi_vault.cli import app
 from cfdi_vault.sat_auth_constants import AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY
 from cfdi_vault.sat_auth_envelope_lint import build_dummy_auth_envelope
-from cfdi_vault.sat_auth_oracle import diff_auth_oracle, fingerprint_auth_envelope, fingerprint_phpcfdi_oracle
+from cfdi_vault.sat_auth_oracle import (
+    PHP_CFDI_BUILDER_SOURCE_DISABLED_IN_CI,
+    diff_auth_oracle,
+    fingerprint_auth_envelope,
+    fingerprint_phpcfdi_oracle,
+)
+
+
+def _allow_local_external_oracle(monkeypatch) -> None:
+    for name in ("CI", "GITHUB_ACTIONS", "TF_BUILD"):
+        monkeypatch.delenv(name, raising=False)
 
 
 def test_auth_envelope_fingerprint_is_redacted_without_raw_xml() -> None:
@@ -34,7 +44,8 @@ def test_phpcfdi_oracle_reports_clear_steps_when_source_is_missing() -> None:
     assert result.setup_steps
 
 
-def test_phpcfdi_oracle_reads_external_builder_source_without_vendor_repo(tmp_path: Path) -> None:
+def test_phpcfdi_oracle_reads_external_builder_source_without_vendor_repo(tmp_path: Path, monkeypatch) -> None:
+    _allow_local_external_oracle(monkeypatch)
     source = tmp_path / "FielRequestBuilder.php"
     source.write_text(
         """
@@ -62,7 +73,21 @@ def test_phpcfdi_oracle_reads_external_builder_source_without_vendor_repo(tmp_pa
     assert result.request_operations == ("SolicitaDescargaEmitidos", "SolicitaDescargaRecibidos", "SolicitaDescargaFolio")
 
 
-def test_auth_oracle_diff_reports_action_difference_without_raw_xml(tmp_path: Path) -> None:
+def test_phpcfdi_external_builder_source_is_disabled_in_ci(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CI", "true")
+    source = tmp_path / "FielRequestBuilder.php"
+    source.write_text("<s:Header><addr:Action>raw-action</addr:Action></s:Header>", encoding="utf-8")
+
+    result = fingerprint_phpcfdi_oracle(source)
+
+    assert result.available is False
+    assert result.reason == PHP_CFDI_BUILDER_SOURCE_DISABLED_IN_CI
+    assert result.source_sha256 == ""
+    assert result.has_header_action is False
+
+
+def test_auth_oracle_diff_reports_action_difference_without_raw_xml(tmp_path: Path, monkeypatch) -> None:
+    _allow_local_external_oracle(monkeypatch)
     source = tmp_path / "FielRequestBuilder.php"
     source.write_text(
         """
@@ -97,7 +122,8 @@ def test_auth_oracle_diff_reports_action_difference_without_raw_xml(tmp_path: Pa
     assert "BEGIN CERTIFICATE" not in rendered
 
 
-def test_diff_auth_oracle_cli_requires_redacted_and_prints_safe_diff(tmp_path: Path) -> None:
+def test_diff_auth_oracle_cli_requires_redacted_and_prints_safe_diff(tmp_path: Path, monkeypatch) -> None:
+    _allow_local_external_oracle(monkeypatch)
     source = tmp_path / "FielRequestBuilder.php"
     source.write_text("public function authorization() { <s:Header><o:Security s:mustUnderstand=\"1\"><u:Timestamp u:Id=\"_0\"/><o:BinarySecurityToken ValueType=\"x\" EncodingType=\"y\"/></o:Security></s:Header><s:Body><Autentica xmlns=\"http://DescargaMasivaTerceros.gob.mx\"/></s:Body> } public function query() {} <CanonicalizationMethod Algorithm=\"c\"/><SignatureMethod Algorithm=\"s\"/><DigestMethod Algorithm=\"d\"/> createSignature($toDigestXml, '#_0'); SecurityTokenReference BinarySecurityToken createXmlSecurityTokenId();", encoding="utf-8")
 
@@ -111,6 +137,23 @@ def test_diff_auth_oracle_cli_requires_redacted_and_prints_safe_diff(tmp_path: P
     assert "raw_xml_printed=no" in result.output
     assert "raw_xml_saved=no" in result.output
     assert "<s:Header>" not in result.output
+
+
+def test_auth_oracle_cli_aborts_external_builder_source_in_ci(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CI", "true")
+    source = tmp_path / "FielRequestBuilder.php"
+    source.write_text("<s:Header><addr:Action>raw-action</addr:Action></s:Header>", encoding="utf-8")
+
+    for command in (
+        ["sat", "oracle-auth-fingerprint", "--fixture", "dummy", "--phpcfdi-builder-source", str(source)],
+        ["sat", "diff-auth-oracle", "--oracle", "phpcfdi", "--fixture", "dummy", "--redacted", "--phpcfdi-builder-source", str(source)],
+    ):
+        result = CliRunner().invoke(app, command)
+
+        assert result.exit_code == 1
+        assert f"reason={PHP_CFDI_BUILDER_SOURCE_DISABLED_IN_CI}" in result.output
+        assert "raw_xml_printed=no" in result.output
+        assert "raw-action" not in result.output
 
 
 def test_oracle_auth_fingerprint_cli_prints_safe_unavailable_status() -> None:
