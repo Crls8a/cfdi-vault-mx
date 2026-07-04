@@ -57,7 +57,15 @@ def parse_download_request_response(xml: XmlInput) -> SatRequestResult:
     """Parse a synthetic SAT download-request response."""
 
     root = _response_root(xml)
-    result = _required_element(root, "download request result", "SolicitaDescargaResult", "RequestDownloadResult")
+    result = _required_element(
+        root,
+        "download request result",
+        "SolicitaDescargaResult",
+        "SolicitaDescargaEmitidosResult",
+        "SolicitaDescargaRecibidosResult",
+        "SolicitaDescargaFolioResult",
+        "RequestDownloadResult",
+    )
     sat_code = _required_value(result, "sat_code", "CodEstatus", "CodigoEstatus", "StatusCode")
     message = _value(result, "Mensaje", "Message", "StatusMessage") or ""
     request_id = _value(result, "IdSolicitud", "RequestId", "SolicitudId") or ""

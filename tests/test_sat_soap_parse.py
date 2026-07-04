@@ -50,12 +50,17 @@ def test_parse_download_request_response_classifies_success_and_error() -> None:
     accepted = parse_download_request_response(
         _soap('<sat:SolicitaDescargaResult IdSolicitud="SYN-REQ-001" CodEstatus="5000" Mensaje="Synthetic accepted" />')
     )
+    received = parse_download_request_response(
+        _soap('<sat:SolicitaDescargaRecibidosResult IdSolicitud="SYN-REQ-002" CodEstatus="5000" Mensaje="Synthetic accepted" />')
+    )
     duplicate = parse_download_request_response(
         _soap('<sat:SolicitaDescargaResult CodEstatus="5005" Mensaje="Synthetic duplicate" />')
     )
 
     assert accepted.request_id == "SYN-REQ-001"
     assert accepted.action == SatOutcomeAction.ACCEPTED
+    assert received.request_id == "SYN-REQ-002"
+    assert received.action == SatOutcomeAction.ACCEPTED
     assert duplicate.request_id == ""
     assert duplicate.action == SatOutcomeAction.DUPLICATE
 
