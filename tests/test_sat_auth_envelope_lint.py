@@ -34,11 +34,11 @@ def test_lint_auth_envelope_reports_structure_without_raw_xml() -> None:
     assert result.header_action_order == EXPECTED_HEADER_ACTION_ORDER
     assert result.expected_header_action_order == EXPECTED_HEADER_ACTION_ORDER
     assert result.soap_envelope is True
-    assert result.action_header_present is True
-    assert result.action_header_value is True
-    assert result.action_header_namespace is True
-    assert result.action_header_must_understand is True
-    assert result.action_header_before_security is True
+    assert result.action_header_present is False
+    assert result.action_header_value is False
+    assert result.action_header_namespace is False
+    assert result.action_header_must_understand is False
+    assert result.action_header_before_security is False
     assert result.action_header_order_ok is True
     assert result.security_must_understand is True
     assert result.ws_security is True
@@ -92,13 +92,13 @@ def test_lint_auth_envelope_accepts_explicit_header_order_variants_without_raw_x
 
 
 def test_lint_auth_envelope_requires_wcf_action_header_without_raw_xml() -> None:
-    envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc")
+    envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc", auth_envelope_variant=AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY)
     root = etree.fromstring(envelope)
     action = root.find(".//{http://schemas.microsoft.com/ws/2005/05/addressing/none}Action")
     assert action is not None
     action.getparent().remove(action)
 
-    result = lint_auth_envelope(etree.tostring(root, encoding="UTF-8", xml_declaration=True))
+    result = lint_auth_envelope(etree.tostring(root, encoding="UTF-8", xml_declaration=True), expected_header_action_order=AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY)
 
     assert result.all_checks_passed is False
     assert result.action_header_present is False
@@ -106,12 +106,12 @@ def test_lint_auth_envelope_requires_wcf_action_header_without_raw_xml() -> None
     assert result.action_header_namespace is False
     assert result.action_header_must_understand is False
     assert result.action_header_before_security is False
-    assert result.header_action_order == "missing_action_or_security"
+    assert result.header_action_order == "security_only"
     assert "<soap" not in repr(result)
 
 
 def test_lint_auth_envelope_rejects_wrong_wcf_action_shape_without_raw_xml() -> None:
-    envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc")
+    envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc", auth_envelope_variant=AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY)
     root = etree.fromstring(envelope)
     header = root.find("{http://schemas.xmlsoap.org/soap/envelope/}Header")
     action = root.find(".//{http://schemas.microsoft.com/ws/2005/05/addressing/none}Action")
@@ -124,7 +124,7 @@ def test_lint_auth_envelope_rejects_wrong_wcf_action_shape_without_raw_xml() -> 
     header.remove(action)
     header.insert(list(header).index(security) + 1, action)
 
-    result = lint_auth_envelope(etree.tostring(root, encoding="UTF-8", xml_declaration=True))
+    result = lint_auth_envelope(etree.tostring(root, encoding="UTF-8", xml_declaration=True), expected_header_action_order=AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY)
 
     assert result.all_checks_passed is False
     assert result.action_header_present is True
@@ -232,11 +232,11 @@ def test_lint_auth_envelope_cli_prints_redacted_checks() -> None:
     assert f"header_action_order={EXPECTED_HEADER_ACTION_ORDER}" in result.output
     assert f"expected_header_action_order={EXPECTED_HEADER_ACTION_ORDER}" in result.output
     assert "timestamp_window_seconds=300" in result.output
-    assert "check_action_header_present=yes" in result.output
-    assert "check_action_header_value=yes" in result.output
-    assert "check_action_header_namespace=yes" in result.output
-    assert "check_action_header_must_understand=yes" in result.output
-    assert "check_action_header_before_security=yes" in result.output
+    assert "check_action_header_present=no" in result.output
+    assert "check_action_header_value=no" in result.output
+    assert "check_action_header_namespace=no" in result.output
+    assert "check_action_header_must_understand=no" in result.output
+    assert "check_action_header_before_security=no" in result.output
     assert "check_action_header_order_ok=yes" in result.output
     assert "check_security_must_understand=yes" in result.output
     assert "check_timestamp_id_present=yes" in result.output

@@ -67,7 +67,7 @@ from cfdi_vault.live_permit import (
     transport_probe_permit_expectation,
     validate_and_consume_live_permit,
 )
-from cfdi_vault.sat_auth_constants import AUTH_ENVELOPE_VARIANTS, DEFAULT_AUTH_ENVELOPE_VARIANT
+from cfdi_vault.sat_auth_constants import AUTH_ENVELOPE_VARIANT_SECURITY_ONLY, AUTH_ENVELOPE_VARIANTS, DEFAULT_AUTH_ENVELOPE_VARIANT
 from cfdi_vault.sat_transport import (
     GuardedSoapHttpTransport,
     LiveSatGuardError,
@@ -522,8 +522,8 @@ def live_permit_create(
     to_date: str = typer.Option(..., "--to", help="YYYY-MM-DD."),
     expires_minutes: int = typer.Option(15, "--expires-minutes", min=1, max=15),
     reason: str = typer.Option(..., "--reason", help="Auditable local reason."),
-    auth_envelope_variant: str | None = typer.Option(None, "--auth-envelope-variant", help="auth_live_smoke only: action_before_security or security_before_action."),
-    wcf_action_header_enabled: bool = typer.Option(True, "--wcf-action-header-enabled/--no-wcf-action-header-enabled", help="auth_live_smoke only; must stay enabled for WCF Action compatibility."),
+    auth_envelope_variant: str | None = typer.Option(None, "--auth-envelope-variant", help="auth_live_smoke only: security_only, action_before_security, or security_before_action."),
+    wcf_action_header_enabled: bool | None = typer.Option(None, "--wcf-action-header-enabled/--no-wcf-action-header-enabled", help="auth_live_smoke only; defaults to false for security_only and true for Action variants."),
 ) -> None:
     """Create a one-time local permit outside the repository for one live operation."""
 
@@ -817,7 +817,7 @@ def sat_auth_smoke(
         permit_scope="auth_live_smoke",
     )
     auth_envelope_variant = DEFAULT_AUTH_ENVELOPE_VARIANT
-    wcf_action_header_enabled = True
+    wcf_action_header_enabled = DEFAULT_AUTH_ENVELOPE_VARIANT != AUTH_ENVELOPE_VARIANT_SECURITY_ONLY
     if permit is not None:
         consumed_permit = load_live_execution_permit(permit, env=os.environ)
         auth_envelope_variant = consumed_permit.auth_envelope_variant or DEFAULT_AUTH_ENVELOPE_VARIANT

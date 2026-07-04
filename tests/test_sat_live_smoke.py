@@ -17,6 +17,7 @@ import pytest
 from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType
 from cfdi_vault.sat_auth_contract import AuthWsdlContract
 from cfdi_vault.sat_auth_constants import (
+    AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
     AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION,
 )
 from cfdi_vault.sat_auth_envelope_lint import lint_auth_envelope
@@ -135,7 +136,13 @@ def test_auth_smoke_fails_before_transport_when_request_body_is_empty(tmp_path: 
 
 def test_auth_smoke_fails_before_transport_when_accept_header_is_missing(tmp_path: Path) -> None:
     transport = FakeSoapTransport([])
-    adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
+    adapter = SatLiveMetadataSmokeAdapter(
+        profile=_profile(tmp_path),
+        provider=DummySecretProvider(),
+        transport=transport,
+        material=_material(),
+        auth_envelope_variant=AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
+    )
 
     def headers_without_accept(action: str) -> dict[str, str]:
         return {"Content-Type": "text/xml; charset=utf-8", "SOAPAction": f'"{action}"'}
@@ -154,7 +161,13 @@ def test_auth_smoke_fails_before_transport_when_accept_header_is_missing(tmp_pat
 
 def test_auth_smoke_fails_before_transport_when_wcf_action_header_is_missing(tmp_path: Path) -> None:
     transport = FakeSoapTransport([])
-    adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
+    adapter = SatLiveMetadataSmokeAdapter(
+        profile=_profile(tmp_path),
+        provider=DummySecretProvider(),
+        transport=transport,
+        material=_material(),
+        auth_envelope_variant=AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
+    )
     from cfdi_vault import sat_live_smoke as live_smoke_module
     original_build_auth_envelope = live_smoke_module._build_auth_envelope
 
@@ -174,7 +187,7 @@ def test_auth_smoke_fails_before_transport_when_wcf_action_header_is_missing(tmp
     diagnostic = exc.value.diagnostic
     assert diagnostic.stage == "auth_request_readiness"
     assert diagnostic.has_header_action is False
-    assert diagnostic.header_action_order == "missing_action_or_security"
+    assert diagnostic.header_action_order == "security_only"
     assert transport.requests == []
 
 
@@ -205,10 +218,10 @@ def test_auth_http_failure_reports_redacted_request_readiness(tmp_path: Path) ->
     assert diagnostic.digest_method == "http://www.w3.org/2000/09/xmldsig#sha1"
     assert diagnostic.signed_reference_count >= 1
     assert diagnostic.signed_reference_targets_exist is True
-    assert diagnostic.has_header_action is True
-    assert diagnostic.header_action_value_ok is True
-    assert diagnostic.header_action_must_understand is True
-    assert diagnostic.header_action_order == "action_before_security"
+    assert diagnostic.has_header_action is False
+    assert diagnostic.header_action_value_ok is False
+    assert diagnostic.header_action_must_understand is False
+    assert diagnostic.header_action_order == "security_only"
     assert diagnostic.security_must_understand is True
 
 

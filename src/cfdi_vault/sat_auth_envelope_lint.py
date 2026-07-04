@@ -17,7 +17,11 @@ from signxml.algorithms import CanonicalizationMethod, DigestAlgorithm, Signatur
 from signxml.verifier import SignatureConfiguration
 
 from cfdi_vault.sat_auth_constants import AUTH_OPERATION, AUTH_SOAP_ACTION
-from cfdi_vault.sat_auth_constants import DEFAULT_AUTH_ENVELOPE_VARIANT
+from cfdi_vault.sat_auth_constants import (
+    AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
+    AUTH_ENVELOPE_VARIANT_SECURITY_ONLY,
+    DEFAULT_AUTH_ENVELOPE_VARIANT,
+)
 from cfdi_vault.sat_live_smoke import (
     ADDR_NS,
     BASE64_ENCODING_TYPE,
@@ -35,7 +39,7 @@ EXPECTED_C14N_METHOD = CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0
 EXPECTED_SIGNATURE_METHOD = SignatureMethod.RSA_SHA1.value
 EXPECTED_DIGEST_METHOD = DigestAlgorithm.SHA1.value
 EXPECTED_XMLSIG_PROFILE = "sat_legacy_wssecurity"
-EXPECTED_HEADER_ACTION_ORDER = "action_before_security"
+EXPECTED_HEADER_ACTION_ORDER = DEFAULT_AUTH_ENVELOPE_VARIANT
 
 
 @dataclass(frozen=True)
@@ -178,16 +182,19 @@ def lint_auth_envelope(
         action_header_value=(action.text or "").strip() == AUTH_SOAP_ACTION if action is not None else False,
         action_header_namespace=action.tag == f"{{{ADDR_NS}}}Action" if action is not None else False,
         action_header_must_understand=_must_understand(action),
-        action_header_before_security=header_action_order == EXPECTED_HEADER_ACTION_ORDER,
+        action_header_before_security=header_action_order == AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
         action_header_order_ok=header_action_order == expected_header_action_order,
         security_must_understand=_must_understand(security),
         local_signature_verify=_verify_signature_with_bst(root, bst),
         all_checks_passed=False,
     )
+    expects_action = expected_header_action_order != AUTH_ENVELOPE_VARIANT_SECURITY_ONLY
+    action_checks = {"to_header_present", "action_header_present", "action_header_value", "action_header_namespace", "action_header_must_understand"}
     checks = [
         value
         for key, value in result.__dict__.items()
         if isinstance(value, bool) and key not in {"all_checks_passed", "action_header_before_security"}
+        and (expects_action or key not in action_checks)
     ]
     return AuthEnvelopeLintResult(**{**result.__dict__, "all_checks_passed": all(checks)})
 
@@ -249,9 +256,11 @@ def _header_action_order(header: etree._Element | None) -> str:
             action_index = index
         if name.namespace == WSSE_NS and name.localname == "Security":
             security_index = index
+    if action_index is None and security_index is not None:
+        return AUTH_ENVELOPE_VARIANT_SECURITY_ONLY
     if action_index is None or security_index is None:
         return "missing_action_or_security"
-    return EXPECTED_HEADER_ACTION_ORDER if action_index < security_index else "security_before_action"
+    return AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY if action_index < security_index else "security_before_action"
 
 
 def _parse_time(value: str | None) -> datetime | None:

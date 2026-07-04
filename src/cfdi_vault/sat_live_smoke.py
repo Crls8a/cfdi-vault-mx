@@ -25,6 +25,7 @@ from cfdi_vault.sat_auth_constants import (
     AUTH_CONTENT_TYPE,
     AUTH_ENVELOPE_VARIANTS,
     AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
+    AUTH_ENVELOPE_VARIANT_SECURITY_ONLY,
     AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION,
     AUTH_NAMESPACE,
     AUTH_OPERATION,
@@ -523,7 +524,8 @@ def _build_auth_envelope(
         },
     ).text = material.certificate_der_b64
     security.append(_sign_auth_timestamp(envelope, material, bst_id))
-    etree.SubElement(header, f"{{{ADDR_NS}}}To", {f"{{{SOAP11_NS}}}mustUnderstand": "1"}).text = endpoint
+    if variant != AUTH_ENVELOPE_VARIANT_SECURITY_ONLY:
+        etree.SubElement(header, f"{{{ADDR_NS}}}To", {f"{{{SOAP11_NS}}}mustUnderstand": "1"}).text = endpoint
     body = envelope.find(f"{{{SOAP11_NS}}}Body")
     assert body is not None
     etree.SubElement(body, f"{{{SAT_AUTH_NS}}}{AUTH_OPERATION}")
@@ -612,6 +614,7 @@ def _assert_auth_request_ready(
         body,
         headers,
     )
+    expects_header_action = expected_order != AUTH_ENVELOPE_VARIANT_SECURITY_ONLY
     failures: list[bool] = [
         body is None,
         readiness.request_body_bytes_len <= 500,
@@ -626,13 +629,20 @@ def _assert_auth_request_ready(
         readiness.digest_method is None,
         readiness.signed_reference_count <= 0,
         not readiness.signed_reference_targets_exist,
-        not readiness.has_header_action,
-        not readiness.header_action_value_ok,
-        not readiness.header_action_must_understand,
-        readiness.header_action_order != expected_order,
         not readiness.security_must_understand,
-        not wcf_action_header_enabled,
     ]
+    if expects_header_action:
+        failures.extend(
+            [
+                not readiness.has_header_action,
+                not readiness.header_action_value_ok,
+                not readiness.header_action_must_understand,
+                readiness.header_action_order != expected_order,
+                not wcf_action_header_enabled,
+            ]
+        )
+    else:
+        failures.extend([readiness.has_header_action, readiness.header_action_order != AUTH_ENVELOPE_VARIANT_SECURITY_ONLY])
     if body is None or _contains_placeholder_literals(body):
         failures.append(True)
     if _header_value(headers, "Content-Length") is not None:
@@ -781,6 +791,8 @@ def _auth_header_action_order(header: etree._Element | None) -> str:
             action_index = index
         if name.namespace == WSSE_NS and name.localname == "Security":
             security_index = index
+    if action_index is None and security_index is not None:
+        return AUTH_ENVELOPE_VARIANT_SECURITY_ONLY
     if action_index is None or security_index is None:
         return "missing_action_or_security"
     return "action_before_security" if action_index < security_index else "security_before_action"

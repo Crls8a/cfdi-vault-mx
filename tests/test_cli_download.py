@@ -12,6 +12,7 @@ from cfdi_vault.cli import app
 from cfdi_vault.live_permit import LivePermitRequest, create_live_execution_permit
 from cfdi_vault.sat_auth_constants import (
     AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
+    AUTH_ENVELOPE_VARIANT_SECURITY_ONLY,
     AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION,
 )
 from cfdi_vault.secrets import DummySecretProvider
@@ -773,8 +774,8 @@ def test_sat_auth_smoke_requires_same_manual_guard(
     assert seen == {
         "profile_id": "dummy-profile",
         "live_permit_verified": False,
-        "auth_envelope_variant": AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
-        "wcf_action_header_enabled": True,
+        "auth_envelope_variant": AUTH_ENVELOPE_VARIANT_SECURITY_ONLY,
+        "wcf_action_header_enabled": False,
     }
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
 
