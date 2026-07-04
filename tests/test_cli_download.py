@@ -10,6 +10,10 @@ from cfdi_vault import cli as cli_module
 from cfdi_vault import setup as setup_flow
 from cfdi_vault.cli import app
 from cfdi_vault.live_permit import LivePermitRequest, create_live_execution_permit
+from cfdi_vault.sat_auth_constants import (
+    AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
+    AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION,
+)
 from cfdi_vault.secrets import DummySecretProvider
 
 
@@ -739,9 +743,17 @@ def test_sat_auth_smoke_requires_same_manual_guard(
     _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=True, doctor_ok=True)
     seen: dict[str, object] = {}
 
-    def fake_auth_smoke(profile_id: str, *, live_permit_verified: bool = False) -> cli_module.LiveSmokeCliResult:
+    def fake_auth_smoke(
+        profile_id: str,
+        *,
+        live_permit_verified: bool = False,
+        auth_envelope_variant: str = AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
+        wcf_action_header_enabled: bool = True,
+    ) -> cli_module.LiveSmokeCliResult:
         seen["profile_id"] = profile_id
         seen["live_permit_verified"] = live_permit_verified
+        seen["auth_envelope_variant"] = auth_envelope_variant
+        seen["wcf_action_header_enabled"] = wcf_action_header_enabled
         return cli_module.LiveSmokeCliResult(result="synthetic-auth-ok", auth="attempted")
 
     monkeypatch.setattr(cli_module, "_run_live_auth_smoke", fake_auth_smoke)
@@ -758,7 +770,12 @@ def test_sat_auth_smoke_requires_same_manual_guard(
     assert lines["mode"] == "live-smoke"
     assert lines["kind"] == "auth"
     assert lines["result"] == "synthetic-auth-ok"
-    assert seen == {"profile_id": "dummy-profile", "live_permit_verified": False}
+    assert seen == {
+        "profile_id": "dummy-profile",
+        "live_permit_verified": False,
+        "auth_envelope_variant": AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
+        "wcf_action_header_enabled": True,
+    }
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
 
 
@@ -778,15 +795,24 @@ def test_sat_auth_smoke_permit_replaces_interactive_prompt_once(
             date_from="2024-01-01",
             date_to="2024-01-01",
             reason="Carlos authorized SAT auth compatibility smoke",
+            auth_envelope_variant=AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION,
         ),
         env={"LOCALAPPDATA": str(appdata_root)},
     )
     calls: list[str] = []
     seen: dict[str, object] = {}
 
-    def fake_auth_smoke(profile_id: str, *, live_permit_verified: bool = False) -> cli_module.LiveSmokeCliResult:
+    def fake_auth_smoke(
+        profile_id: str,
+        *,
+        live_permit_verified: bool = False,
+        auth_envelope_variant: str = AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
+        wcf_action_header_enabled: bool = True,
+    ) -> cli_module.LiveSmokeCliResult:
         calls.append(profile_id)
         seen["live_permit_verified"] = live_permit_verified
+        seen["auth_envelope_variant"] = auth_envelope_variant
+        seen["wcf_action_header_enabled"] = wcf_action_header_enabled
         return cli_module.LiveSmokeCliResult(result="synthetic-auth-ok", auth="attempted")
 
     monkeypatch.setattr(cli_module, "_run_live_auth_smoke", fake_auth_smoke)
@@ -806,6 +832,8 @@ def test_sat_auth_smoke_permit_replaces_interactive_prompt_once(
     assert result.exit_code == 0, result.output
     assert calls == ["dummy-profile"]
     assert seen["live_permit_verified"] is True
+    assert seen["auth_envelope_variant"] == AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION
+    assert seen["wcf_action_header_enabled"] is True
     assert "Type \"SAT REAL METADATA SMOKE\"" not in result.output
     assert "xml_downloaded=no" in result.output
     assert "zip_downloaded=no" in result.output

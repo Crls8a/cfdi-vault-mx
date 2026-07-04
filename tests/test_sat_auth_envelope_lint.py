@@ -12,6 +12,10 @@ from cfdi_vault.sat_auth_envelope_lint import (
     build_dummy_auth_envelope,
     lint_auth_envelope,
 )
+from cfdi_vault.sat_auth_constants import (
+    AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
+    AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION,
+)
 
 
 def test_lint_auth_envelope_reports_structure_without_raw_xml() -> None:
@@ -28,12 +32,14 @@ def test_lint_auth_envelope_reports_structure_without_raw_xml() -> None:
     assert result.reference_transform_algorithms == (EXPECTED_C14N_METHOD,)
     assert result.key_info_reference_uri_redacted == "#<id>"
     assert result.header_action_order == EXPECTED_HEADER_ACTION_ORDER
+    assert result.expected_header_action_order == EXPECTED_HEADER_ACTION_ORDER
     assert result.soap_envelope is True
     assert result.action_header_present is True
     assert result.action_header_value is True
     assert result.action_header_namespace is True
     assert result.action_header_must_understand is True
     assert result.action_header_before_security is True
+    assert result.action_header_order_ok is True
     assert result.security_must_understand is True
     assert result.ws_security is True
     assert result.bst_der is True
@@ -62,6 +68,26 @@ def test_lint_auth_envelope_reports_structure_without_raw_xml() -> None:
     rendered = repr(result)
     assert "<soap" not in rendered
     assert "BEGIN CERTIFICATE" not in rendered
+    assert "SignatureValue" not in rendered
+
+
+def test_lint_auth_envelope_accepts_explicit_header_order_variants_without_raw_xml() -> None:
+    endpoint = "https://auth.example.test/Autenticacion/Autenticacion.svc"
+    action_first = build_dummy_auth_envelope(endpoint, auth_envelope_variant=AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY)
+    security_first = build_dummy_auth_envelope(endpoint, auth_envelope_variant=AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION)
+
+    result_action_first = lint_auth_envelope(action_first, expected_header_action_order=AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY)
+    result_security_first = lint_auth_envelope(security_first, expected_header_action_order=AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION)
+
+    assert result_action_first.envelope_sha256 != result_security_first.envelope_sha256
+    assert result_action_first.all_checks_passed is True
+    assert result_security_first.all_checks_passed is True
+    assert result_security_first.header_action_order == AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION
+    assert result_security_first.expected_header_action_order == AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION
+    assert result_security_first.action_header_before_security is False
+    assert result_security_first.action_header_order_ok is True
+    rendered = repr(result_security_first)
+    assert "<soap" not in rendered
     assert "SignatureValue" not in rendered
 
 
@@ -106,6 +132,7 @@ def test_lint_auth_envelope_rejects_wrong_wcf_action_shape_without_raw_xml() -> 
     assert result.action_header_namespace is True
     assert result.action_header_must_understand is False
     assert result.action_header_before_security is False
+    assert result.action_header_order_ok is False
     assert result.header_action_order == "security_before_action"
 
 
@@ -203,12 +230,14 @@ def test_lint_auth_envelope_cli_prints_redacted_checks() -> None:
     assert f"reference_transform_algorithms={EXPECTED_C14N_METHOD}" in result.output
     assert "key_info_reference_uri=#<id>" in result.output
     assert f"header_action_order={EXPECTED_HEADER_ACTION_ORDER}" in result.output
+    assert f"expected_header_action_order={EXPECTED_HEADER_ACTION_ORDER}" in result.output
     assert "timestamp_window_seconds=300" in result.output
     assert "check_action_header_present=yes" in result.output
     assert "check_action_header_value=yes" in result.output
     assert "check_action_header_namespace=yes" in result.output
     assert "check_action_header_must_understand=yes" in result.output
     assert "check_action_header_before_security=yes" in result.output
+    assert "check_action_header_order_ok=yes" in result.output
     assert "check_security_must_understand=yes" in result.output
     assert "check_timestamp_id_present=yes" in result.output
     assert "check_timestamp_created_utc_z=yes" in result.output
@@ -230,7 +259,7 @@ def test_lint_auth_envelope_cli_prints_redacted_checks() -> None:
 def test_lint_auth_envelope_profile_requires_redacted(monkeypatch) -> None:
     called = False
 
-    def fail_if_called(_profile: str) -> bytes:
+    def fail_if_called(_profile: str, **_kwargs: object) -> bytes:
         nonlocal called
         called = True
         return b"SHOULD_NOT_HAPPEN"
@@ -246,7 +275,7 @@ def test_lint_auth_envelope_profile_requires_redacted(monkeypatch) -> None:
 
 def test_lint_auth_envelope_profile_redacted_prints_safe_checks(monkeypatch) -> None:
     envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc")
-    monkeypatch.setattr(cli_module, "_build_profile_auth_envelope", lambda _profile: envelope)
+    monkeypatch.setattr(cli_module, "_build_profile_auth_envelope", lambda _profile, **_kwargs: envelope)
 
     result = CliRunner().invoke(app, ["sat", "lint-auth-envelope", "--profile", "dummy-profile", "--redacted"])
 

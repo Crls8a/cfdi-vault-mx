@@ -14,6 +14,10 @@ from cfdi_vault.live_permit import (
     permit_root,
     validate_and_consume_live_permit,
 )
+from cfdi_vault.sat_auth_constants import (
+    AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
+    AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION,
+)
 
 NOW = datetime(2026, 7, 3, 18, 0, tzinfo=timezone.utc)
 
@@ -149,6 +153,11 @@ def test_live_execution_permit_allows_auth_live_smoke_scope_with_credentials(tmp
 
     assert permit.scope == "auth_live_smoke"
     assert permit.allow_real_credentials is True
+    assert permit.auth_envelope_variant == AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY
+    assert permit.wcf_action_header_enabled is True
+    document = json.loads(permit.path.read_text(encoding="utf-8"))  # type: ignore[union-attr]
+    assert document["authEnvelopeVariant"] == AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY
+    assert document["wcfActionHeaderEnabled"] is True
     consumed = validate_and_consume_live_permit(
         permit.permit_id,
         scope="auth_live_smoke",
@@ -157,11 +166,15 @@ def test_live_execution_permit_allows_auth_live_smoke_scope_with_credentials(tmp
         direction="received",
         date_from="2026-07-03",
         date_to="2026-07-03",
+        auth_envelope_variant=AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
+        wcf_action_header_enabled=True,
         env=env,
         now=NOW + timedelta(minutes=1),
         repo_root=repo_root,
     )
     assert consumed.consumed is True
+    assert consumed.auth_envelope_variant == AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY
+    assert consumed.wcf_action_header_enabled is True
 
 
 @pytest.mark.parametrize(
@@ -172,6 +185,9 @@ def test_live_execution_permit_allows_auth_live_smoke_scope_with_credentials(tmp
         (_request(expires_minutes=16), "invalid-expiration-window"),
         (_request(reason=" "), "reason-required"),
         (_request(issued_by="someone-else"), "invalid-issuer"),
+        (_request(scope="auth_live_smoke", auth_envelope_variant="unsupported"), "invalid-auth-envelope-variant"),
+        (_request(scope="auth_live_smoke", wcf_action_header_enabled=False), "wcf-action-header-required"),
+        (_request(scope="transport_probe", auth_envelope_variant=AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY), "auth-envelope-options-not-applicable"),
     ],
 )
 def test_live_execution_permit_rejects_unsafe_create_inputs(
@@ -216,6 +232,43 @@ def test_live_execution_permit_rejects_mismatch_and_expiration(tmp_path: Path) -
             date_to="2026-07-03",
             env=env,
             now=NOW + timedelta(minutes=16),
+            repo_root=repo_root,
+        )
+
+
+def test_auth_live_execution_permit_requires_exact_variant_expectation(tmp_path: Path) -> None:
+    env = {"LOCALAPPDATA": str(tmp_path / "appdata")}
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    permit = create_live_execution_permit(_request(scope="auth_live_smoke"), env=env, now=NOW, repo_root=repo_root)
+
+    with pytest.raises(LivePermitError, match="permit-auth-envelope-expectation-required"):
+        validate_and_consume_live_permit(
+            permit.permit_id,
+            scope="auth_live_smoke",
+            profile_id="dummy-profile",
+            kind="metadata",
+            direction="received",
+            date_from="2026-07-03",
+            date_to="2026-07-03",
+            env=env,
+            now=NOW + timedelta(minutes=1),
+            repo_root=repo_root,
+        )
+
+    with pytest.raises(LivePermitError, match="permit-authEnvelopeVariant-mismatch"):
+        validate_and_consume_live_permit(
+            permit.permit_id,
+            scope="auth_live_smoke",
+            profile_id="dummy-profile",
+            kind="metadata",
+            direction="received",
+            date_from="2026-07-03",
+            date_to="2026-07-03",
+            auth_envelope_variant=AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION,
+            wcf_action_header_enabled=True,
+            env=env,
+            now=NOW + timedelta(minutes=1),
             repo_root=repo_root,
         )
 

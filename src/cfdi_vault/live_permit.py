@@ -14,6 +14,7 @@ import subprocess
 from typing import Mapping
 
 from cfdi_vault.domain import DownloadDirection, DownloadQuery, RequestType
+from cfdi_vault.sat_auth_constants import DEFAULT_AUTH_ENVELOPE_VARIANT, AUTH_ENVELOPE_VARIANTS
 from cfdi_vault.setup_core import SetupError, find_repo_root, resolve_appdata_root, validate_profile_id
 
 ALLOWED_SCOPES = frozenset({"transport_probe", "auth_post_probe", "auth_matrix_probe", "auth_live_smoke", "metadata_live_smoke"})
@@ -44,6 +45,8 @@ class LivePermitRequest:
     reason: str
     expires_minutes: int = MAX_EXPIRES_MINUTES
     issued_by: str = "carlos-local"
+    auth_envelope_variant: str | None = None
+    wcf_action_header_enabled: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,8 @@ class LiveExecutionPermit:
     consumed_at: datetime | None
     redaction_required: bool
     repo_root_hash: str
+    auth_envelope_variant: str | None = None
+    wcf_action_header_enabled: bool | None = None
     path: Path | None = None
 
     def to_document(self) -> dict[str, object]:
@@ -92,6 +97,8 @@ class LiveExecutionPermit:
             "consumedAt": _format_dt(self.consumed_at) if self.consumed_at else None,
             "redactionRequired": self.redaction_required,
             "repoRootHash": self.repo_root_hash,
+            "authEnvelopeVariant": self.auth_envelope_variant,
+            "wcfActionHeaderEnabled": self.wcf_action_header_enabled,
         }
 
     @classmethod
@@ -116,6 +123,8 @@ class LiveExecutionPermit:
             consumed_at=_optional_dt(document.get("consumedAt")),
             redaction_required=_required_bool(document, "redactionRequired"),
             repo_root_hash=_required_str(document, "repoRootHash"),
+            auth_envelope_variant=_optional_str(document.get("authEnvelopeVariant")),
+            wcf_action_header_enabled=_optional_bool(document.get("wcfActionHeaderEnabled")),
             path=path,
         )
 
@@ -188,6 +197,8 @@ def create_live_execution_permit(
         consumed_at=None,
         redaction_required=True,
         repo_root_hash=current_repo_identity(repo_root),
+        auth_envelope_variant=safe_request.auth_envelope_variant,
+        wcf_action_header_enabled=safe_request.wcf_action_header_enabled,
         path=root / f"live-permit-{permit_id}.json",
     )
     assert permit.path is not None
@@ -220,6 +231,8 @@ def validate_and_consume_live_permit(
     direction: str,
     date_from: str,
     date_to: str,
+    auth_envelope_variant: str | None = None,
+    wcf_action_header_enabled: bool | None = None,
     env: Mapping[str, str] | None = None,
     now: datetime | None = None,
     repo_root: Path | None = None,
@@ -227,7 +240,9 @@ def validate_and_consume_live_permit(
     """Validate exact operation scope and consume the permit before live I/O."""
 
     permit = load_live_execution_permit(permit_ref, env=env)
-    expected = {
+    if scope == "auth_live_smoke" and (auth_envelope_variant is None or wcf_action_header_enabled is None):
+        raise LivePermitError("permit-auth-envelope-expectation-required")
+    expected: dict[str, object] = {
         "scope": scope,
         "profile_id": _safe_profile_id(profile_id),
         "kind": kind,
@@ -235,7 +250,7 @@ def validate_and_consume_live_permit(
         "date_from": date_from,
         "date_to": date_to,
     }
-    actual = {
+    actual: dict[str, object] = {
         "scope": permit.scope,
         "profile_id": permit.profile_id,
         "kind": permit.kind,
@@ -243,6 +258,12 @@ def validate_and_consume_live_permit(
         "date_from": permit.date_from,
         "date_to": permit.date_to,
     }
+    if auth_envelope_variant is not None:
+        expected["auth_envelope_variant"] = auth_envelope_variant
+        actual["auth_envelope_variant"] = permit.auth_envelope_variant or ""
+    if wcf_action_header_enabled is not None:
+        expected["wcf_action_header_enabled"] = wcf_action_header_enabled
+        actual["wcf_action_header_enabled"] = permit.wcf_action_header_enabled
     for key, value in expected.items():
         if actual[key] != value:
             raise LivePermitError(f"permit-{_document_key(key)}-mismatch")
@@ -268,6 +289,8 @@ def validate_and_consume_live_permit(
         consumed_at=_utc_now(now),
         redaction_required=permit.redaction_required,
         repo_root_hash=permit.repo_root_hash,
+        auth_envelope_variant=permit.auth_envelope_variant,
+        wcf_action_header_enabled=permit.wcf_action_header_enabled,
         path=permit.path,
     )
     assert consumed.path is not None
@@ -302,7 +325,7 @@ def transport_probe_permit_expectation(profile_id: str, permit_ref: str | Path, 
     }
 
 
-def auth_live_smoke_permit_expectation(profile_id: str, permit_ref: str | Path, *, env: Mapping[str, str] | None = None) -> dict[str, str]:
+def auth_live_smoke_permit_expectation(profile_id: str, permit_ref: str | Path, *, env: Mapping[str, str] | None = None) -> dict[str, object]:
     """Build the exact auth-only live smoke expectation from the permit itself."""
 
     permit = load_live_execution_permit(permit_ref, env=env)
@@ -313,6 +336,8 @@ def auth_live_smoke_permit_expectation(profile_id: str, permit_ref: str | Path, 
         "direction": permit.direction,
         "date_from": permit.date_from,
         "date_to": permit.date_to,
+        "auth_envelope_variant": permit.auth_envelope_variant or "",
+        "wcf_action_header_enabled": permit.wcf_action_header_enabled,
     }
 
 
@@ -331,6 +356,17 @@ def _validated_request(request: LivePermitRequest) -> LivePermitRequest:
         raise LivePermitError("invalid-issuer")
     if request.expires_minutes < 1 or request.expires_minutes > MAX_EXPIRES_MINUTES:
         raise LivePermitError("invalid-expiration-window")
+    auth_envelope_variant: str | None = None
+    wcf_action_header_enabled: bool | None = None
+    if request.scope == "auth_live_smoke":
+        auth_envelope_variant = request.auth_envelope_variant or DEFAULT_AUTH_ENVELOPE_VARIANT
+        if auth_envelope_variant not in AUTH_ENVELOPE_VARIANTS:
+            raise LivePermitError("invalid-auth-envelope-variant")
+        wcf_action_header_enabled = True if request.wcf_action_header_enabled is None else request.wcf_action_header_enabled
+        if wcf_action_header_enabled is not True:
+            raise LivePermitError("wcf-action-header-required")
+    elif request.auth_envelope_variant is not None or request.wcf_action_header_enabled is not None:
+        raise LivePermitError("auth-envelope-options-not-applicable")
     return LivePermitRequest(
         scope=request.scope,
         profile_id=profile_id,
@@ -341,6 +377,8 @@ def _validated_request(request: LivePermitRequest) -> LivePermitRequest:
         reason=request.reason.strip(),
         expires_minutes=request.expires_minutes,
         issued_by=request.issued_by,
+        auth_envelope_variant=auth_envelope_variant,
+        wcf_action_header_enabled=wcf_action_header_enabled,
     )
 
 
@@ -364,6 +402,13 @@ def _validate_document_policy(permit: LiveExecutionPermit, *, now: datetime, rep
         raise LivePermitError("permit-unneeded-credentials")
     if permit.scope not in ALLOWED_SCOPES:
         raise LivePermitError("invalid-scope")
+    if permit.scope == "auth_live_smoke":
+        if permit.auth_envelope_variant not in AUTH_ENVELOPE_VARIANTS:
+            raise LivePermitError("permit-auth-envelope-variant-required")
+        if permit.wcf_action_header_enabled is not True:
+            raise LivePermitError("permit-wcf-action-header-required")
+    elif permit.auth_envelope_variant is not None or permit.wcf_action_header_enabled is not None:
+        raise LivePermitError("permit-auth-envelope-options-not-applicable")
     if permit.redaction_required is not True:
         raise LivePermitError("permit-redaction-required")
     if permit.repo_root_hash != current_repo_identity(repo_root):
@@ -449,6 +494,22 @@ def _optional_dt(value: object) -> datetime | None:
     return _parse_dt(value)
 
 
+def _optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise LivePermitError("permit-optional-string-invalid")
+    return value
+
+
+def _optional_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise LivePermitError("permit-optional-bool-invalid")
+    return value
+
+
 def _required_str(document: Mapping[str, object], key: str) -> str:
     value = document.get(key)
     if not isinstance(value, str) or not value.strip():
@@ -475,6 +536,8 @@ def _document_key(key: str) -> str:
         "profile_id": "profileId",
         "date_from": "dateFrom",
         "date_to": "dateTo",
+        "auth_envelope_variant": "authEnvelopeVariant",
+        "wcf_action_header_enabled": "wcfActionHeaderEnabled",
     }.get(key, key)
 
 
