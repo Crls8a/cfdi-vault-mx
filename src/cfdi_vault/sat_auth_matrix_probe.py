@@ -15,10 +15,10 @@ from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 from uuid import uuid4
 
+from cfdi_vault.sat_auth_constants import AUTH_SOAP_ACTION
 from cfdi_vault.sat_auth_endpoints import RedactedEndpoint, auth_wsdl_endpoint, describe_endpoint, resolve_auth_endpoint
 from cfdi_vault.sat_auth_http import build_soap11_headers
 from cfdi_vault.sat_auth_post_probe import AUTH_POST_PROBE_BODY, AUTH_POST_PROBE_HEADERS
-from cfdi_vault.sat_live_smoke import AUTH_ACTION
 
 DEFAULT_TIMEOUT_SECONDS = 10
 EMPTY_POST_BODY = b""
@@ -88,7 +88,7 @@ def run_sat_auth_matrix_probe(
         ("GET", "service_page", resolved, None, {"User-Agent": "cfdi-vault-auth-matrix"}),
         ("GET", "single_wsdl", auth_wsdl_endpoint(resolved), None, {"User-Agent": "cfdi-vault-auth-matrix"}),
         ("POST", "dummy_envelope", resolved, AUTH_POST_PROBE_BODY, AUTH_POST_PROBE_HEADERS),
-        ("POST", "empty_body", resolved, EMPTY_POST_BODY, build_soap11_headers(AUTH_ACTION, user_agent="cfdi-vault-auth-matrix")),
+        ("POST", "empty_body", resolved, EMPTY_POST_BODY, build_soap11_headers(AUTH_SOAP_ACTION, user_agent="cfdi-vault-auth-matrix")),
     )
     results = [_python_probe(matrix_client, endpoint_info, spec, timeout_seconds=timeout_seconds, env=env) for spec in specs]
     external = _external_probe(endpoint_info, resolved, timeout_seconds=timeout_seconds, env=env) if include_external else None

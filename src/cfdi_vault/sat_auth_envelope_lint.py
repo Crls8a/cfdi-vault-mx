@@ -16,6 +16,7 @@ from signxml import XMLVerifier
 from signxml.algorithms import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 from signxml.verifier import SignatureConfiguration
 
+from cfdi_vault.sat_auth_constants import AUTH_OPERATION
 from cfdi_vault.sat_live_smoke import (
     ADDR_NS,
     DS_NS,
@@ -91,7 +92,7 @@ def lint_auth_envelope(envelope: bytes, *, now: datetime | None = None) -> AuthE
         soap_envelope=root.tag == f"{{{SOAP11_NS}}}Envelope",
         soap_header=header is not None,
         soap_body=body is not None,
-        operation_auth=body.find(f"{{{SAT_AUTH_NS}}}Autentica") is not None if body is not None else False,
+        operation_auth=body.find(f"{{{SAT_AUTH_NS}}}{AUTH_OPERATION}") is not None if body is not None else False,
         ws_security=security is not None,
         timestamp=timestamp is not None,
         timestamp_window_ok=_timestamp_window_ok(timestamp, now=now or datetime.now(timezone.utc)),

@@ -20,6 +20,7 @@ from lxml import etree
 from signxml import XMLSigner, methods
 from signxml.algorithms import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 from cfdi_vault.domain import DownloadDirection, DownloadQuery
+from cfdi_vault.sat_auth_constants import AUTH_ACCEPT, AUTH_CONTENT_TYPE, AUTH_NAMESPACE, AUTH_OPERATION, AUTH_SOAP_ACTION
 from cfdi_vault.sat_auth_endpoints import DEFAULT_AUTH_ENDPOINT, resolve_auth_endpoint
 from cfdi_vault.sat_auth_http import build_soap11_headers
 from cfdi_vault.sat_contract import SatOutcomeAction
@@ -34,14 +35,14 @@ from cfdi_vault.secrets import CredentialKind, CredentialProviderError, Credenti
 from cfdi_vault.setup_core import ExistenceProvider, LocalProfile
 SOAP11_NS = "http://schemas.xmlsoap.org/soap/envelope/"
 SAT_REQUEST_NS = "http://DescargaMasivaTerceros.sat.gob.mx"
-SAT_AUTH_NS = "http://DescargaMasivaTerceros.gob.mx"
+SAT_AUTH_NS = AUTH_NAMESPACE
 WSSE_NS = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"
 WSU_NS = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"
 ADDR_NS = "http://schemas.microsoft.com/ws/2005/05/addressing/none"
 DS_NS = "http://www.w3.org/2000/09/xmldsig#"
 X509_VALUE_TYPE = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3"
 BASE64_ENCODING_TYPE = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary"
-AUTH_ACTION = "http://DescargaMasivaTerceros.gob.mx/IAutenticacion/Autentica"
+AUTH_ACTION = AUTH_SOAP_ACTION
 REQUEST_ACTION = "http://DescargaMasivaTerceros.sat.gob.mx/ISolicitaDescargaService/SolicitaDescarga"
 VERIFY_ACTION = "http://DescargaMasivaTerceros.sat.gob.mx/IVerificaSolicitudDescargaService/VerificaSolicitudDescarga"
 DEFAULT_REQUEST_ENDPOINT = "https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/SolicitaDescargaService.svc"
@@ -462,7 +463,7 @@ def _build_auth_envelope(material: SatEfirmMaterial, endpoint: str) -> bytes:
     etree.SubElement(header, f"{{{ADDR_NS}}}Action", {f"{{{SOAP11_NS}}}mustUnderstand": "1"}).text = AUTH_ACTION
     body = envelope.find(f"{{{SOAP11_NS}}}Body")
     assert body is not None
-    etree.SubElement(body, f"{{{SAT_AUTH_NS}}}Autentica")
+    etree.SubElement(body, f"{{{SAT_AUTH_NS}}}{AUTH_OPERATION}")
     return etree.tostring(envelope, encoding="UTF-8", xml_declaration=True)
 def _sign_auth_timestamp(envelope: etree._Element, material: SatEfirmMaterial, bst_id: str) -> etree._Element:
     key_info = etree.Element(f"{{{DS_NS}}}KeyInfo")
@@ -532,8 +533,8 @@ def _assert_auth_request_ready(body: bytes | None, headers: dict[str, str]) -> A
         body is None,
         readiness.request_body_bytes_len <= 500,
         readiness.soap_action != f'"{AUTH_ACTION}"',
-        readiness.content_type != "text/xml; charset=utf-8",
-        _header_value(headers, "Accept") != "text/xml",
+        readiness.content_type != AUTH_CONTENT_TYPE,
+        _header_value(headers, "Accept") != AUTH_ACCEPT,
         _header_value(headers, "Authorization") is not None,
         not readiness.has_ws_security,
         not readiness.has_bst,
@@ -572,7 +573,7 @@ def _auth_request_readiness(body: bytes | None, headers: dict[str, str]) -> Auth
     bst = _find(security, WSSE_NS, "BinarySecurityToken")
     signature = _find(security, DS_NS, "Signature")
     body_node = _find(root, SOAP11_NS, "Body")
-    operation = _find(body_node, SAT_AUTH_NS, "Autentica")
+    operation = _find(body_node, SAT_AUTH_NS, AUTH_OPERATION)
     references = list(signature.findall(f".//{{{DS_NS}}}Reference")) if signature is not None else []
     signature_method = _algorithm(signature, "SignatureMethod")
     digest_method = _algorithm(signature, "DigestMethod")

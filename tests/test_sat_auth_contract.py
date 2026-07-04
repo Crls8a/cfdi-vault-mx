@@ -2,7 +2,48 @@ from typer.testing import CliRunner
 
 from cfdi_vault import cli as cli_module
 from cfdi_vault.cli import app
+from cfdi_vault.sat_auth_constants import (
+    AUTH_ACCEPT,
+    AUTH_BINDING_TRANSPORT,
+    AUTH_CONTENT_TYPE,
+    AUTH_ENDPOINT,
+    AUTH_ENDPOINT_PATH,
+    AUTH_NAMESPACE,
+    AUTH_OPERATION,
+    AUTH_SOAP_ACTION,
+    AUTH_SOAP_VERSION,
+)
 from cfdi_vault.sat_auth_contract import AuthWsdlContract, parse_auth_wsdl_contract
+from cfdi_vault.sat_auth_endpoints import DEFAULT_AUTH_ENDPOINT
+from cfdi_vault.sat_auth_post_probe import AUTH_POST_PROBE_BODY, AUTH_POST_PROBE_HEADERS
+from cfdi_vault.sat_live_smoke import REQUEST_ACTION, SAT_REQUEST_NS, VERIFY_ACTION
+
+
+def test_auth_contract_constants_match_sat_auth_wsdl_shape() -> None:
+    assert AUTH_ENDPOINT == "https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/Autenticacion/Autenticacion.svc"
+    assert AUTH_SOAP_VERSION == "1.1"
+    assert AUTH_CONTENT_TYPE == "text/xml; charset=utf-8"
+    assert AUTH_ACCEPT == "text/xml"
+    assert AUTH_SOAP_ACTION == "http://DescargaMasivaTerceros.gob.mx/IAutenticacion/Autentica"
+    assert AUTH_NAMESPACE == "http://DescargaMasivaTerceros.gob.mx"
+    assert AUTH_OPERATION == "Autentica"
+    assert AUTH_ENDPOINT_PATH == "/Autenticacion/Autenticacion.svc"
+    assert AUTH_BINDING_TRANSPORT == "http://schemas.xmlsoap.org/soap/http"
+    assert DEFAULT_AUTH_ENDPOINT == AUTH_ENDPOINT
+
+
+def test_auth_post_probe_uses_central_auth_contract_constants() -> None:
+    assert AUTH_NAMESPACE.encode() in AUTH_POST_PROBE_BODY
+    assert f"<des:{AUTH_OPERATION}/>".encode() in AUTH_POST_PROBE_BODY
+    assert AUTH_POST_PROBE_HEADERS["Content-Type"] == AUTH_CONTENT_TYPE
+    assert AUTH_POST_PROBE_HEADERS["Accept"] == AUTH_ACCEPT
+    assert AUTH_POST_PROBE_HEADERS["SOAPAction"] == f'"{AUTH_SOAP_ACTION}"'
+
+
+def test_auth_contract_constants_do_not_reuse_request_or_verify_contract() -> None:
+    assert AUTH_NAMESPACE != SAT_REQUEST_NS
+    assert AUTH_SOAP_ACTION not in {REQUEST_ACTION, VERIFY_ACTION}
+    assert AUTH_OPERATION not in {"SolicitaDescarga", "VerificaSolicitudDescarga", "Descargar"}
 
 
 SYNTHETIC_WSDL = b"""<?xml version="1.0"?>

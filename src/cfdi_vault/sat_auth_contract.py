@@ -8,12 +8,12 @@ from urllib.error import HTTPError
 
 from lxml import etree
 
+from cfdi_vault.sat_auth_constants import AUTH_OPERATION
 from cfdi_vault.sat_auth_endpoints import auth_wsdl_endpoint, describe_endpoint, resolve_auth_endpoint
 
 WSDL_NS = "http://schemas.xmlsoap.org/wsdl/"
 SOAP11_BINDING_NS = "http://schemas.xmlsoap.org/wsdl/soap/"
 SOAP12_BINDING_NS = "http://schemas.xmlsoap.org/wsdl/soap12/"
-AUTH_OPERATION = "Autentica"
 
 
 @dataclass(frozen=True)

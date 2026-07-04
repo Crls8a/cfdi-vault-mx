@@ -12,18 +12,18 @@ from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 from uuid import uuid4
 
+from cfdi_vault.sat_auth_constants import AUTH_NAMESPACE, AUTH_OPERATION, AUTH_SOAP_ACTION
 from cfdi_vault.sat_auth_http import build_soap11_headers
 from cfdi_vault.sat_auth_endpoints import RedactedEndpoint, describe_endpoint, resolve_auth_endpoint
-from cfdi_vault.sat_live_smoke import AUTH_ACTION
 
-AUTH_POST_PROBE_BODY = b'''<?xml version="1.0" encoding="UTF-8"?>
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:des="http://DescargaMasivaTerceros.gob.mx">
+AUTH_POST_PROBE_BODY = f'''<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:des="{AUTH_NAMESPACE}">
   <soapenv:Header/>
   <soapenv:Body>
-    <des:Autentica/>
+    <des:{AUTH_OPERATION}/>
   </soapenv:Body>
-</soapenv:Envelope>'''
-AUTH_POST_PROBE_HEADERS = build_soap11_headers(AUTH_ACTION, user_agent="cfdi-vault-auth-post-probe")
+</soapenv:Envelope>'''.encode("utf-8")
+AUTH_POST_PROBE_HEADERS = build_soap11_headers(AUTH_SOAP_ACTION, user_agent="cfdi-vault-auth-post-probe")
 
 
 @dataclass(frozen=True)

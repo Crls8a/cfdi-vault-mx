@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
+from cfdi_vault.sat_auth_constants import AUTH_ACCEPT, AUTH_CONTENT_TYPE
 from cfdi_vault.sat_auth_contract import AuthWsdlContract
 
-SOAP11_CONTENT_TYPE = "text/xml; charset=utf-8"
+SOAP11_CONTENT_TYPE = AUTH_CONTENT_TYPE
 SOAP12_CONTENT_TYPE = "application/soap+xml; charset=utf-8"
 SENSITIVE_HEADER_NAMES = frozenset({"authorization", "cookie", "proxy-authorization"})
 
@@ -40,7 +41,7 @@ def build_soap11_headers(action: str, *, user_agent: str | None = None) -> dict[
     headers = {
         "Content-Type": SOAP11_CONTENT_TYPE,
         "SOAPAction": _quote_soap_action(normalized_action),
-        "Accept": "text/xml",
+        "Accept": AUTH_ACCEPT,
     }
     if user_agent:
         headers["User-Agent"] = user_agent
