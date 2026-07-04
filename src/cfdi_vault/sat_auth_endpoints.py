@@ -7,8 +7,10 @@ from dataclasses import dataclass
 from typing import Mapping
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
+from cfdi_vault.sat_auth_constants import AUTH_ENDPOINT
+
 AUTH_ENDPOINT_ENV = "CFDI_VAULT_SAT_AUTH_ENDPOINT"
-DEFAULT_AUTH_ENDPOINT = "https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/Autenticacion/Autenticacion.svc"
+DEFAULT_AUTH_ENDPOINT = AUTH_ENDPOINT
 
 
 @dataclass(frozen=True)
