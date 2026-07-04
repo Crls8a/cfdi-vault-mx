@@ -586,6 +586,11 @@ def test_download_live_smoke_adapter_failure_prints_redacted_diagnostic(
             digest_method="http://www.w3.org/2000/09/xmldsig#sha1",
             signed_reference_count=1,
             signed_reference_targets_exist=True,
+            has_header_action=True,
+            header_action_value_ok=True,
+            header_action_must_understand=True,
+            header_action_order="action_before_security",
+            security_must_understand=True,
         )
 
     monkeypatch.setattr(cli_module, "_run_live_metadata_smoke", fail_live_smoke)
@@ -619,6 +624,11 @@ def test_download_live_smoke_adapter_failure_prints_redacted_diagnostic(
     assert lines["digest_method"] == "http://www.w3.org/2000/09/xmldsig#sha1"
     assert lines["signed_reference_count"] == "1"
     assert lines["signed_reference_targets_exist"] == "yes"
+    assert lines["has_header_action"] == "yes"
+    assert lines["header_action_value_ok"] == "yes"
+    assert lines["header_action_must_understand"] == "yes"
+    assert lines["header_action_order"] == "action_before_security"
+    assert lines["security_must_understand"] == "yes"
     assert "raw adapter detail" not in result.output
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
 
