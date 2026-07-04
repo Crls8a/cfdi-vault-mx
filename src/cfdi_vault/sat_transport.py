@@ -29,6 +29,10 @@ class SoapTransportRequest:
     client_tls_certificate: object | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.body, bytes):
+            raise ValueError("soap-body-bytes-required")
+        if not self.body:
+            raise ValueError("soap-body-required")
         if self.tls_verify is not True:
             raise ValueError("tls-verification-required")
         if self.client_tls_certificate is not None:

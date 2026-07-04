@@ -56,6 +56,18 @@ def test_fake_transport_records_requests_and_returns_synthetic_response_without_
 
 
 def test_transport_request_rejects_disabled_tls_verification_and_client_cert() -> None:
+    with pytest.raises(ValueError, match="soap-body-bytes-required"):
+        SoapTransportRequest(
+            endpoint=SAFE_ENDPOINT,
+            body="<soap/>",  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(ValueError, match="soap-body-required"):
+        SoapTransportRequest(
+            endpoint=SAFE_ENDPOINT,
+            body=b"",
+        )
+
     with pytest.raises(ValueError, match="tls-verification-required"):
         SoapTransportRequest(
             endpoint=SAFE_ENDPOINT,
@@ -202,6 +214,54 @@ def test_http_adapter_calls_injected_sender_only_when_all_guards_pass() -> None:
     assert response.status_code == 200
     assert response.body == b"SYNTHETIC_OK"
     assert calls == [_request()]
+
+
+def test_http_adapter_sends_request_body_bytes_and_headers_unchanged() -> None:
+    captured: dict[str, object] = {}
+    body = b"<signed-auth-envelope>bytes stay unchanged</signed-auth-envelope>"
+    headers = {
+        "Content-Type": "text/xml; charset=utf-8",
+        "SOAPAction": '"urn:auth-action"',
+        "Accept": "text/xml",
+    }
+
+    class Response:
+        headers = {"X-Synthetic": "ok"}
+        reason = "OK"
+
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def getcode(self) -> int:
+            return 202
+
+        def read(self) -> bytes:
+            return b"SYNTHETIC_RESPONSE"
+
+    class Opener:
+        def open(self, http_request: object, timeout: float | None = None) -> Response:
+            captured["method"] = http_request.get_method()  # type: ignore[attr-defined]
+            captured["data"] = http_request.data  # type: ignore[attr-defined]
+            captured["headers"] = {key.lower(): value for key, value in http_request.header_items()}  # type: ignore[attr-defined]
+            captured["timeout"] = timeout
+            return Response()
+
+    response = GuardedSoapHttpTransport(opener=Opener(), guard_input_factory=_passing_guard).send(
+        SoapTransportRequest(endpoint=SAFE_ENDPOINT, body=body, headers=headers, timeout_seconds=17)
+    )
+
+    assert response.status_code == 202
+    assert captured["method"] == "POST"
+    assert captured["data"] == body
+    assert captured["timeout"] == 17
+    captured_headers = captured["headers"]
+    assert isinstance(captured_headers, dict)
+    assert captured_headers["content-type"] == "text/xml; charset=utf-8"
+    assert captured_headers["soapaction"] == '"urn:auth-action"'
+    assert captured_headers["accept"] == "text/xml"
 
 
 def test_live_sat_guard_accepts_noninteractive_permit_without_credentials_for_transport_probe() -> None:
