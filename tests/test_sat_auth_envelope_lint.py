@@ -2,7 +2,14 @@ from lxml import etree
 from typer.testing import CliRunner
 
 from cfdi_vault.cli import app
-from cfdi_vault.sat_auth_envelope_lint import build_dummy_auth_envelope, lint_auth_envelope
+from cfdi_vault.sat_auth_envelope_lint import (
+    EXPECTED_C14N_METHOD,
+    EXPECTED_DIGEST_METHOD,
+    EXPECTED_SIGNATURE_METHOD,
+    EXPECTED_XMLSIG_PROFILE,
+    build_dummy_auth_envelope,
+    lint_auth_envelope,
+)
 
 
 def test_lint_auth_envelope_reports_structure_without_raw_xml() -> None:
@@ -11,6 +18,13 @@ def test_lint_auth_envelope_reports_structure_without_raw_xml() -> None:
     result = lint_auth_envelope(envelope)
 
     assert result.all_checks_passed is True
+    assert result.xmlsig_profile == EXPECTED_XMLSIG_PROFILE
+    assert result.c14n_algorithm == EXPECTED_C14N_METHOD
+    assert result.signature_algorithm == EXPECTED_SIGNATURE_METHOD
+    assert result.digest_algorithms == (EXPECTED_DIGEST_METHOD,)
+    assert result.reference_uris_redacted == ("#<id>",)
+    assert result.reference_transform_algorithms == (EXPECTED_C14N_METHOD,)
+    assert result.key_info_reference_uri_redacted == "#<id>"
     assert result.soap_envelope is True
     assert result.ws_security is True
     assert result.bst_der is True
@@ -29,6 +43,7 @@ def test_lint_auth_envelope_reports_structure_without_raw_xml() -> None:
     rendered = repr(result)
     assert "<soap" not in rendered
     assert "BEGIN CERTIFICATE" not in rendered
+    assert "SignatureValue" not in rendered
 
 
 def test_lint_auth_envelope_detects_broken_reference_without_raw_xml() -> None:
@@ -66,6 +81,8 @@ def test_lint_auth_envelope_detects_wrong_signature_methods_without_raw_xml() ->
     assert result.c14n_method is False
     assert result.signature_method is False
     assert result.digest_method is False
+    assert result.signature_algorithm == "urn:wrong-signature"
+    assert result.digest_algorithms == ("urn:wrong-digest",)
     assert result.local_signature_verify is False
 
 
@@ -95,6 +112,13 @@ def test_lint_auth_envelope_cli_prints_redacted_checks() -> None:
     assert "check_c14n_method=yes" in result.output
     assert "check_signature_method=yes" in result.output
     assert "check_digest_method=yes" in result.output
+    assert f"xmlsig_profile={EXPECTED_XMLSIG_PROFILE}" in result.output
+    assert f"c14n_algorithm={EXPECTED_C14N_METHOD}" in result.output
+    assert f"signature_algorithm={EXPECTED_SIGNATURE_METHOD}" in result.output
+    assert f"digest_algorithms={EXPECTED_DIGEST_METHOD}" in result.output
+    assert "reference_uris=#<id>" in result.output
+    assert f"reference_transform_algorithms={EXPECTED_C14N_METHOD}" in result.output
+    assert "key_info_reference_uri=#<id>" in result.output
     assert "check_local_signature_verify=yes" in result.output
     assert "raw_xml_printed=no" in result.output
     assert "certificate_printed=no" in result.output

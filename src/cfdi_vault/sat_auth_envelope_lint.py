@@ -31,12 +31,20 @@ from cfdi_vault.sat_live_smoke import (
 EXPECTED_C14N_METHOD = CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0.value
 EXPECTED_SIGNATURE_METHOD = SignatureMethod.RSA_SHA1.value
 EXPECTED_DIGEST_METHOD = DigestAlgorithm.SHA1.value
+EXPECTED_XMLSIG_PROFILE = "sat_legacy_wssecurity"
 
 
 @dataclass(frozen=True)
 class AuthEnvelopeLintResult:
     envelope_sha256: str
     envelope_size: int
+    xmlsig_profile: str
+    c14n_algorithm: str
+    signature_algorithm: str
+    digest_algorithms: tuple[str, ...]
+    reference_uris_redacted: tuple[str, ...]
+    reference_transform_algorithms: tuple[str, ...]
+    key_info_reference_uri_redacted: str
     soap_envelope: bool
     soap_header: bool
     soap_body: bool
@@ -89,6 +97,13 @@ def lint_auth_envelope(envelope: bytes, *, now: datetime | None = None) -> AuthE
     result = AuthEnvelopeLintResult(
         envelope_sha256=hashlib.sha256(envelope).hexdigest(),
         envelope_size=len(envelope),
+        xmlsig_profile=EXPECTED_XMLSIG_PROFILE,
+        c14n_algorithm=_method_algorithm(signed_info, "CanonicalizationMethod"),
+        signature_algorithm=_method_algorithm(signed_info, "SignatureMethod"),
+        digest_algorithms=tuple(_reference_method_algorithm(ref, "DigestMethod") for ref in references),
+        reference_uris_redacted=tuple(_redact_reference_uri(ref.get("URI") or "") for ref in references),
+        reference_transform_algorithms=tuple(algorithm for ref in references for algorithm in _reference_transform_algorithms(ref)),
+        key_info_reference_uri_redacted=_key_info_reference_uri_redacted(signature),
         soap_envelope=root.tag == f"{{{SOAP11_NS}}}Envelope",
         soap_header=header is not None,
         soap_body=body is not None,
@@ -188,9 +203,26 @@ def _reference_method_algorithm(reference: etree._Element, local_name: str) -> s
     return node.get("Algorithm") if node is not None else ""
 
 
+def _reference_transform_algorithms(reference: etree._Element) -> tuple[str, ...]:
+    return tuple(transform.get("Algorithm") or "" for transform in reference.findall(f".//{{{DS_NS}}}Transform"))
+
+
 def _reference_transform_ok(reference: etree._Element) -> bool:
-    transforms = reference.findall(f".//{{{DS_NS}}}Transform")
-    return bool(transforms) and all(transform.get("Algorithm") == EXPECTED_C14N_METHOD for transform in transforms)
+    transforms = _reference_transform_algorithms(reference)
+    return bool(transforms) and all(transform == EXPECTED_C14N_METHOD for transform in transforms)
+
+
+def _redact_reference_uri(uri: str) -> str:
+    if not uri:
+        return ""
+    return "#<id>" if uri.startswith("#") else "<external-redacted>"
+
+
+def _key_info_reference_uri_redacted(signature: etree._Element | None) -> str:
+    reference = signature.find(f".//{{{WSSE_NS}}}SecurityTokenReference/{{{WSSE_NS}}}Reference") if signature is not None else None
+    if reference is None:
+        return ""
+    return _redact_reference_uri(reference.get("URI") or "")
 
 
 def _reference_uri(reference: etree._Element) -> str:
