@@ -49,7 +49,9 @@ from cfdi_vault.sat_auth_endpoints import resolve_auth_endpoint
 from cfdi_vault.sat_auth_matrix_probe import SatAuthMatrixProbeResult, run_sat_auth_matrix_probe
 from cfdi_vault.sat_auth_oracle import (
     AuthEnvelopeFingerprint,
+    AuthOracleDiffResult,
     PhpCfdiOracleFingerprint,
+    diff_auth_oracle,
     fingerprint_auth_envelope,
     fingerprint_phpcfdi_oracle,
 )
@@ -219,6 +221,12 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "purpose": "Compare a redacted local auth envelope fingerprint with a phpcfdi oracle source when available.",
         "when": "Run before any further auth-smoke retry; never prints raw SOAP or credential material.",
         "example": "cfdi-vault sat oracle-auth-fingerprint --fixture dummy",
+    },
+    {
+        "command": "sat diff-auth-oracle",
+        "purpose": "Print a redacted structural diff between the local SAT auth envelope and a phpcfdi oracle source.",
+        "when": "Run offline before deciding any SAT auth-smoke retry.",
+        "example": "cfdi-vault sat diff-auth-oracle --oracle phpcfdi --fixture dummy --redacted --phpcfdi-builder-source C:\\path\\outside\\repo\\FielRequestBuilder.php",
     },
     {
         "command": "sat diagnose-live",
@@ -896,6 +904,33 @@ def sat_oracle_auth_fingerprint(
     _print_auth_oracle_fingerprint(
         fingerprint_auth_envelope(envelope),
         fingerprint_phpcfdi_oracle(phpcfdi_builder_source),
+    )
+
+
+@sat_app.command("diff-auth-oracle")
+def sat_diff_auth_oracle(
+    oracle: str = typer.Option("phpcfdi", "--oracle", help="Only phpcfdi is supported."),
+    fixture: str = typer.Option("dummy", "--fixture", help="Only dummy is supported for local offline diffing."),
+    redacted: bool = typer.Option(False, "--redacted", help="Required; confirms no raw SOAP output is requested."),
+    auth_envelope_variant: str = typer.Option(DEFAULT_AUTH_ENVELOPE_VARIANT, "--auth-envelope-variant", help="Local auth envelope variant to diff."),
+    phpcfdi_builder_source: Path | None = typer.Option(None, "--phpcfdi-builder-source", help="External path to phpcfdi FielRequestBuilder.php; never vendor it in this repo."),
+) -> None:
+    """Print a redacted local/phpcfdi auth envelope structural diff."""
+
+    if oracle != "phpcfdi" or fixture != "dummy" or not redacted:
+        typer.echo("error=auth_oracle_diff_denied", err=True)
+        typer.echo("reason=phpcfdi-dummy-redacted-required", err=True)
+        raise typer.Exit(code=1)
+    if auth_envelope_variant not in AUTH_ENVELOPE_VARIANTS:
+        typer.echo("error=auth_oracle_diff_denied", err=True)
+        typer.echo("reason=invalid-auth-envelope-variant", err=True)
+        raise typer.Exit(code=1)
+    envelope = build_dummy_auth_envelope("https://auth.example.test/Autenticacion/Autenticacion.svc", auth_envelope_variant=auth_envelope_variant)
+    _print_auth_oracle_diff(
+        diff_auth_oracle(
+            fingerprint_auth_envelope(envelope),
+            fingerprint_phpcfdi_oracle(phpcfdi_builder_source),
+        )
     )
 
 
@@ -2069,6 +2104,25 @@ def _print_auth_oracle_fingerprint(local: AuthEnvelopeFingerprint, oracle: PhpCf
         for index, step in enumerate(oracle.setup_steps, start=1):
             typer.echo(f"phpcfdi_setup_step_{index}={step}")
     for flag in ("sat_real_executed", "raw_xml_printed", "certificate_printed", "signature_value_printed", "digest_value_printed", "key_material_printed"):
+        typer.echo(f"{flag}=no")
+
+
+def _print_auth_oracle_diff(result: AuthOracleDiffResult) -> None:
+    typer.echo("mode=auth-oracle-diff")
+    typer.echo(f"oracle={result.oracle}")
+    typer.echo(f"phpcfdi_available={'yes' if result.oracle_available else 'no'}")
+    typer.echo(f"local_envelope_sha256={result.local_envelope_sha256}")
+    typer.echo(f"local_envelope_size={result.local_envelope_size}")
+    typer.echo(f"phpcfdi_source_sha256={result.oracle_source_sha256 or 'none'}")
+    typer.echo(f"likely_breaking={'yes' if result.likely_breaking else 'no'}")
+    typer.echo(f"recommended_fix={result.recommended_fix}")
+    for item in result.items:
+        typer.echo(
+            f"diff field={item.field} status={item.status} "
+            f"likely_breaking={'yes' if item.likely_breaking else 'no'} "
+            f"ours={item.ours} oracle={item.oracle} safe_hint={item.safe_hint}"
+        )
+    for flag in ("sat_real_executed", "raw_xml_printed", "raw_xml_saved", "certificate_printed", "signature_value_printed", "digest_value_printed", "key_material_printed"):
         typer.echo(f"{flag}=no")
 
 
