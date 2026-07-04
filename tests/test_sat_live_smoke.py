@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from datetime import datetime, timezone
+import hashlib
 from pathlib import Path
 import ssl
 from urllib.error import URLError
@@ -140,7 +141,7 @@ def test_auth_http_failure_reports_redacted_request_readiness(tmp_path: Path) ->
     assert diagnostic.payload_size == 0
     assert diagnostic.request_body_bytes_len == len(request.body)
     assert diagnostic.request_body_bytes_len > 500
-    assert diagnostic.envelope_sha256 is not None
+    assert diagnostic.envelope_sha256 == hashlib.sha256(request.body).hexdigest()
     assert diagnostic.soap_action == f'"{AUTH_ACTION}"'
     assert diagnostic.content_type == "text/xml; charset=utf-8"
     assert diagnostic.timestamp_window_seconds == 300
