@@ -36,9 +36,16 @@ from cfdi_vault.secrets import CredentialKind, CredentialProviderError, Credenti
 from cfdi_vault.service import ImportBatchResult, ImportRecord, SummaryRow, VaultService
 from cfdi_vault.sat_orchestration import DownloadRequestOrchestrator
 from cfdi_vault.sat_simulator import FakeSatScenario, FakeSatScenarioClient
-from cfdi_vault.sat_live_smoke import DIAGNOSTIC_STAGES, SatLiveMetadataSmokeAdapter, SatLiveSmokeError
+from cfdi_vault.sat_live_smoke import (
+    DIAGNOSTIC_STAGES,
+    SatLiveMetadataSmokeAdapter,
+    SatLiveSmokeError,
+    _build_auth_envelope,
+    load_sat_efirma_material,
+)
 from cfdi_vault.sat_auth_envelope_lint import AuthEnvelopeLintResult, build_dummy_auth_envelope, lint_auth_envelope
 from cfdi_vault.sat_auth_contract import AuthWsdlContract, fetch_auth_wsdl_contract
+from cfdi_vault.sat_auth_endpoints import resolve_auth_endpoint
 from cfdi_vault.sat_auth_matrix_probe import SatAuthMatrixProbeResult, run_sat_auth_matrix_probe
 from cfdi_vault.sat_auth_post_probe import SatAuthPostProbeResult, run_sat_auth_post_probe
 from cfdi_vault.sat_transport_probe import SatProbeResult, run_sat_transport_probe
@@ -807,9 +814,23 @@ def sat_inspect_auth_contract() -> None:
 @sat_app.command("lint-auth-envelope")
 def sat_lint_auth_envelope(
     fixture: str = typer.Option("dummy", "--fixture", help="Only dummy is supported for normal offline lint."),
+    profile: str | None = typer.Option(None, "--profile", help="Local setup profile id for redacted offline lint."),
+    redacted: bool = typer.Option(False, "--redacted", help="Required for profile-backed offline lint."),
 ) -> None:
     """Lint a SAT auth envelope offline without printing XML."""
 
+    if profile is not None:
+        if not redacted:
+            typer.echo("error=auth_envelope_lint_denied", err=True)
+            typer.echo("reason=redacted-required-for-profile", err=True)
+            raise typer.Exit(code=1)
+        try:
+            envelope = _build_profile_auth_envelope(profile)
+        except SatLiveSmokeError as exc:
+            _print_live_adapter_error(exc)
+            raise typer.Exit(code=1) from exc
+        _print_auth_envelope_lint("profile-redacted", lint_auth_envelope(envelope))
+        return
     if fixture != "dummy":
         typer.echo("error=auth_envelope_lint_denied", err=True)
         typer.echo("reason=dummy-fixture-required", err=True)
@@ -1759,6 +1780,12 @@ def _is_minimal_live_smoke_range(query: DownloadQuery) -> bool:
     return query.period is not None and query.period.start.date() == query.period.end.date()
 
 
+def _build_profile_auth_envelope(profile_id: str) -> bytes:
+    profile = _load_download_profile(profile_id)
+    material = load_sat_efirma_material(profile, _setup_provider(profile_id))
+    return _build_auth_envelope(material, resolve_auth_endpoint(os.environ))
+
+
 def _run_live_auth_smoke(profile_id: str, *, live_permit_verified: bool = False) -> LiveSmokeCliResult:
     profile = _load_download_profile(profile_id)
     adapter = SatLiveMetadataSmokeAdapter(
@@ -1866,6 +1893,7 @@ def _print_auth_envelope_lint(fixture: str, result: AuthEnvelopeLintResult) -> N
     typer.echo(f"all_checks_passed={'yes' if result.all_checks_passed else 'no'}")
     typer.echo(f"envelope_sha256={result.envelope_sha256}")
     typer.echo(f"envelope_size={result.envelope_size}")
+    typer.echo(f"request_body_bytes_len={result.envelope_size}")
     typer.echo(f"xmlsig_profile={result.xmlsig_profile}")
     typer.echo(f"c14n_algorithm={result.c14n_algorithm}")
     typer.echo(f"signature_algorithm={result.signature_algorithm}")
