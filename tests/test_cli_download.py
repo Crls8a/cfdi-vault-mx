@@ -558,6 +558,99 @@ def test_download_live_smoke_permit_replaces_interactive_prompt_once(
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
 
 
+def test_sat_metadata_request_smoke_is_request_only_and_redacted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    _write_ready_setup_profile(appdata_root)
+    _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=True, doctor_ok=True)
+    seen: dict[str, object] = {}
+
+    def fake_request_smoke(profile_id: str, query: object, *, live_permit_verified: bool = False) -> cli_module.LiveSmokeCliResult:
+        seen["profile_id"] = profile_id
+        seen["live_permit_verified"] = live_permit_verified
+        seen["direction"] = getattr(query, "direction").value
+        return cli_module.LiveSmokeCliResult(
+            result="metadata-request-submitted",
+            auth="authenticated",
+            request="accepted",
+            verification="not_run",
+            operation="SolicitaDescargaRecibidos",
+            id_solicitud_redacted="SYN-...-003",
+            request_body_bytes_len=2048,
+            envelope_sha256="a" * 64,
+            signed_reference_count=1,
+        )
+
+    monkeypatch.setattr(cli_module, "_run_live_metadata_request_smoke", fake_request_smoke)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "sat",
+            "metadata-request-smoke",
+            "--profile",
+            "dummy-profile",
+            "--from",
+            "2024-01-01",
+            "--to",
+            "2024-01-01",
+            "--direction",
+            "received",
+            "--manual-real-sat",
+        ],
+        env=_live_smoke_env(appdata_root, {}),
+        input=f"{cli_module.LIVE_SMOKE_CONFIRMATION}\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    lines = _key_value_lines(result.output)
+    assert seen == {"profile_id": "dummy-profile", "live_permit_verified": False, "direction": "received"}
+    assert lines["mode"] == "live-smoke"
+    assert lines["operation"] == "SolicitaDescargaRecibidos"
+    assert lines["id_solicitud_redacted"] == "SYN-...-003"
+    assert lines["verification"] == "not_run"
+    assert lines["package_downloaded"] == "no"
+    assert "request_id=" not in result.output
+    _assert_no_profile_secrets_or_paths(result.output, appdata_root)
+
+
+def test_live_smoke_rejects_range_shorter_than_two_seconds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    _write_ready_setup_profile(appdata_root)
+    _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=True, doctor_ok=True)
+    calls: list[str] = []
+    monkeypatch.setattr(cli_module, "_run_live_metadata_request_smoke", lambda profile_id, query, **_kwargs: calls.append(profile_id))
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "sat",
+            "metadata-request-smoke",
+            "--profile",
+            "dummy-profile",
+            "--from",
+            "2024-01-01T00:00:00",
+            "--to",
+            "2024-01-01T00:00:01",
+            "--direction",
+            "received",
+            "--manual-real-sat",
+        ],
+        env=_live_smoke_env(appdata_root, {}),
+        input=f"{cli_module.LIVE_SMOKE_CONFIRMATION}\n",
+    )
+
+    assert result.exit_code == 1
+    assert "error=live_sat_guard_denied" in result.output
+    assert "reason=range-too-wide" in result.output
+    assert calls == []
+
+
 def test_download_live_smoke_adapter_failure_prints_redacted_diagnostic(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

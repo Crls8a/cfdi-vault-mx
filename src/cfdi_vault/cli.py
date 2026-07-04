@@ -339,6 +339,11 @@ class LiveSmokeCliResult:
     auth: str = "not_run"
     request: str = "not_run"
     verification: str = "not_run"
+    operation: str = ""
+    id_solicitud_redacted: str = ""
+    request_body_bytes_len: int | None = None
+    envelope_sha256: str | None = None
+    signed_reference_count: int | None = None
 
 
 class LiveSmokeAdapterUnavailable(RuntimeError):
@@ -837,6 +842,44 @@ def sat_auth_smoke(
         _print_live_adapter_error(exc)
         raise typer.Exit(code=1) from exc
     _print_live_smoke_result(profile_id=profile, kind="auth", direction="n/a", result=result)
+
+
+@sat_app.command("metadata-request-smoke")
+def sat_metadata_request_smoke(
+    profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
+    from_date: str = typer.Option(..., "--from", help="Start date: YYYY-MM-DD."),
+    to_date: str = typer.Option(..., "--to", help="End date: YYYY-MM-DD."),
+    direction: str = typer.Option("received", "--direction", help="received or issued."),
+    manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Required human gate for real SAT request smoke."),
+    permit: str | None = typer.Option(None, "--permit", help="One-time local metadata_live_smoke permit id."),
+) -> None:
+    """Run guarded auth + SAT v1.5 metadata request only; no verify or package download."""
+
+    query, _ = _build_profile_download_query_with_profile(
+        profile_id=profile,
+        from_date=from_date,
+        to_date=to_date,
+        kind=RequestType.METADATA.value,
+        direction=direction,
+    )
+    permit_verified = _validate_live_smoke_guard(
+        profile_id=profile,
+        manual_real_sat=manual_real_sat,
+        query=query,
+        metadata_only=True,
+        range_within_limit=_is_minimal_live_smoke_range(query),
+        mode="metadata-request-smoke",
+        permit_ref=permit,
+    )
+    try:
+        result = _run_live_metadata_request_smoke(profile, query, live_permit_verified=permit_verified)
+    except LiveSmokeAdapterUnavailable as exc:
+        typer.echo("error=live_adapter_unavailable", err=True)
+        raise typer.Exit(code=1) from exc
+    except SatLiveSmokeError as exc:
+        _print_live_adapter_error(exc)
+        raise typer.Exit(code=1) from exc
+    _print_live_smoke_result(profile_id=profile, kind=query.request_type.value, direction=query.direction.value, result=result)
 
 
 @sat_app.command("inspect-auth-contract")
@@ -1877,7 +1920,10 @@ def _confirm_live_transport_probe() -> bool:
 
 
 def _is_minimal_live_smoke_range(query: DownloadQuery) -> bool:
-    return query.period is not None and query.period.start.date() == query.period.end.date()
+    if query.period is None:
+        return False
+    elapsed_seconds = (query.period.end - query.period.start).total_seconds()
+    return query.period.start.date() == query.period.end.date() and 2 <= elapsed_seconds <= 86_400
 
 
 def _build_profile_auth_envelope(profile_id: str, *, auth_envelope_variant: str = DEFAULT_AUTH_ENVELOPE_VARIANT) -> bytes:
@@ -1902,7 +1948,7 @@ def _run_live_auth_smoke(
         wcf_action_header_enabled=wcf_action_header_enabled,
     )
     result = adapter.auth_smoke()
-    return LiveSmokeCliResult(result=result.result, auth=result.auth, request=result.request, verification=result.verification)
+    return _live_smoke_cli_result(result)
 
 
 def _run_live_metadata_smoke(
@@ -1918,7 +1964,37 @@ def _run_live_metadata_smoke(
         transport=_live_smoke_transport(live_permit_verified=live_permit_verified),
     )
     result = adapter.metadata_smoke(query)
-    return LiveSmokeCliResult(result=result.result, auth=result.auth, request=result.request, verification=result.verification)
+    return _live_smoke_cli_result(result)
+
+
+def _run_live_metadata_request_smoke(
+    profile_id: str,
+    query: DownloadQuery,
+    *,
+    live_permit_verified: bool = False,
+) -> LiveSmokeCliResult:
+    profile = _load_download_profile(profile_id)
+    adapter = SatLiveMetadataSmokeAdapter(
+        profile=profile,
+        provider=_setup_provider(profile_id),
+        transport=_live_smoke_transport(live_permit_verified=live_permit_verified),
+    )
+    result = adapter.metadata_request_smoke(query)
+    return _live_smoke_cli_result(result)
+
+
+def _live_smoke_cli_result(result: object) -> LiveSmokeCliResult:
+    return LiveSmokeCliResult(
+        result=getattr(result, "result"),
+        auth=getattr(result, "auth"),
+        request=getattr(result, "request"),
+        verification=getattr(result, "verification"),
+        operation=getattr(result, "operation", ""),
+        id_solicitud_redacted=getattr(result, "id_solicitud_redacted", ""),
+        request_body_bytes_len=getattr(result, "request_body_bytes_len", None),
+        envelope_sha256=getattr(result, "envelope_sha256", None),
+        signed_reference_count=getattr(result, "signed_reference_count", None),
+    )
 
 
 def _run_live_diagnose(profile_id: str, query: DownloadQuery) -> LiveSmokeCliResult:
@@ -1973,8 +2049,19 @@ def _print_live_smoke_result(
     typer.echo(f"auth={result.auth}")
     typer.echo(f"request={result.request}")
     typer.echo(f"verification={result.verification}")
+    if result.operation:
+        typer.echo(f"operation={result.operation}")
+    if result.id_solicitud_redacted:
+        typer.echo(f"id_solicitud_redacted={result.id_solicitud_redacted}")
+    if result.request_body_bytes_len is not None:
+        typer.echo(f"request_body_bytes_len={result.request_body_bytes_len}")
+    if result.envelope_sha256 is not None:
+        typer.echo(f"envelope_sha256={result.envelope_sha256}")
+    if result.signed_reference_count is not None:
+        typer.echo(f"signed_reference_count={result.signed_reference_count}")
     typer.echo("xml_downloaded=no")
     typer.echo("zip_downloaded=no")
+    typer.echo("package_downloaded=no")
     typer.echo("recurrent_automation=no")
 
 
@@ -2307,6 +2394,7 @@ def _print_live_adapter_error(exc: SatLiveSmokeError) -> None:
         ("http_status", diagnostic.http_status),
         ("soap_fault_code", diagnostic.soap_fault_code),
         ("sat_code", diagnostic.sat_code),
+        ("operation", diagnostic.operation),
         ("payload_size", diagnostic.payload_size),
         ("envelope_sha256", diagnostic.envelope_sha256),
         ("exception_class", diagnostic.exception_class),
