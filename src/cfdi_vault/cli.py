@@ -1866,6 +1866,13 @@ def _print_auth_envelope_lint(fixture: str, result: AuthEnvelopeLintResult) -> N
     typer.echo(f"all_checks_passed={'yes' if result.all_checks_passed else 'no'}")
     typer.echo(f"envelope_sha256={result.envelope_sha256}")
     typer.echo(f"envelope_size={result.envelope_size}")
+    typer.echo(f"xmlsig_profile={result.xmlsig_profile}")
+    typer.echo(f"c14n_algorithm={result.c14n_algorithm}")
+    typer.echo(f"signature_algorithm={result.signature_algorithm}")
+    typer.echo(f"digest_algorithms={_join_lint_values(result.digest_algorithms)}")
+    typer.echo(f"reference_uris={_join_lint_values(result.reference_uris_redacted)}")
+    typer.echo(f"reference_transform_algorithms={_join_lint_values(result.reference_transform_algorithms)}")
+    typer.echo(f"key_info_reference_uri={result.key_info_reference_uri_redacted}")
     typer.echo(f"reference_count={result.reference_count}")
     typer.echo(f"bst_size={result.bst_size}")
     for name in (
@@ -1903,6 +1910,10 @@ def _print_auth_envelope_lint(fixture: str, result: AuthEnvelopeLintResult) -> N
     typer.echo("certificate_printed=no")
     typer.echo("signature_value_printed=no")
     typer.echo("key_material_printed=no")
+
+
+def _join_lint_values(values: tuple[str, ...]) -> str:
+    return ",".join(values) if values else "none"
 
 
 def _print_live_diagnose_result(
