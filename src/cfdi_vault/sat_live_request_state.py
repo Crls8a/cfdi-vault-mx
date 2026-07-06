@@ -8,13 +8,13 @@ for local follow-up verification while every printable field remains redacted.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
-from typing import Any, Mapping
+from typing import Mapping
 
 from cfdi_vault.domain import DownloadQuery
 
@@ -23,7 +23,45 @@ STATE_SCHEMA_VERSION = 1
 STATE_DIR = "state"
 STATE_FILE = "live-metadata-requests.json"
 STATE_JSON_INDENT = 2
-PENDING_VERIFY_STATUSES = frozenset({"accepted", "submitted"})
+DEFAULT_VERIFY_INITIAL_DELAY = timedelta(minutes=5)
+DEFAULT_VERIFY_MAX_AGE = timedelta(hours=72)
+
+REQUEST_ACCEPTED = "REQUEST_ACCEPTED"
+VERIFY_SCHEDULED = "VERIFY_SCHEDULED"
+VERIFY_IN_PROGRESS = "VERIFY_IN_PROGRESS"
+VERIFY_IN_PROGRESS_SAT = "VERIFY_IN_PROGRESS_SAT"
+VERIFY_FINISHED = "VERIFY_FINISHED"
+VERIFY_NO_DATA = "VERIFY_NO_DATA"
+VERIFY_REJECTED = "VERIFY_REJECTED"
+VERIFY_EXPIRED = "VERIFY_EXPIRED"
+VERIFY_FAILED_RETRYABLE = "VERIFY_FAILED_RETRYABLE"
+VERIFY_FAILED_PERMANENT = "VERIFY_FAILED_PERMANENT"
+PACKAGE_READY = "PACKAGE_READY"
+PACKAGE_DOWNLOAD_SCHEDULED = "PACKAGE_DOWNLOAD_SCHEDULED"
+PACKAGE_DOWNLOADED = "PACKAGE_DOWNLOADED"
+
+LEGACY_PENDING_VERIFY_STATUSES = frozenset({"accepted", "submitted"})
+PENDING_VERIFY_STATUSES = frozenset(
+    {
+        REQUEST_ACCEPTED,
+        VERIFY_SCHEDULED,
+        VERIFY_IN_PROGRESS_SAT,
+        VERIFY_FAILED_RETRYABLE,
+        *LEGACY_PENDING_VERIFY_STATUSES,
+    }
+)
+TERMINAL_VERIFY_STATUSES = frozenset(
+    {
+        VERIFY_FINISHED,
+        VERIFY_NO_DATA,
+        VERIFY_REJECTED,
+        VERIFY_EXPIRED,
+        VERIFY_FAILED_PERMANENT,
+        PACKAGE_READY,
+        PACKAGE_DOWNLOAD_SCHEDULED,
+        PACKAGE_DOWNLOADED,
+    }
+)
 _IDENTIFIER_RE = re.compile(r"(?i)\b[0-9a-f][0-9a-f-]{14,120}[0-9a-f]\b")
 
 
@@ -56,6 +94,21 @@ class LiveMetadataRequestRecord:
     source_command: str
     permit_id_hash: str
     status: str
+    attempt_count: int = 0
+    next_check_at: str = ""
+    last_checked_at: str = ""
+    last_error_kind: str = ""
+    last_http_status: int | None = None
+    sat_estado_solicitud: str = ""
+    sat_codigo_estado: str = ""
+    numero_cfdis: int = 0
+    package_refs_redacted: tuple[str, ...] = ()
+    updated_at: str = ""
+    expires_at: str = ""
+
+    @property
+    def terminal_state(self) -> bool:
+        return self.status in TERMINAL_VERIFY_STATUSES
 
     def to_document(self) -> dict[str, object]:
         return {
@@ -76,10 +129,28 @@ class LiveMetadataRequestRecord:
             "sourceCommand": self.source_command,
             "permitIdHash": self.permit_id_hash,
             "status": self.status,
+            "attemptCount": self.attempt_count,
+            "nextCheckAt": self.next_check_at,
+            "lastCheckedAt": self.last_checked_at,
+            "lastErrorKind": self.last_error_kind,
+            "lastHttpStatus": self.last_http_status,
+            "satEstadoSolicitud": self.sat_estado_solicitud,
+            "satCodigoEstado": self.sat_codigo_estado,
+            "numeroCfdis": self.numero_cfdis,
+            "packageRefsRedacted": list(self.package_refs_redacted),
+            "updatedAt": self.updated_at,
+            "expiresAt": self.expires_at,
         }
 
     @classmethod
     def from_document(cls, document: Mapping[str, object]) -> "LiveMetadataRequestRecord":
+        created_at = _required_str(document, "createdAt")
+        status = _normalize_status(_required_str(document, "status"))
+        updated_at = _optional_str(document, "updatedAt") or created_at
+        expires_at = _optional_str(document, "expiresAt") or _format_dt(_parse_dt(created_at) + DEFAULT_VERIFY_MAX_AGE)
+        next_check_at = _optional_str(document, "nextCheckAt")
+        if not next_check_at and status in PENDING_VERIFY_STATUSES:
+            next_check_at = _format_dt(_parse_dt(created_at) + DEFAULT_VERIFY_INITIAL_DELAY)
         return cls(
             request_ref=_required_str(document, "requestRef"),
             profile_id=_required_str(document, "profileId"),
@@ -93,12 +164,35 @@ class LiveMetadataRequestRecord:
             id_solicitud_redacted=_required_str(document, "idSolicitudRedacted"),
             sat_code=_required_str(document, "satCode"),
             sat_message=_required_str(document, "satMessage"),
-            created_at=_required_str(document, "createdAt"),
+            created_at=created_at,
             live=_required_bool(document, "live"),
             source_command=_required_str(document, "sourceCommand"),
             permit_id_hash=_required_str(document, "permitIdHash"),
-            status=_required_str(document, "status"),
+            status=status,
+            attempt_count=_optional_int(document, "attemptCount", default=0),
+            next_check_at=next_check_at,
+            last_checked_at=_optional_str(document, "lastCheckedAt"),
+            last_error_kind=_optional_str(document, "lastErrorKind"),
+            last_http_status=_optional_int_or_none(document, "lastHttpStatus"),
+            sat_estado_solicitud=_optional_str(document, "satEstadoSolicitud"),
+            sat_codigo_estado=_optional_str(document, "satCodigoEstado"),
+            numero_cfdis=_optional_int(document, "numeroCfdis", default=0),
+            package_refs_redacted=_optional_str_tuple(document, "packageRefsRedacted"),
+            updated_at=updated_at,
+            expires_at=expires_at,
         )
+
+
+@dataclass(frozen=True)
+class LiveMetadataRequestSummary:
+    """Safe aggregate status for the local async verify scheduler."""
+
+    pending_verify_count: int
+    due_verify_count: int
+    next_due_verification: str
+    finished_requests: int
+    failed_requests: int
+    package_ready_count: int
 
 
 def live_metadata_state_path(storage_root: str | Path) -> Path:
@@ -118,11 +212,12 @@ def persist_live_metadata_request(
     sat_message: str,
     source_command: str,
     permit_ref: str | None,
-    status: str = "accepted",
+    status: str = VERIFY_SCHEDULED,
     now: datetime | None = None,
 ) -> LiveMetadataRequestRecord:
     """Persist one accepted live metadata request without raw SOAP or tokens."""
 
+    created = now or datetime.now(timezone.utc)
     request_id = str(id_solicitud).strip()
     if not request_id:
         raise LiveRequestStateError("id-solicitud-required")
@@ -140,12 +235,23 @@ def persist_live_metadata_request(
         id_solicitud_redacted=redact_identifier(request_id),
         sat_code=str(sat_code or ""),
         sat_message=_safe_message(sat_message),
-        created_at=_format_dt(now or datetime.now(timezone.utc)),
+        created_at=_format_dt(created),
         live=True,
         source_command=source_command,
         permit_id_hash=_hash_optional(permit_ref),
-        status=status,
+        status=_normalize_status(status),
+        attempt_count=0,
+        next_check_at=_format_dt(created + DEFAULT_VERIFY_INITIAL_DELAY),
+        updated_at=_format_dt(created),
+        expires_at=_format_dt(created + DEFAULT_VERIFY_MAX_AGE),
     )
+    upsert_live_metadata_request(storage_root=storage_root, record=record)
+    return record
+
+
+def upsert_live_metadata_request(*, storage_root: str | Path, record: LiveMetadataRequestRecord) -> None:
+    """Persist one record update by safe request reference."""
+
     path = live_metadata_state_path(storage_root)
     document = _read_state(path)
     records = [LiveMetadataRequestRecord.from_document(item) for item in document["requests"] if isinstance(item, Mapping)]
@@ -153,7 +259,6 @@ def persist_live_metadata_request(
     records.append(record)
     records.sort(key=lambda item: item.created_at, reverse=True)
     _write_state(path, records)
-    return record
 
 
 def list_live_metadata_requests(
@@ -185,6 +290,30 @@ def load_live_metadata_request(storage_root: str | Path, request_ref: str) -> Li
     raise LiveRequestStateError("request-state-not-found")
 
 
+def summarize_live_metadata_requests(
+    records: tuple[LiveMetadataRequestRecord, ...],
+    *,
+    now: datetime | None = None,
+) -> LiveMetadataRequestSummary:
+    """Return redacted scheduler counts for CLI status output."""
+
+    current = now or datetime.now(timezone.utc)
+    pending = tuple(record for record in records if record.status in PENDING_VERIFY_STATUSES)
+    due = tuple(record for record in pending if _is_due(record, current))
+    scheduled = sorted((record.next_check_at for record in pending if record.next_check_at), key=str)
+    failed = tuple(record for record in records if record.status in {VERIFY_FAILED_PERMANENT, VERIFY_REJECTED, VERIFY_EXPIRED})
+    finished = tuple(record for record in records if record.status in {VERIFY_FINISHED, PACKAGE_READY})
+    package_ready = tuple(record for record in records if record.status == PACKAGE_READY)
+    return LiveMetadataRequestSummary(
+        pending_verify_count=len(pending),
+        due_verify_count=len(due),
+        next_due_verification=scheduled[0] if scheduled else "",
+        finished_requests=len(finished),
+        failed_requests=len(failed),
+        package_ready_count=len(package_ready),
+    )
+
+
 def redact_identifier(value: str) -> str:
     """Return a safe short identifier fingerprint for CLI/log output."""
 
@@ -194,6 +323,33 @@ def redact_identifier(value: str) -> str:
     if len(text) <= 8:
         return "<redacted>"
     return f"{text[:4]}...{text[-4:]}"
+
+
+def redact_package_ref(value: str) -> str:
+    """Return a stable non-reversible package reference for status output."""
+
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return f"pkg-{hashlib.sha256(text.encode('utf-8')).hexdigest()[:12]}"
+
+
+def parse_state_datetime(value: str) -> datetime:
+    """Parse a state timestamp and normalize it to aware UTC."""
+
+    return _parse_dt(value)
+
+
+def format_state_datetime(value: datetime) -> str:
+    """Format a timestamp for local state JSON."""
+
+    return _format_dt(value)
+
+
+def _is_due(record: LiveMetadataRequestRecord, now: datetime) -> bool:
+    if not record.next_check_at:
+        return False
+    return _parse_dt(record.next_check_at) <= _normalize_dt(now)
 
 
 def _request_ref(*, profile_id: str, criteria_hash: str, id_solicitud: str) -> str:
@@ -254,8 +410,29 @@ def _write_state(path: Path, records: list[LiveMetadataRequestRecord]) -> None:
 
 
 def _format_dt(value: datetime) -> str:
+    return _normalize_dt(value).isoformat().replace("+00:00", "Z")
+
+
+def _parse_dt(value: str) -> datetime:
+    if not value:
+        raise LiveRequestStateError("request-state-invalid")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise LiveRequestStateError("request-state-invalid") from exc
+    return _normalize_dt(parsed)
+
+
+def _normalize_dt(value: datetime) -> datetime:
     normalized = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-    return normalized.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return normalized.astimezone(timezone.utc)
+
+
+def _normalize_status(value: str) -> str:
+    status = str(value or "").strip()
+    if status.lower() in LEGACY_PENDING_VERIFY_STATUSES or status == REQUEST_ACCEPTED:
+        return VERIFY_SCHEDULED
+    return status or VERIFY_SCHEDULED
 
 
 def _required_str(document: Mapping[str, object], key: str) -> str:
@@ -270,3 +447,39 @@ def _required_bool(document: Mapping[str, object], key: str) -> bool:
     if not isinstance(value, bool):
         raise LiveRequestStateError("request-state-invalid")
     return value
+
+
+def _optional_str(document: Mapping[str, object], key: str) -> str:
+    value = document.get(key)
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise LiveRequestStateError("request-state-invalid")
+    return value
+
+
+def _optional_int(document: Mapping[str, object], key: str, *, default: int) -> int:
+    value = document.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, int):
+        raise LiveRequestStateError("request-state-invalid")
+    return value
+
+
+def _optional_int_or_none(document: Mapping[str, object], key: str) -> int | None:
+    value = document.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, int):
+        raise LiveRequestStateError("request-state-invalid")
+    return value
+
+
+def _optional_str_tuple(document: Mapping[str, object], key: str) -> tuple[str, ...]:
+    value = document.get(key)
+    if value is None:
+        return ()
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise LiveRequestStateError("request-state-invalid")
+    return tuple(value)
