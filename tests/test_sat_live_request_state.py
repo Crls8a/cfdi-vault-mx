@@ -12,6 +12,7 @@ from cfdi_vault.sat_live_request_state import (
     list_live_metadata_requests,
     live_metadata_state_path,
     load_live_metadata_request,
+    VERIFY_SCHEDULED,
     persist_live_metadata_request,
 )
 
@@ -35,7 +36,10 @@ def test_persist_live_metadata_request_stores_full_id_locally_and_redacted_ref(t
 
     stored = json.loads(raw)["requests"][0]
     assert stored["live"] is True
-    assert stored["status"] == "accepted"
+    assert stored["status"] == VERIFY_SCHEDULED
+    assert stored["attemptCount"] == 0
+    assert stored["nextCheckAt"] == "2026-07-06T00:05:00Z"
+    assert stored["expiresAt"] == "2026-07-09T00:00:00Z"
     assert stored["sourceCommand"] == "sat metadata-request-smoke"
     assert {
         "profileId",
