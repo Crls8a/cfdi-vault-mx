@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -705,6 +705,119 @@ def test_sat_metadata_request_state_lists_pending_refs_redacted(
     assert record.request_ref in result.output
     assert "648a...7b27" in result.output
     assert "648a0000-1111-2222-3333-444444447b27" not in result.output
+    _assert_no_profile_secrets_or_paths(result.output, appdata_root)
+
+
+def test_sat_verify_due_dry_run_lists_due_refs_without_verifying(
+    tmp_path: Path,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    paths = _write_ready_setup_profile(appdata_root)
+    record = persist_live_metadata_request(
+        storage_root=paths.storage_root,
+        profile_id="dummy-profile",
+        query=_metadata_query(),
+        operation="SolicitaDescargaRecibidos",
+        id_solicitud="SYNTHETIC-SCHEDULER-REQUEST-0001",
+        sat_code="5000",
+        sat_message="Accepted",
+        source_command="sat metadata-request-smoke",
+        permit_ref=None,
+        now=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["sat", "verify-due", "--profile", "dummy-profile", "--dry-run"],
+        env={"LOCALAPPDATA": str(appdata_root)},
+    )
+
+    assert result.exit_code == 0, result.output
+    lines = _key_value_lines(result.output)
+    assert lines["mode"] == "verify-due"
+    assert lines["dry_run"] == "true"
+    assert lines["due_count"] == "1"
+    assert lines["processed_count"] == "0"
+    assert lines["sat_real_execution"] == "no"
+    assert lines["package_downloaded"] == "no"
+    assert record.request_ref in result.output
+    stored = list_live_metadata_requests(paths.storage_root)[0]
+    assert stored.attempt_count == 0
+    assert "SYNTHETIC-SCHEDULER-REQUEST-0001" not in result.output
+    _assert_no_profile_secrets_or_paths(result.output, appdata_root)
+
+
+def test_sat_verify_due_one_shot_updates_next_check_and_exits(
+    tmp_path: Path,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    paths = _write_ready_setup_profile(appdata_root)
+    persist_live_metadata_request(
+        storage_root=paths.storage_root,
+        profile_id="dummy-profile",
+        query=_metadata_query(),
+        operation="SolicitaDescargaRecibidos",
+        id_solicitud="SYNTHETIC-SCHEDULER-REQUEST-0001",
+        sat_code="5000",
+        sat_message="Accepted",
+        source_command="sat metadata-request-smoke",
+        permit_ref=None,
+        now=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["sat", "verify-due", "--profile", "dummy-profile", "--limit", "1"],
+        env={"LOCALAPPDATA": str(appdata_root)},
+    )
+
+    assert result.exit_code == 0, result.output
+    lines = _key_value_lines(result.output)
+    assert lines["dry_run"] == "false"
+    assert lines["processed_count"] == "1"
+    assert lines["package_downloaded"] == "no"
+    assert lines["sleep_used"] == "no"
+    assert lines["loop_used"] == "no"
+    stored = list_live_metadata_requests(paths.storage_root)[0]
+    assert stored.status == "VERIFY_IN_PROGRESS_SAT"
+    assert stored.attempt_count == 1
+    assert stored.next_check_at
+    assert "SYNTHETIC-SCHEDULER-REQUEST-0001" not in result.output
+    _assert_no_profile_secrets_or_paths(result.output, appdata_root)
+
+
+def test_download_status_without_job_id_prints_scheduler_aggregates(
+    tmp_path: Path,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    paths = _write_ready_setup_profile(appdata_root)
+    persist_live_metadata_request(
+        storage_root=paths.storage_root,
+        profile_id="dummy-profile",
+        query=_metadata_query(),
+        operation="SolicitaDescargaRecibidos",
+        id_solicitud="SYNTHETIC-SCHEDULER-REQUEST-0001",
+        sat_code="5000",
+        sat_message="Accepted",
+        source_command="sat metadata-request-smoke",
+        permit_ref=None,
+        now=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["download", "status", "--profile", "dummy-profile"],
+        env={"LOCALAPPDATA": str(appdata_root)},
+    )
+
+    assert result.exit_code == 0, result.output
+    lines = _key_value_lines(result.output)
+    assert lines["mode"] == "metadata-verify-scheduler"
+    assert lines["pending_verify_count"] == "1"
+    assert lines["due_verify_count"] == "1"
+    assert lines["package_ready_count"] == "0"
+    assert lines["redacted"] == "true"
+    assert "SYNTHETIC-SCHEDULER-REQUEST-0001" not in result.output
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
 
 
