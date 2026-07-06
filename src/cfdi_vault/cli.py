@@ -43,6 +43,10 @@ from cfdi_vault.sat_live_smoke import (
     _build_auth_envelope,
     load_sat_efirma_material,
 )
+from cfdi_vault.sat_live_request_state import (
+    LiveRequestStateError,
+    persist_live_metadata_request,
+)
 from cfdi_vault.sat_auth_envelope_lint import AuthEnvelopeLintResult, build_dummy_auth_envelope, lint_auth_envelope
 from cfdi_vault.sat_auth_contract import AuthWsdlContract, fetch_auth_wsdl_contract
 from cfdi_vault.sat_auth_endpoints import resolve_auth_endpoint
@@ -340,6 +344,7 @@ class LiveSmokeCliResult:
     request: str = "not_run"
     verification: str = "not_run"
     operation: str = ""
+    request_ref: str = ""
     id_solicitud_redacted: str = ""
     request_body_bytes_len: int | None = None
     envelope_sha256: str | None = None
@@ -872,7 +877,11 @@ def sat_metadata_request_smoke(
         permit_ref=permit,
     )
     try:
-        result = _run_live_metadata_request_smoke(profile, query, live_permit_verified=permit_verified)
+        result = _run_live_metadata_request_smoke(profile, query, live_permit_verified=permit_verified, permit_ref=permit)
+    except LiveRequestStateError as exc:
+        typer.echo("error=request_state_persist_failed", err=True)
+        typer.echo(f"reason={exc.reason}", err=True)
+        raise typer.Exit(code=1) from exc
     except LiveSmokeAdapterUnavailable as exc:
         typer.echo("error=live_adapter_unavailable", err=True)
         raise typer.Exit(code=1) from exc
@@ -1972,6 +1981,7 @@ def _run_live_metadata_request_smoke(
     query: DownloadQuery,
     *,
     live_permit_verified: bool = False,
+    permit_ref: str | None = None,
 ) -> LiveSmokeCliResult:
     profile = _load_download_profile(profile_id)
     adapter = SatLiveMetadataSmokeAdapter(
@@ -1980,16 +1990,32 @@ def _run_live_metadata_request_smoke(
         transport=_live_smoke_transport(live_permit_verified=live_permit_verified),
     )
     result = adapter.metadata_request_smoke(query)
-    return _live_smoke_cli_result(result)
+    request_ref = ""
+    if getattr(result, "request", "") == "accepted" and getattr(result, "id_solicitud", ""):
+        stored = persist_live_metadata_request(
+            storage_root=profile.storage_root,
+            profile_id=profile_id,
+            query=query,
+            operation=getattr(result, "operation", ""),
+            id_solicitud=getattr(result, "id_solicitud"),
+            sat_code=getattr(result, "sat_code", ""),
+            sat_message=getattr(result, "sat_message", ""),
+            source_command="sat metadata-request-smoke",
+            permit_ref=permit_ref,
+            status="accepted",
+        )
+        request_ref = stored.request_ref
+    return _live_smoke_cli_result(result, request_ref=request_ref)
 
 
-def _live_smoke_cli_result(result: object) -> LiveSmokeCliResult:
+def _live_smoke_cli_result(result: object, *, request_ref: str = "") -> LiveSmokeCliResult:
     return LiveSmokeCliResult(
         result=getattr(result, "result"),
         auth=getattr(result, "auth"),
         request=getattr(result, "request"),
         verification=getattr(result, "verification"),
         operation=getattr(result, "operation", ""),
+        request_ref=request_ref,
         id_solicitud_redacted=getattr(result, "id_solicitud_redacted", ""),
         request_body_bytes_len=getattr(result, "request_body_bytes_len", None),
         envelope_sha256=getattr(result, "envelope_sha256", None),
@@ -2051,6 +2077,8 @@ def _print_live_smoke_result(
     typer.echo(f"verification={result.verification}")
     if result.operation:
         typer.echo(f"operation={result.operation}")
+    if result.request_ref:
+        typer.echo(f"request_ref={result.request_ref}")
     if result.id_solicitud_redacted:
         typer.echo(f"id_solicitud_redacted={result.id_solicitud_redacted}")
     if result.request_body_bytes_len is not None:

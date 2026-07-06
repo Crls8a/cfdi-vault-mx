@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
@@ -10,6 +12,7 @@ from cfdi_vault import cli as cli_module
 from cfdi_vault import setup as setup_flow
 from cfdi_vault.cli import app
 from cfdi_vault.live_permit import LivePermitRequest, create_live_execution_permit
+from cfdi_vault.sat_live_request_state import list_live_metadata_requests
 from cfdi_vault.sat_auth_constants import (
     AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
     AUTH_ENVELOPE_VARIANT_SECURITY_ONLY,
@@ -567,9 +570,16 @@ def test_sat_metadata_request_smoke_is_request_only_and_redacted(
     _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=True, doctor_ok=True)
     seen: dict[str, object] = {}
 
-    def fake_request_smoke(profile_id: str, query: object, *, live_permit_verified: bool = False) -> cli_module.LiveSmokeCliResult:
+    def fake_request_smoke(
+        profile_id: str,
+        query: object,
+        *,
+        live_permit_verified: bool = False,
+        permit_ref: str | None = None,
+    ) -> cli_module.LiveSmokeCliResult:
         seen["profile_id"] = profile_id
         seen["live_permit_verified"] = live_permit_verified
+        seen["permit_ref"] = permit_ref
         seen["direction"] = getattr(query, "direction").value
         return cli_module.LiveSmokeCliResult(
             result="metadata-request-submitted",
@@ -606,7 +616,7 @@ def test_sat_metadata_request_smoke_is_request_only_and_redacted(
 
     assert result.exit_code == 0, result.output
     lines = _key_value_lines(result.output)
-    assert seen == {"profile_id": "dummy-profile", "live_permit_verified": False, "direction": "received"}
+    assert seen == {"profile_id": "dummy-profile", "live_permit_verified": False, "permit_ref": None, "direction": "received"}
     assert lines["mode"] == "live-smoke"
     assert lines["operation"] == "SolicitaDescargaRecibidos"
     assert lines["id_solicitud_redacted"] == "SYN-...-003"
@@ -614,6 +624,51 @@ def test_sat_metadata_request_smoke_is_request_only_and_redacted(
     assert lines["package_downloaded"] == "no"
     assert "request_id=" not in result.output
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
+
+
+def test_live_metadata_request_smoke_persists_accepted_id_without_printing_full_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    paths = _write_ready_setup_profile(appdata_root)
+    full_request_id = "648a0000-1111-2222-3333-444444447b27"
+
+    class FakeAdapter:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def metadata_request_smoke(self, _query: object) -> SimpleNamespace:
+            return SimpleNamespace(
+                result="metadata-request-submitted",
+                auth="authenticated",
+                request="accepted",
+                verification="not_run",
+                operation="SolicitaDescargaRecibidos",
+                id_solicitud=full_request_id,
+                id_solicitud_redacted="648a...7b27",
+                sat_code="5000",
+                sat_message="Accepted",
+            )
+
+    monkeypatch.setenv("LOCALAPPDATA", str(appdata_root))
+    monkeypatch.setattr(cli_module, "SatLiveMetadataSmokeAdapter", FakeAdapter)
+
+    result = cli_module._run_live_metadata_request_smoke(
+        "dummy-profile",
+        _metadata_query(),
+        live_permit_verified=False,
+        permit_ref="permit-local-id",
+    )
+
+    records = list_live_metadata_requests(paths.storage_root)
+    assert len(records) == 1
+    assert records[0].id_solicitud == full_request_id
+    assert records[0].id_solicitud_redacted == "648a...7b27"
+    assert records[0].permit_id_hash
+    assert result.request_ref == records[0].request_ref
+    assert result.id_solicitud_redacted == "648a...7b27"
+    assert full_request_id not in repr(result)
 
 
 def test_live_smoke_rejects_range_shorter_than_two_seconds(
@@ -1051,6 +1106,19 @@ def _live_smoke_env(appdata_root: Path, overrides: dict[str, str | None]) -> dic
 
 def _dummy_phrase_ref(profile_id: str) -> str:
     return f"local-dev-dummy://cfdi-vault/setup/{profile_id}/private-key-phrase"
+
+
+def _metadata_query() -> cli_module.DownloadQuery:
+    return cli_module.DownloadQuery(
+        "dummy-profile",
+        "XAXX010101000",
+        cli_module.DownloadDirection.RECEIVED,
+        cli_module.RequestType.METADATA,
+        cli_module.DateTimePeriod(
+            datetime(2024, 1, 1, tzinfo=timezone.utc),
+            datetime(2024, 1, 1, 0, 0, 2, tzinfo=timezone.utc),
+        ),
+    )
 
 
 def _key_value_lines(output: str) -> dict[str, str]:
