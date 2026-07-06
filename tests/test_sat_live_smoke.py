@@ -82,6 +82,8 @@ def test_metadata_request_smoke_does_not_verify_or_download(tmp_path: Path) -> N
     assert (result.result, result.request, result.verification) == ("metadata-request-submitted", "accepted", "not_run")
     assert result.operation == "SolicitaDescargaRecibidos"
     assert result.id_solicitud_redacted == "SYN-...-002"
+    assert result.id_solicitud == "SYN-REQ-002"
+    assert "SYN-REQ-002" not in repr(result)
     assert len(transport.requests) == 2
 
 

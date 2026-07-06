@@ -9,7 +9,7 @@ import os
 import socket
 import ssl
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from urllib.error import HTTPError, URLError
@@ -261,7 +261,10 @@ class SatLiveSmokeSummary:
     request: str = "not_run"
     verification: str = "not_run"
     operation: str = ""
+    id_solicitud: str = field(default="", repr=False)
     id_solicitud_redacted: str = ""
+    sat_code: str = ""
+    sat_message: str = ""
     request_body_bytes_len: int | None = None
     envelope_sha256: str | None = None
     signed_reference_count: int | None = None
@@ -274,7 +277,10 @@ def _request_summary(result: str, attempt: SatLiveRequestAttempt) -> SatLiveSmok
         auth="authenticated",
         request=attempt.result.action.value,
         operation=attempt.operation.value,
+        id_solicitud=attempt.result.request_id,
         id_solicitud_redacted=_redact_identifier(attempt.result.request_id),
+        sat_code=attempt.result.sat_code,
+        sat_message=attempt.result.message,
         request_body_bytes_len=attempt.request_body_bytes_len,
         envelope_sha256=attempt.envelope_sha256,
         signed_reference_count=attempt.signed_reference_count,
