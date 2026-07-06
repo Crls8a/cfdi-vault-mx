@@ -1,3 +1,5 @@
+from urllib.parse import urlparse
+
 from typer.testing import CliRunner
 
 from cfdi_vault import cli as cli_module
@@ -16,7 +18,17 @@ from cfdi_vault.sat_auth_constants import (
 from cfdi_vault.sat_auth_contract import AuthWsdlContract, parse_auth_wsdl_contract
 from cfdi_vault.sat_auth_endpoints import DEFAULT_AUTH_ENDPOINT
 from cfdi_vault.sat_auth_post_probe import AUTH_POST_PROBE_BODY, AUTH_POST_PROBE_HEADERS
-from cfdi_vault.sat_live_smoke import SAT_REQUEST_NS, VERIFY_ACTION, SatV15RequestOperation, v15_request_soap_action
+
+from cfdi_vault.sat_live_smoke import (
+    DEFAULT_REQUEST_ENDPOINT,
+    DEFAULT_VERIFY_ENDPOINT,
+    SAT_REQUEST_NS,
+    VERIFY_ACTION,
+    SatLiveSmokeEndpoints,
+    SatV15RequestOperation,
+    v15_request_soap_action,
+)
+from cfdi_vault.sat_transport_probe import DEFAULT_PROBE_ENDPOINTS
 
 
 def test_auth_contract_constants_match_sat_auth_wsdl_shape() -> None:
@@ -45,6 +57,35 @@ def test_auth_contract_constants_do_not_reuse_request_or_verify_contract() -> No
     request_actions = {v15_request_soap_action(operation) for operation in SatV15RequestOperation}
     assert AUTH_SOAP_ACTION not in request_actions | {VERIFY_ACTION}
     assert AUTH_OPERATION not in {"SolicitaDescarga", "VerificaSolicitudDescarga", "Descargar"}
+
+
+def test_verify_endpoint_uses_canonical_wcf_url_and_soap_action() -> None:
+    parsed = urlparse(DEFAULT_VERIFY_ENDPOINT)
+
+    assert DEFAULT_VERIFY_ENDPOINT == "https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/VerificaSolicitudDescargaService.svc"
+    assert parsed.scheme == "https"
+    assert parsed.hostname == "cfdidescargamasivasolicitud.clouda.sat.gob.mx"
+    assert parsed.path == "/VerificaSolicitudDescargaService.svc"
+    assert parsed.query == ""
+    assert "DescargaMasivaTerceros.sat.gob.mx" not in DEFAULT_VERIFY_ENDPOINT
+    assert "IVerificaSolicitudDescargaService" not in DEFAULT_VERIFY_ENDPOINT
+    assert VERIFY_ACTION == "http://DescargaMasivaTerceros.sat.gob.mx/IVerificaSolicitudDescargaService/VerificaSolicitudDescarga"
+
+
+def test_live_endpoints_keep_auth_request_and_verify_urls_separate() -> None:
+    defaults = SatLiveSmokeEndpoints()
+
+    assert defaults.auth == DEFAULT_AUTH_ENDPOINT
+    assert defaults.request == DEFAULT_REQUEST_ENDPOINT
+    assert defaults.verify == DEFAULT_VERIFY_ENDPOINT
+    assert len({defaults.auth, defaults.request, defaults.verify}) == 3
+
+
+def test_transport_probe_reuses_canonical_verify_endpoint() -> None:
+    probe_endpoints = dict(DEFAULT_PROBE_ENDPOINTS)
+
+    assert probe_endpoints["metadata_request"] == DEFAULT_REQUEST_ENDPOINT
+    assert probe_endpoints["verify"] == DEFAULT_VERIFY_ENDPOINT
 
 
 SYNTHETIC_WSDL = b"""<?xml version="1.0"?>
