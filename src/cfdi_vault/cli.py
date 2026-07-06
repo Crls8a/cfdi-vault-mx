@@ -34,6 +34,7 @@ from cfdi_vault.recovery_service import (
 )
 from cfdi_vault.secrets import CredentialKind, CredentialProviderError, CredentialReference, DummySecretProvider
 from cfdi_vault.service import ImportBatchResult, ImportRecord, SummaryRow, VaultService
+from cfdi_vault.sat_async_verify import VerifyBackoffPolicy, VerifyDueReport, run_verify_due
 from cfdi_vault.sat_orchestration import DownloadRequestOrchestrator
 from cfdi_vault.sat_simulator import FakeSatScenario, FakeSatScenarioClient
 from cfdi_vault.sat_live_smoke import (
@@ -45,10 +46,12 @@ from cfdi_vault.sat_live_smoke import (
 )
 from cfdi_vault.sat_live_request_state import (
     LiveMetadataRequestRecord,
+    LiveMetadataRequestSummary,
     LiveRequestStateError,
     list_live_metadata_requests,
     load_live_metadata_request,
     persist_live_metadata_request,
+    summarize_live_metadata_requests,
 )
 from cfdi_vault.sat_auth_envelope_lint import AuthEnvelopeLintResult, build_dummy_auth_envelope, lint_auth_envelope
 from cfdi_vault.sat_auth_contract import AuthWsdlContract, fetch_auth_wsdl_contract
@@ -197,9 +200,9 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
     },
     {
         "command": "download status",
-        "purpose": "Read safe persisted fake/offline download status aggregates by job id.",
-        "when": "Run after download sync when you need durable local readback without printing storage paths or package details.",
-        "example": "cfdi-vault download status --profile default --job-id <job-id>",
+        "purpose": "Read safe fake/offline download status by job id or async verify scheduler aggregates without one.",
+        "when": "Run after download sync with --job-id, or without --job-id to inspect pending verify work.",
+        "example": "cfdi-vault download status --profile default",
     },
     {
         "command": "download live-smoke",
@@ -218,6 +221,12 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "purpose": "List locally persisted live metadata requests pending verify using redacted request refs.",
         "when": "Run after a request-only smoke to recover the safe request-ref without printing IdSolicitud.",
         "example": "cfdi-vault sat metadata-request-state --profile default",
+    },
+    {
+        "command": "sat verify-due",
+        "purpose": "Run one non-live async verify scheduler attempt for due persisted metadata requests.",
+        "when": "Run manually or from Task Scheduler; it verifies once, updates next_check_at, and exits.",
+        "example": "cfdi-vault sat verify-due --profile default --limit 1",
     },
     {
         "command": "sat metadata-verify-smoke",
@@ -925,6 +934,34 @@ def sat_metadata_request_state(
     _print_live_metadata_request_state(profile_id=profile, records=records)
 
 
+
+
+@sat_app.command("verify-due")
+def sat_verify_due(
+    profile: str = typer.Option("default", "--profile", help="Local setup profile id."),
+    limit: int = typer.Option(1, "--limit", min=1, max=50, help="Maximum due requests to verify once."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="List due verifications without calling the verifier."),
+) -> None:
+    """Verify due SAT metadata requests once using the non-live fake verifier."""
+
+    local_profile = _load_download_profile(profile)
+    verifier = FakeSatScenarioClient(FakeSatScenario.VERIFY_IN_PROCESS)
+    try:
+        report = run_verify_due(
+            storage_root=local_profile.storage_root,
+            profile_id=profile,
+            verifier=verifier,
+            limit=limit,
+            dry_run=dry_run,
+            policy=VerifyBackoffPolicy(),
+        )
+    except LiveRequestStateError as exc:
+        typer.echo("error=request_state_unavailable", err=True)
+        typer.echo(f"reason={exc.reason}", err=True)
+        raise typer.Exit(code=1) from exc
+    _print_verify_due_report(report)
+
+
 @sat_app.command("metadata-verify-smoke")
 def sat_metadata_verify_smoke(
     profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
@@ -1406,11 +1443,24 @@ def download_live_smoke(
 @download_app.command("status")
 def download_status(
     profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
-    job_id: str = typer.Option(..., "--job-id", help="Local download job id from download sync."),
+    job_id: str | None = typer.Option(None, "--job-id", help="Local download job id from download sync."),
 ) -> None:
-    """Read safe persisted fake/offline download status aggregates."""
+    """Read safe fake download status or async verify scheduler aggregates."""
 
     loaded_profile = _load_download_profile(profile)
+    if job_id is None:
+        try:
+            records = tuple(record for record in list_live_metadata_requests(loaded_profile.storage_root) if record.profile_id == profile)
+        except LiveRequestStateError as exc:
+            typer.echo("error=request_state_unavailable", err=True)
+            typer.echo(f"reason={exc.reason}", err=True)
+            raise typer.Exit(code=1) from exc
+        _print_live_metadata_scheduler_status(
+            profile_id=profile,
+            summary=summarize_live_metadata_requests(records),
+        )
+        return
+
     status = read_download_status(
         loaded_profile.storage_root / "db" / "recovery.sqlite3",
         tenant_id=loaded_profile.profile_id,
@@ -2241,9 +2291,15 @@ def _print_live_metadata_request_state(
     profile_id: str,
     records: tuple[LiveMetadataRequestRecord, ...],
 ) -> None:
+    summary = summarize_live_metadata_requests(records)
     typer.echo("mode=metadata-request-state")
     typer.echo(f"profile={profile_id}")
     typer.echo(f"pending_count={len(records)}")
+    typer.echo(f"pending_verify_count={summary.pending_verify_count}")
+    typer.echo(f"due_verify_count={summary.due_verify_count}")
+    typer.echo(f"next_due_verification={summary.next_due_verification}")
+    typer.echo(f"package_ready_count={summary.package_ready_count}")
+    typer.echo(f"failed_requests={summary.failed_requests}")
     for record in records:
         fields = [
             f"request_ref={record.request_ref}",
@@ -2251,12 +2307,57 @@ def _print_live_metadata_request_state(
             f"direction={record.direction}",
             f"operation={record.operation}",
             f"status={record.status}",
+            f"attempt_count={record.attempt_count}",
+            f"next_check_at={record.next_check_at}",
+            f"last_checked_at={record.last_checked_at}",
             f"id_solicitud_redacted={record.id_solicitud_redacted}",
             f"criteria_hash_prefix={record.criteria_hash[:12]}",
             f"created_at={record.created_at}",
             "full_id_printed=no",
         ]
         typer.echo("request_state=" + "|".join(fields))
+
+
+def _print_live_metadata_scheduler_status(*, profile_id: str, summary: LiveMetadataRequestSummary) -> None:
+    typer.echo("mode=metadata-verify-scheduler")
+    typer.echo(f"profile={profile_id}")
+    typer.echo(f"pending_verify_count={summary.pending_verify_count}")
+    typer.echo(f"due_verify_count={summary.due_verify_count}")
+    typer.echo(f"next_due_verification={summary.next_due_verification}")
+    typer.echo(f"finished_requests={summary.finished_requests}")
+    typer.echo(f"failed_requests={summary.failed_requests}")
+    typer.echo(f"package_ready_count={summary.package_ready_count}")
+    typer.echo("redacted=true")
+
+
+def _print_verify_due_report(report: VerifyDueReport) -> None:
+    typer.echo("mode=verify-due")
+    typer.echo(f"profile={report.profile_id}")
+    typer.echo(f"dry_run={str(report.dry_run).lower()}")
+    typer.echo(f"due_count={report.due_count}")
+    typer.echo(f"selected_count={report.selected_count}")
+    typer.echo(f"processed_count={report.processed_count}")
+    typer.echo(f"pending_verify_count={report.pending_verify_count}")
+    typer.echo(f"next_due_verification={report.next_due_verification}")
+    typer.echo(f"package_ready_count={report.package_ready_count}")
+    typer.echo(f"failed_requests={report.failed_requests}")
+    typer.echo("sat_real_execution=no")
+    typer.echo("package_downloaded=no")
+    typer.echo("zip_downloaded=no")
+    typer.echo("xml_downloaded=no")
+    typer.echo("sleep_used=no")
+    typer.echo("loop_used=no")
+    for item in report.items:
+        fields = [
+            f"request_ref={item.request_ref}",
+            f"status={item.status}",
+            f"attempt_count={item.attempt_count}",
+            f"next_check_at={item.next_check_at}",
+            f"last_error_kind={item.last_error_kind}",
+            f"package_count={item.package_count}",
+            "full_id_printed=no",
+        ]
+        typer.echo("verify_item=" + "|".join(fields))
 
 
 def _live_smoke_transport(*, live_permit_verified: bool = False) -> GuardedSoapHttpTransport:
