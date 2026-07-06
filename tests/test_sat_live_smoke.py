@@ -24,11 +24,13 @@ from cfdi_vault.sat_auth_envelope_lint import lint_auth_envelope
 from cfdi_vault.sat_auth_http import validate_auth_headers_for_contract
 from cfdi_vault.sat_live_smoke import (
     AUTH_ACTION,
+    DEFAULT_VERIFY_ENDPOINT,
     SatEfirmMaterial,
     SatLiveMetadataSmokeAdapter,
     SatLiveSmokeEndpoints,
     SatLiveSmokeError,
     SatV15RequestOperation,
+    VERIFY_ACTION,
     _build_request_envelope,
     resolve_v15_request_operation,
     v15_request_soap_action,
@@ -45,7 +47,7 @@ def test_metadata_smoke_uses_real_adapter_shape_without_package_download(tmp_pat
         SoapTransportResponse(200, body=_soap('<sat:VerificaSolicitudDescargaResult CodEstatus="5000" EstadoSolicitud="2" Mensaje="Working" />')),
     ]
     transport = FakeSoapTransport(responses)
-    endpoints = SatLiveSmokeEndpoints("https://auth.example", "https://request.example", "https://verify.example")
+    endpoints = SatLiveSmokeEndpoints("https://auth.example", "https://request.example", DEFAULT_VERIFY_ENDPOINT)
 
     result = SatLiveMetadataSmokeAdapter(
         profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material(), endpoints=endpoints
@@ -108,6 +110,83 @@ def test_metadata_verify_smoke_uses_stored_request_id_without_new_request_or_dow
     assert b"VerificaSolicitudDescarga" in transport.requests[1].body
     assert "648a0000-1111-2222-3333-444444447b27" not in repr(result)
     assert "SYNTHETIC_TOKEN" not in repr(transport.requests[1])
+
+
+def test_metadata_verify_smoke_sends_ready_verify_post_without_sensitive_repr(tmp_path: Path) -> None:
+    responses = [
+        SoapTransportResponse(200, body=_soap("<sat:AutenticaResult>SYNTHETIC_TOKEN</sat:AutenticaResult>")),
+        SoapTransportResponse(200, body=_soap('<sat:VerificaSolicitudDescargaResult CodEstatus="5000" EstadoSolicitud="2" Mensaje="Working" />')),
+    ]
+    transport = FakeSoapTransport(responses)
+
+    SatLiveMetadataSmokeAdapter(
+        profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material()
+    ).metadata_verify_smoke("648a0000-1111-2222-3333-444444447b27")
+
+    verify_request = transport.requests[1]
+    assert verify_request.endpoint == DEFAULT_VERIFY_ENDPOINT
+    assert verify_request.headers["SOAPAction"] == f'"{VERIFY_ACTION}"'
+    assert verify_request.headers["Content-Type"] == "text/xml; charset=utf-8"
+    assert verify_request.headers["Authorization"].startswith('WRAP access_token="')
+    assert "SYNTHETIC_TOKEN" not in repr(verify_request)
+    assert b"VerificaSolicitudDescarga" in verify_request.body
+    assert b"IdSolicitud" in verify_request.body
+    assert b"RfcSolicitante" in verify_request.body
+    assert b"Signature" in verify_request.body
+    assert b"None" not in verify_request.body
+    assert b"TODO" not in verify_request.body
+
+
+def test_metadata_verify_smoke_fails_before_verify_transport_when_endpoint_is_wrong(tmp_path: Path) -> None:
+    transport = FakeSoapTransport(
+        [SoapTransportResponse(200, body=_soap("<sat:AutenticaResult>SYNTHETIC_TOKEN</sat:AutenticaResult>"))]
+    )
+    endpoints = SatLiveSmokeEndpoints("https://auth.example", "https://request.example", "https://request.example")
+
+    with pytest.raises(SatLiveSmokeError) as exc:
+        SatLiveMetadataSmokeAdapter(
+            profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material(), endpoints=endpoints
+        ).metadata_verify_smoke("648a0000-1111-2222-3333-444444447b27")
+
+    diagnostic = exc.value.diagnostic
+    assert diagnostic.stage == "verify_request_readiness"
+    assert diagnostic.error_kind == "client_configuration_error"
+    assert diagnostic.endpoint_url_ok is False
+    assert diagnostic.has_authorization is True
+    assert diagnostic.authorization_value_len == len("SYNTHETIC_TOKEN")
+    assert diagnostic.has_id_solicitud is True
+    assert diagnostic.id_solicitud_redacted == "648a...7b27"
+    assert diagnostic.has_rfc_solicitante is True
+    assert diagnostic.has_signature is True
+    assert len(transport.requests) == 1
+
+
+def test_metadata_verify_timeout_is_classified_with_redacted_readiness(tmp_path: Path) -> None:
+    class TimeoutOnVerifyTransport(FakeSoapTransport):
+        def send(self, request):
+            self.requests.append(request)
+            if len(self.requests) == 2:
+                raise TimeoutError("synthetic timeout")
+            return SoapTransportResponse(200, body=_soap("<sat:AutenticaResult>SYNTHETIC_TOKEN</sat:AutenticaResult>"))
+
+    transport = TimeoutOnVerifyTransport()
+
+    with pytest.raises(SatLiveSmokeError) as exc:
+        SatLiveMetadataSmokeAdapter(
+            profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material()
+        ).metadata_verify_smoke("648a0000-1111-2222-3333-444444447b27")
+
+    diagnostic = exc.value.diagnostic
+    assert diagnostic.stage == "verify_transport"
+    assert diagnostic.error_kind == "verify_read_timeout"
+    assert diagnostic.has_authorization is True
+    assert diagnostic.authorization_value_len == len("SYNTHETIC_TOKEN")
+    assert diagnostic.has_id_solicitud is True
+    assert diagnostic.id_solicitud_redacted == "648a...7b27"
+    assert diagnostic.has_signature is True
+    assert "SYNTHETIC_TOKEN" not in repr(diagnostic)
+    assert "648a0000-1111-2222-3333-444444447b27" not in repr(diagnostic)
+    assert len(transport.requests) == 2
 
 
 def test_v15_request_operation_routing_has_no_legacy_fallback() -> None:

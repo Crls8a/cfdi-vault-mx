@@ -65,8 +65,8 @@ PARSE_HINT = "check SAT response shape with redacted diagnostics only"
 MATERIAL_HINT = "check local profile readiness and e.firma material without printing paths or values"
 BUILD_HINT = "check envelope construction and XML signature inputs without printing SOAP"
 READINESS_HINT = "check auth SOAPAction, content-type, namespace, WS-Security, signature, and non-empty signed body"
-DIAGNOSTIC_STAGES = ("preflight", "profile_load", "secret_resolve", "credential_load", "certificate_parse", "private_key_load", "xmlsig_sign", "auth_envelope_build", "auth_request_readiness", "auth_transport", "auth_response_parse", "token_extract", "metadata_request_build", "metadata_request_transport", "metadata_request_parse", "verify_request_build", "verify_transport", "verify_response_parse", "package_download", "package_process")
-LIVE_ERROR_KINDS = ("guard_failed", "profile_not_ready", "secret_unavailable", "credential_load_failed", "certificate_parse_failed", "private_key_load_failed", "xmlsig_failed", "envelope_build_failed", "transport_tls_failed", "tls_handshake_failed", "certificate_verify_failed", "client_cert_rejected", "proxy_connect_failed", "connection_reset", "connection_reset_during_post", "remote_closed_connection", "timeout", "transport_timeout", "transport_http_error", "http_status_error", "soap_fault", "token_missing", "token_parse_failed", "sat_status_error", "sat_duplicate_request", "sat_unauthorized", "sat_no_data", "sat_retryable", "sat_permanent", "unexpected_response", "unexpected_http_response", "client_configuration_error", "redaction_failure", "unknown_live_adapter_failure")
+DIAGNOSTIC_STAGES = ("preflight", "profile_load", "secret_resolve", "credential_load", "certificate_parse", "private_key_load", "xmlsig_sign", "auth_envelope_build", "auth_request_readiness", "auth_transport", "auth_response_parse", "token_extract", "metadata_request_build", "metadata_request_transport", "metadata_request_parse", "verify_request_build", "verify_request_readiness", "verify_transport", "verify_response_parse", "package_download", "package_process")
+LIVE_ERROR_KINDS = ("guard_failed", "profile_not_ready", "secret_unavailable", "credential_load_failed", "certificate_parse_failed", "private_key_load_failed", "xmlsig_failed", "envelope_build_failed", "transport_tls_failed", "tls_handshake_failed", "certificate_verify_failed", "client_cert_rejected", "proxy_connect_failed", "connection_reset", "connection_reset_during_post", "remote_closed_connection", "timeout", "verify_read_timeout", "transport_timeout", "transport_http_error", "http_status_error", "soap_fault", "token_missing", "token_parse_failed", "sat_status_error", "sat_duplicate_request", "sat_unauthorized", "sat_no_data", "sat_retryable", "sat_permanent", "unexpected_response", "unexpected_http_response", "client_configuration_error", "redaction_failure", "unknown_live_adapter_failure")
 @dataclass(frozen=True)
 class SatLiveDiagnosticEntry:
     """One redacted live diagnostic stage result."""
@@ -102,6 +102,13 @@ class SatLiveDiagnosticEntry:
     header_action_order: str | None = None
     security_must_understand: bool | None = None
     operation: str | None = None
+    has_authorization: bool | None = None
+    authorization_value_len: int | None = None
+    has_id_solicitud: bool | None = None
+    id_solicitud_redacted: str | None = None
+    has_rfc_solicitante: bool | None = None
+    has_signature: bool | None = None
+    endpoint_url_ok: bool | None = None
 class SatLiveSmokeError(RuntimeError):
     """Safe live smoke failure without credential, token, SOAP, RFC, path, or id detail."""
     def __init__(
@@ -139,6 +146,13 @@ class SatLiveSmokeError(RuntimeError):
         header_action_order: str | None = None,
         security_must_understand: bool | None = None,
         operation: str | None = None,
+        has_authorization: bool | None = None,
+        authorization_value_len: int | None = None,
+        has_id_solicitud: bool | None = None,
+        id_solicitud_redacted: str | None = None,
+        has_rfc_solicitante: bool | None = None,
+        has_signature: bool | None = None,
+        endpoint_url_ok: bool | None = None,
     ) -> None:
         self.diagnostic = SatLiveDiagnosticEntry(
             stage=stage,
@@ -173,6 +187,13 @@ class SatLiveSmokeError(RuntimeError):
             header_action_order=header_action_order,
             security_must_understand=security_must_understand,
             operation=operation,
+            has_authorization=has_authorization,
+            authorization_value_len=authorization_value_len,
+            has_id_solicitud=has_id_solicitud,
+            id_solicitud_redacted=id_solicitud_redacted,
+            has_rfc_solicitante=has_rfc_solicitante,
+            has_signature=has_signature,
+            endpoint_url_ok=endpoint_url_ok,
         )
         super().__init__(message)
     @property
@@ -248,6 +269,40 @@ class AuthRequestReadiness:
             "header_action_must_understand": self.header_action_must_understand,
             "header_action_order": self.header_action_order,
             "security_must_understand": self.security_must_understand,
+        }
+
+
+@dataclass(frozen=True)
+class VerifyRequestReadiness:
+    request_body_bytes_len: int
+    envelope_sha256: str
+    soap_action: str
+    content_type: str
+    has_authorization: bool
+    authorization_value_len: int
+    has_id_solicitud: bool
+    id_solicitud_redacted: str
+    has_rfc_solicitante: bool
+    has_signature: bool
+    signed_reference_count: int
+    endpoint_url_ok: bool
+    operation: str
+
+    def error_fields(self) -> dict[str, object]:
+        return {
+            "request_body_bytes_len": self.request_body_bytes_len,
+            "envelope_sha256": self.envelope_sha256,
+            "soap_action": self.soap_action,
+            "content_type": self.content_type,
+            "has_authorization": self.has_authorization,
+            "authorization_value_len": self.authorization_value_len,
+            "has_id_solicitud": self.has_id_solicitud,
+            "id_solicitud_redacted": self.id_solicitud_redacted,
+            "has_rfc_solicitante": self.has_rfc_solicitante,
+            "has_signature": self.has_signature,
+            "signed_reference_count": self.signed_reference_count,
+            "endpoint_url_ok": self.endpoint_url_ok,
+            "operation": self.operation,
         }
 @dataclass(frozen=True)
 class SatLiveSmokeEndpoints:
@@ -480,16 +535,16 @@ class SatLiveMetadataSmokeAdapter:
         headers = build_soap11_headers(action)
         if authorization:
             headers["Authorization"] = _wrap_authorization(authorization)
-        readiness = (
-            _assert_auth_request_ready(
+        readiness = None
+        if endpoint_label == "auth" and authorization is None:
+            readiness = _assert_auth_request_ready(
                 body,
                 headers,
                 auth_envelope_variant=self._auth_envelope_variant,
                 wcf_action_header_enabled=self._wcf_action_header_enabled,
             )
-            if endpoint_label == "auth" and authorization is None
-            else None
-        )
+        elif endpoint_label == "verify":
+            readiness = _assert_verify_request_ready(endpoint, body, headers)
         started = time.perf_counter()
         try:
             response = self._transport.send(SoapTransportRequest(endpoint=endpoint, body=body, headers=headers, timeout_seconds=self._timeout_seconds))
@@ -510,10 +565,11 @@ class SatLiveMetadataSmokeAdapter:
             ) from None
         except Exception as exc:
             failure = _classify_transport_failure(exc)
+            error_kind = "verify_read_timeout" if stage == "verify_transport" and failure.error_kind == "timeout" else failure.error_kind
             raise SatLiveSmokeError(
                 "SAT transport failed",
                 stage=stage,
-                error_kind=failure.error_kind,
+                error_kind=error_kind,
                 safe_hint=TRANSPORT_HINT,
                 endpoint=endpoint_label,
                 payload_size=len(body),
@@ -851,6 +907,72 @@ def _assert_auth_request_ready(
     return readiness
 
 
+def _assert_verify_request_ready(endpoint: str, body: bytes | None, headers: dict[str, str]) -> VerifyRequestReadiness:
+    readiness = _verify_request_readiness(endpoint, body, headers)
+    placeholders_present = body is None or _contains_placeholder_literals(body)
+    failures = [
+        not readiness.endpoint_url_ok,
+        readiness.soap_action != f'"{VERIFY_ACTION}"',
+        readiness.content_type != AUTH_CONTENT_TYPE,
+        not readiness.has_authorization,
+        readiness.authorization_value_len <= 0,
+        readiness.request_body_bytes_len <= 300,
+        readiness.operation != "VerificaSolicitudDescarga",
+        not readiness.has_id_solicitud,
+        not readiness.has_rfc_solicitante,
+        not readiness.has_signature,
+        readiness.signed_reference_count <= 0,
+        placeholders_present,
+    ]
+    if any(failures):
+        fields = readiness.error_fields()
+        fields.pop("envelope_sha256", None)
+        raise SatLiveSmokeError(
+            "SAT verify request failed local readiness checks",
+            stage="verify_request_readiness",
+            error_kind="client_configuration_error",
+            safe_hint="check verify endpoint, SOAPAction, Authorization WRAP, signed solicitud body, and placeholders without printing SOAP",
+            payload_size=readiness.request_body_bytes_len,
+            envelope_sha256=readiness.envelope_sha256,
+            **fields,
+        ) from None
+    return readiness
+
+
+def _verify_request_readiness(endpoint: str, body: bytes | None, headers: dict[str, str]) -> VerifyRequestReadiness:
+    body_bytes = body or b""
+    root = _parse_xml_or_none(body_bytes)
+    body_node = _find(root, SOAP11_NS, "Body")
+    operation = _find(body_node, SAT_REQUEST_NS, "VerificaSolicitudDescarga")
+    solicitud = _find(operation, SAT_REQUEST_NS, "solicitud")
+    signature = _find(solicitud, DS_NS, "Signature")
+    id_solicitud = solicitud.get("IdSolicitud", "") if solicitud is not None else ""
+    rfc_solicitante = solicitud.get("RfcSolicitante", "") if solicitud is not None else ""
+    return VerifyRequestReadiness(
+        request_body_bytes_len=len(body_bytes),
+        envelope_sha256=_digest(body_bytes),
+        soap_action=_header_value(headers, "SOAPAction") or "",
+        content_type=_header_value(headers, "Content-Type") or "",
+        has_authorization=_header_value(headers, "Authorization") is not None,
+        authorization_value_len=_authorization_token_len(_header_value(headers, "Authorization") or ""),
+        has_id_solicitud=bool(id_solicitud),
+        id_solicitud_redacted=_redact_identifier(id_solicitud),
+        has_rfc_solicitante=bool(rfc_solicitante),
+        has_signature=signature is not None,
+        signed_reference_count=_signed_reference_count(body_bytes),
+        endpoint_url_ok=endpoint == DEFAULT_VERIFY_ENDPOINT,
+        operation=etree.QName(operation).localname if operation is not None else "",
+    )
+
+
+def _authorization_token_len(value: str) -> int:
+    prefix = 'WRAP access_token="'
+    stripped = value.strip()
+    if not stripped.startswith(prefix) or not stripped.endswith('"'):
+        return 0
+    return len(stripped[len(prefix) : -1])
+
+
 def _auth_request_readiness(
     body: bytes | None,
     headers: dict[str, str],
@@ -891,11 +1013,12 @@ def _auth_request_readiness(
     )
 
 
-def _readiness_error_fields(readiness: AuthRequestReadiness | None) -> dict[str, object]:
+def _readiness_error_fields(readiness: AuthRequestReadiness | VerifyRequestReadiness | None) -> dict[str, object]:
     if readiness is None:
         return {}
     fields = readiness.error_fields()
     fields.pop("envelope_sha256", None)
+    fields.pop("operation", None)
     return fields
 
 
