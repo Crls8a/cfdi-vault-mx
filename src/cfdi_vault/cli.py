@@ -44,7 +44,10 @@ from cfdi_vault.sat_live_smoke import (
     load_sat_efirma_material,
 )
 from cfdi_vault.sat_live_request_state import (
+    LiveMetadataRequestRecord,
     LiveRequestStateError,
+    list_live_metadata_requests,
+    load_live_metadata_request,
     persist_live_metadata_request,
 )
 from cfdi_vault.sat_auth_envelope_lint import AuthEnvelopeLintResult, build_dummy_auth_envelope, lint_auth_envelope
@@ -210,6 +213,18 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "example": "cfdi-vault sat auth-smoke --profile default --manual-real-sat --permit PERMIT_ID",
     },
     {
+        "command": "sat metadata-request-state",
+        "purpose": "List locally persisted live metadata requests pending verify using redacted request refs.",
+        "when": "Run after a request-only smoke to recover the safe request-ref without printing IdSolicitud.",
+        "example": "cfdi-vault sat metadata-request-state --profile default",
+    },
+    {
+        "command": "sat metadata-verify-smoke",
+        "purpose": "Verify one locally persisted metadata request-ref without creating a new request or downloading packages.",
+        "when": "Run only after explicit approval for one verify-only SAT smoke.",
+        "example": "cfdi-vault sat metadata-verify-smoke --profile default --request-ref <request-ref> --permit PERMIT_ID",
+    },
+    {
         "command": "sat inspect-auth-contract",
         "purpose": "Fetch the public SAT auth WSDL and print only a redacted contract summary.",
         "when": "Run before auth envelope compatibility work; never stores or prints raw WSDL.",
@@ -346,6 +361,8 @@ class LiveSmokeCliResult:
     operation: str = ""
     request_ref: str = ""
     id_solicitud_redacted: str = ""
+    sat_state: str = ""
+    package_count: int = 0
     request_body_bytes_len: int | None = None
     envelope_sha256: str | None = None
     signed_reference_count: int | None = None
@@ -882,6 +899,63 @@ def sat_metadata_request_smoke(
         typer.echo("error=request_state_persist_failed", err=True)
         typer.echo(f"reason={exc.reason}", err=True)
         raise typer.Exit(code=1) from exc
+    except LiveSmokeAdapterUnavailable as exc:
+        typer.echo("error=live_adapter_unavailable", err=True)
+        raise typer.Exit(code=1) from exc
+    except SatLiveSmokeError as exc:
+        _print_live_adapter_error(exc)
+        raise typer.Exit(code=1) from exc
+    _print_live_smoke_result(profile_id=profile, kind=query.request_type.value, direction=query.direction.value, result=result)
+
+
+@sat_app.command("metadata-request-state")
+def sat_metadata_request_state(
+    profile: str = typer.Option("default", "--profile", help="Local setup profile id."),
+) -> None:
+    """List redacted locally persisted live metadata requests pending verify."""
+
+    local_profile = _load_download_profile(profile)
+    try:
+        records = list_live_metadata_requests(local_profile.storage_root, pending_only=True)
+    except LiveRequestStateError as exc:
+        typer.echo("error=request_state_unavailable", err=True)
+        typer.echo(f"reason={exc.reason}", err=True)
+        raise typer.Exit(code=1) from exc
+    _print_live_metadata_request_state(profile_id=profile, records=records)
+
+
+@sat_app.command("metadata-verify-smoke")
+def sat_metadata_verify_smoke(
+    profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
+    request_ref: str = typer.Option(..., "--request-ref", help="Local redacted request reference from metadata-request-state."),
+    manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Required human gate for real SAT verify smoke."),
+    permit: str | None = typer.Option(None, "--permit", help="One-time local metadata_live_smoke permit id."),
+) -> None:
+    """Verify one stored metadata request only; no new request or package download."""
+
+    local_profile = _load_download_profile(profile)
+    try:
+        record = load_live_metadata_request(local_profile.storage_root, request_ref)
+    except LiveRequestStateError as exc:
+        typer.echo("error=request_state_not_found", err=True)
+        typer.echo(f"reason={exc.reason}", err=True)
+        raise typer.Exit(code=1) from exc
+    if record.profile_id != profile:
+        typer.echo("error=request_state_profile_mismatch", err=True)
+        typer.echo("reason=request-state-profile-mismatch", err=True)
+        raise typer.Exit(code=1)
+    query = _query_from_live_request_record(local_profile.rfc, record)
+    permit_verified = _validate_live_smoke_guard(
+        profile_id=profile,
+        manual_real_sat=manual_real_sat,
+        query=query,
+        metadata_only=True,
+        range_within_limit=_is_minimal_live_smoke_range(query),
+        mode="metadata-verify-smoke",
+        permit_ref=permit,
+    )
+    try:
+        result = _run_live_metadata_verify_smoke(profile, record.id_solicitud, live_permit_verified=permit_verified)
     except LiveSmokeAdapterUnavailable as exc:
         typer.echo("error=live_adapter_unavailable", err=True)
         raise typer.Exit(code=1) from exc
@@ -2008,6 +2082,22 @@ def _run_live_metadata_request_smoke(
     return _live_smoke_cli_result(result, request_ref=request_ref)
 
 
+def _run_live_metadata_verify_smoke(
+    profile_id: str,
+    request_id: str,
+    *,
+    live_permit_verified: bool = False,
+) -> LiveSmokeCliResult:
+    profile = _load_download_profile(profile_id)
+    adapter = SatLiveMetadataSmokeAdapter(
+        profile=profile,
+        provider=_setup_provider(profile_id),
+        transport=_live_smoke_transport(live_permit_verified=live_permit_verified),
+    )
+    result = adapter.metadata_verify_smoke(request_id)
+    return _live_smoke_cli_result(result)
+
+
 def _live_smoke_cli_result(result: object, *, request_ref: str = "") -> LiveSmokeCliResult:
     return LiveSmokeCliResult(
         result=getattr(result, "result"),
@@ -2017,6 +2107,8 @@ def _live_smoke_cli_result(result: object, *, request_ref: str = "") -> LiveSmok
         operation=getattr(result, "operation", ""),
         request_ref=request_ref,
         id_solicitud_redacted=getattr(result, "id_solicitud_redacted", ""),
+        sat_state=getattr(result, "sat_state", ""),
+        package_count=getattr(result, "package_count", 0),
         request_body_bytes_len=getattr(result, "request_body_bytes_len", None),
         envelope_sha256=getattr(result, "envelope_sha256", None),
         signed_reference_count=getattr(result, "signed_reference_count", None),
@@ -2025,6 +2117,31 @@ def _live_smoke_cli_result(result: object, *, request_ref: str = "") -> LiveSmok
 
 def _run_live_diagnose(profile_id: str, query: DownloadQuery) -> LiveSmokeCliResult:
     return _run_live_metadata_smoke(profile_id, query)
+
+
+def _query_from_live_request_record(requester_rfc: str, record: LiveMetadataRequestRecord) -> DownloadQuery:
+    try:
+        start = _parse_state_datetime(record.fecha_inicial)
+        end = _parse_state_datetime(record.fecha_final)
+        direction = DownloadDirection(record.direction)
+        request_type = RequestType(record.kind)
+    except (ValueError, TypeError) as exc:
+        typer.echo("error=request_state_invalid", err=True)
+        typer.echo("reason=request-state-query-invalid", err=True)
+        raise typer.Exit(code=1) from exc
+    return DownloadQuery(
+        record.profile_id,
+        requester_rfc,
+        direction,
+        request_type,
+        DateTimePeriod(start, end),
+    )
+
+
+def _parse_state_datetime(value: str) -> datetime:
+    normalized = value.replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
 def _run_transport_probe() -> tuple[SatProbeResult, ...]:
@@ -2037,6 +2154,29 @@ def _run_auth_post_probe() -> SatAuthPostProbeResult:
 
 def _run_auth_matrix_probe() -> tuple[SatAuthMatrixProbeResult, ...]:
     return run_sat_auth_matrix_probe()
+
+
+def _print_live_metadata_request_state(
+    *,
+    profile_id: str,
+    records: tuple[LiveMetadataRequestRecord, ...],
+) -> None:
+    typer.echo("mode=metadata-request-state")
+    typer.echo(f"profile={profile_id}")
+    typer.echo(f"pending_count={len(records)}")
+    for record in records:
+        fields = [
+            f"request_ref={record.request_ref}",
+            f"kind={record.kind}",
+            f"direction={record.direction}",
+            f"operation={record.operation}",
+            f"status={record.status}",
+            f"id_solicitud_redacted={record.id_solicitud_redacted}",
+            f"criteria_hash_prefix={record.criteria_hash[:12]}",
+            f"created_at={record.created_at}",
+            "full_id_printed=no",
+        ]
+        typer.echo("request_state=" + "|".join(fields))
 
 
 def _live_smoke_transport(*, live_permit_verified: bool = False) -> GuardedSoapHttpTransport:
@@ -2081,6 +2221,9 @@ def _print_live_smoke_result(
         typer.echo(f"request_ref={result.request_ref}")
     if result.id_solicitud_redacted:
         typer.echo(f"id_solicitud_redacted={result.id_solicitud_redacted}")
+    if result.sat_state:
+        typer.echo(f"sat_state={result.sat_state}")
+    typer.echo(f"package_count={result.package_count}")
     if result.request_body_bytes_len is not None:
         typer.echo(f"request_body_bytes_len={result.request_body_bytes_len}")
     if result.envelope_sha256 is not None:

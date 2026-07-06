@@ -263,8 +263,10 @@ class SatLiveSmokeSummary:
     operation: str = ""
     id_solicitud: str = field(default="", repr=False)
     id_solicitud_redacted: str = ""
+    sat_state: str = ""
     sat_code: str = ""
     sat_message: str = ""
+    package_count: int = 0
     request_body_bytes_len: int | None = None
     envelope_sha256: str | None = None
     signed_reference_count: int | None = None
@@ -336,7 +338,12 @@ class SatLiveMetadataSmokeAdapter:
             request=request_status,
             verification=verification.action.value,
             operation=attempt.operation.value,
+            id_solicitud=request_result.request_id,
             id_solicitud_redacted=_redact_identifier(request_result.request_id),
+            sat_state=verification.state.value,
+            sat_code=verification.sat_code,
+            sat_message=verification.message,
+            package_count=len(verification.package_ids),
             request_body_bytes_len=attempt.request_body_bytes_len,
             envelope_sha256=attempt.envelope_sha256,
             signed_reference_count=attempt.signed_reference_count,
@@ -350,6 +357,33 @@ class SatLiveMetadataSmokeAdapter:
         attempt = self._send_request(authorization, query)
         result = "metadata-request-submitted" if attempt.result.action == SatOutcomeAction.ACCEPTED else "request-not-accepted"
         return _request_summary(result, attempt)
+
+    def metadata_verify_smoke(self, request_id: str) -> SatLiveSmokeSummary:
+        """Run guarded auth + SAT verification for one stored request id; no request/download."""
+
+        normalized_request_id = request_id.strip()
+        if not normalized_request_id:
+            raise SatLiveSmokeError(
+                "live verify requires a stored request id",
+                stage="preflight",
+                error_kind="guard_failed",
+                safe_hint="request-ref must resolve to an IdSolicitud in local state",
+            )
+        authorization = self._authenticate()
+        verification = self._send_verification(authorization, normalized_request_id)
+        return SatLiveSmokeSummary(
+            result="metadata-verify-ok",
+            auth="authenticated",
+            request="not_run",
+            verification=verification.action.value,
+            operation="VerificaSolicitudDescarga",
+            id_solicitud=normalized_request_id,
+            id_solicitud_redacted=_redact_identifier(normalized_request_id),
+            sat_state=verification.state.value,
+            sat_code=verification.sat_code,
+            sat_message=verification.message,
+            package_count=len(verification.package_ids),
+        )
     def _authenticate(self) -> str:
         body = _build_stage(
             "auth_envelope_build",

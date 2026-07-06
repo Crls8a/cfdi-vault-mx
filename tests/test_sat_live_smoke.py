@@ -87,6 +87,29 @@ def test_metadata_request_smoke_does_not_verify_or_download(tmp_path: Path) -> N
     assert len(transport.requests) == 2
 
 
+def test_metadata_verify_smoke_uses_stored_request_id_without_new_request_or_download(tmp_path: Path) -> None:
+    responses = [
+        SoapTransportResponse(200, body=_soap("<sat:AutenticaResult>SYNTHETIC_TOKEN</sat:AutenticaResult>")),
+        SoapTransportResponse(200, body=_soap('<sat:VerificaSolicitudDescargaResult CodEstatus="5000" EstadoSolicitud="2" Mensaje="Working" />')),
+    ]
+    transport = FakeSoapTransport(responses)
+
+    result = SatLiveMetadataSmokeAdapter(
+        profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material()
+    ).metadata_verify_smoke("648a0000-1111-2222-3333-444444447b27")
+
+    assert (result.result, result.auth, result.request, result.verification) == ("metadata-verify-ok", "authenticated", "not_run", "in_progress")
+    assert result.operation == "VerificaSolicitudDescarga"
+    assert result.id_solicitud_redacted == "648a...7b27"
+    assert result.sat_state == "in_process"
+    assert result.package_count == 0
+    assert len(transport.requests) == 2
+    assert b"SolicitaDescarga" not in transport.requests[1].body
+    assert b"VerificaSolicitudDescarga" in transport.requests[1].body
+    assert "648a0000-1111-2222-3333-444444447b27" not in repr(result)
+    assert "SYNTHETIC_TOKEN" not in repr(transport.requests[1])
+
+
 def test_v15_request_operation_routing_has_no_legacy_fallback() -> None:
     issued = DownloadQuery(
         "default",
