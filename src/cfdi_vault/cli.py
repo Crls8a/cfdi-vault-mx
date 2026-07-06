@@ -2588,6 +2588,13 @@ def _print_live_adapter_error(exc: SatLiveSmokeError) -> None:
         ("header_action_must_understand", _yes_no(diagnostic.header_action_must_understand)),
         ("header_action_order", diagnostic.header_action_order),
         ("security_must_understand", _yes_no(diagnostic.security_must_understand)),
+        ("has_authorization", _yes_no(diagnostic.has_authorization)),
+        ("token_len", diagnostic.authorization_value_len),
+        ("has_id_solicitud", _yes_no(diagnostic.has_id_solicitud)),
+        ("id_solicitud_redacted", diagnostic.id_solicitud_redacted),
+        ("has_rfc_solicitante", _yes_no(diagnostic.has_rfc_solicitante)),
+        ("has_signature", _yes_no(diagnostic.has_signature)),
+        ("endpoint_url_ok", _yes_no(diagnostic.endpoint_url_ok)),
     ):
         if value is not None:
             typer.echo(f"{key}={value}", err=True)
