@@ -7,6 +7,7 @@ from cfdi_vault.cli import app
 from cfdi_vault.sat_auth_matrix_probe import SatAuthMatrixProbeResult
 from cfdi_vault.sat_auth_post_probe import SatAuthPostProbeResult
 from cfdi_vault.sat_transport_probe import SatProbeResult
+from cfdi_vault.sat_verify_post_probe import SatVerifyPostProbeResult
 
 
 def test_sat_probe_transport_prints_redacted_results(monkeypatch) -> None:
@@ -129,6 +130,44 @@ def test_sat_probe_auth_post_prints_redacted_reached_server_result(monkeypatch) 
     assert "efirma_loaded=no" in result.output
     assert "credential_material_loaded=no" in result.output
     assert "metadata_requested=no" in result.output
+    assert "raw_soap_printed=no" in result.output
+    assert "https://" not in result.output
+
+
+def test_sat_probe_verify_post_prints_redacted_reached_server_result(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(cli_module, "_validate_live_verify_post_probe_guard", lambda **kwargs: seen.update(kwargs))
+    monkeypatch.setattr(
+        cli_module,
+        "_run_verify_post_probe",
+        lambda: SatVerifyPostProbeResult(
+            endpoint="verify",
+            check="post",
+            host="verify.example",
+            status="ok",
+            error_kind="soap_fault",
+            safe_hint="verify POST reached SOAP handling",
+            http_status=500,
+            payload_size=21,
+            duration_ms=5,
+            correlation_id="verifypost-synthetic",
+            request_body_bytes_len=345,
+            has_authorization=True,
+        ),
+    )
+
+    result = CliRunner().invoke(app, ["sat", "probe-verify-post", "--profile", "dummy-profile", "--permit", "permit-abc_123"])
+
+    assert result.exit_code == 0, result.output
+    assert seen["profile_id"] == "dummy-profile"
+    assert seen["permit_ref"] == "permit-abc_123"
+    assert "mode=verify-post-probe" in result.output
+    assert "probe_status=ok" in result.output
+    assert "endpoint=verify" in result.output
+    assert "error_kind=soap_fault" in result.output
+    assert "has_authorization=yes" in result.output
+    assert "real_authorization_value_used=no" in result.output
+    assert "real_request_id_used=no" in result.output
     assert "raw_soap_printed=no" in result.output
     assert "https://" not in result.output
 

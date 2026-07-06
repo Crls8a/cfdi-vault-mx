@@ -65,6 +65,7 @@ from cfdi_vault.sat_auth_oracle import (
 )
 from cfdi_vault.sat_auth_post_probe import SatAuthPostProbeResult, run_sat_auth_post_probe
 from cfdi_vault.sat_transport_probe import SatProbeResult, run_sat_transport_probe
+from cfdi_vault.sat_verify_post_probe import SatVerifyPostProbeResult, run_sat_verify_post_probe
 from cfdi_vault.live_permit import (
     LivePermitError,
     LivePermitRequest,
@@ -542,7 +543,7 @@ live_app.add_typer(permit_app, name="permit")
 
 @permit_app.command("create")
 def live_permit_create(
-    scope: str = typer.Option(..., "--scope", help="transport_probe, auth_post_probe, auth_matrix_probe, auth_live_smoke, or metadata_live_smoke."),
+    scope: str = typer.Option(..., "--scope", help="transport_probe, auth_post_probe, verify_post_probe, auth_matrix_probe, auth_live_smoke, or metadata_live_smoke."),
     profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
     kind: str = typer.Option(..., "--kind", help="metadata only."),
     direction: str = typer.Option(..., "--direction", help="received or issued."),
@@ -1136,6 +1137,21 @@ def sat_probe_auth_post(
     _validate_live_auth_post_probe_guard(profile_id=profile, manual_real_sat=manual_real_sat, permit_ref=permit)
     result = _run_auth_post_probe()
     _print_auth_post_probe_result(profile_id=profile, result=result)
+    if result.status != "ok":
+        raise typer.Exit(code=1)
+
+
+@sat_app.command("probe-verify-post")
+def sat_probe_verify_post(
+    profile: str = typer.Option("default", "--profile", help="Local setup profile id."),
+    manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Required for live SAT verify POST probe."),
+    permit: str | None = typer.Option(None, "--permit", help="Required one-time local verify_post_probe permit id."),
+) -> None:
+    """Probe SAT verify HTTPS POST transport without e.firma material, real token, or real request id."""
+
+    _validate_live_verify_post_probe_guard(profile_id=profile, manual_real_sat=manual_real_sat, permit_ref=permit)
+    result = _run_verify_post_probe()
+    _print_verify_post_probe_result(profile_id=profile, result=result)
     if result.status != "ok":
         raise typer.Exit(code=1)
 
@@ -1882,6 +1898,66 @@ def _validate_live_auth_post_probe_guard(
     typer.echo("sat_real_execution=auth_post_probe_enabled", err=True)
 
 
+def _validate_live_verify_post_probe_guard(
+    *,
+    profile_id: str,
+    manual_real_sat: bool,
+    permit_ref: str | None,
+) -> None:
+    if permit_ref is None:
+        typer.echo("error=live_permit_denied", err=True)
+        typer.echo("reason=permit-required", err=True)
+        raise typer.Exit(code=1)
+    profile = _load_download_profile(profile_id)
+    doctor_ok = _live_smoke_doctor_ok(profile)
+    repo_clean, scanner_passed = _checkout_guard_status()
+    try:
+        permit = load_live_execution_permit(permit_ref, env=os.environ)
+        validate_and_consume_live_permit(
+            permit_ref,
+            scope="verify_post_probe",
+            profile_id=profile_id,
+            kind="metadata",
+            direction=permit.direction,
+            date_from=permit.date_from,
+            date_to=permit.date_to,
+            env=os.environ,
+            repo_root=_find_checkout_root(Path.cwd()),
+        )
+    except LivePermitError as exc:
+        typer.echo("error=live_permit_denied", err=True)
+        typer.echo(f"reason={exc.reason}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    try:
+        validate_live_sat_guard(
+            LiveSatGuardInput(
+                manual_real_sat=manual_real_sat,
+                terminal_interactive=True,
+                confirmation_verified=True,
+                profile_ready=profile.status == setup_flow.LocalProfileStatus.READY,
+                credentials_ready=False,
+                doctor_ok=doctor_ok,
+                scanner_passed=scanner_passed,
+                repo_clean=repo_clean,
+                metadata_only=True,
+                range_within_limit=True,
+                live_permit_verified=True,
+                live_permit_allows_real_credentials=False,
+                real_credentials_required=False,
+                environ=os.environ,
+            )
+        )
+    except LiveSatGuardError as exc:
+        typer.echo("error=live_sat_guard_denied", err=True)
+        for reason in exc.reasons:
+            typer.echo(f"reason={reason}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo("warning=live_sat_verify_post_probe_guards_passed", err=True)
+    typer.echo("sat_real_execution=verify_post_probe_enabled", err=True)
+
+
 def _validate_live_auth_matrix_probe_guard(
     *,
     profile_id: str,
@@ -2150,6 +2226,10 @@ def _run_transport_probe() -> tuple[SatProbeResult, ...]:
 
 def _run_auth_post_probe() -> SatAuthPostProbeResult:
     return run_sat_auth_post_probe()
+
+
+def _run_verify_post_probe() -> SatVerifyPostProbeResult:
+    return run_sat_verify_post_probe()
 
 
 def _run_auth_matrix_probe() -> tuple[SatAuthMatrixProbeResult, ...]:
@@ -2495,6 +2575,43 @@ def _print_auth_post_probe_result(*, profile_id: str, result: SatAuthPostProbeRe
     typer.echo("probe_result=" + "|".join(fields))
     typer.echo("efirma_loaded=no")
     typer.echo("credential_material_loaded=no")
+    typer.echo("metadata_requested=no")
+    typer.echo("xml_downloaded=no")
+    typer.echo("zip_downloaded=no")
+    typer.echo("raw_request_printed=no")
+    typer.echo("raw_response_printed=no")
+    typer.echo("raw_soap_printed=no")
+    typer.echo("raw_headers_printed=no")
+
+
+def _print_verify_post_probe_result(*, profile_id: str, result: SatVerifyPostProbeResult) -> None:
+    typer.echo("mode=verify-post-probe")
+    typer.echo(f"profile={profile_id}")
+    typer.echo(f"probe_status={result.status}")
+    fields = [
+        f"endpoint={result.endpoint}",
+        f"check={result.check}",
+        f"host={result.host}",
+        f"scheme={result.scheme}",
+        f"port={result.port}",
+        f"path={result.path}",
+        f"query_present={'yes' if result.query_present else 'no'}",
+        f"error_kind={result.error_kind}",
+        f"duration_ms={result.duration_ms}",
+        f"correlation_id={result.correlation_id}",
+        f"request_body_bytes_len={result.request_body_bytes_len}",
+        f"has_authorization={'yes' if result.has_authorization else 'no'}",
+    ]
+    if result.http_status is not None:
+        fields.append(f"http_status={result.http_status}")
+    if result.payload_size is not None:
+        fields.append(f"payload_size={result.payload_size}")
+    typer.echo("probe_result=" + "|".join(fields))
+    typer.echo(f"safe_hint={result.safe_hint}")
+    typer.echo("efirma_loaded=no")
+    typer.echo("credential_material_loaded=no")
+    typer.echo("real_authorization_value_used=no")
+    typer.echo("real_request_id_used=no")
     typer.echo("metadata_requested=no")
     typer.echo("xml_downloaded=no")
     typer.echo("zip_downloaded=no")
