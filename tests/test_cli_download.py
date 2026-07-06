@@ -12,7 +12,10 @@ from cfdi_vault import cli as cli_module
 from cfdi_vault import setup as setup_flow
 from cfdi_vault.cli import app
 from cfdi_vault.live_permit import LivePermitRequest, create_live_execution_permit
-from cfdi_vault.sat_live_request_state import list_live_metadata_requests
+from cfdi_vault.sat_live_request_state import (
+    list_live_metadata_requests,
+    persist_live_metadata_request,
+)
 from cfdi_vault.sat_auth_constants import (
     AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
     AUTH_ENVELOPE_VARIANT_SECURITY_ONLY,
@@ -649,6 +652,7 @@ def test_live_metadata_request_smoke_persists_accepted_id_without_printing_full_
                 id_solicitud_redacted="648a...7b27",
                 sat_code="5000",
                 sat_message="Accepted",
+                package_count=0,
             )
 
     monkeypatch.setenv("LOCALAPPDATA", str(appdata_root))
@@ -669,6 +673,173 @@ def test_live_metadata_request_smoke_persists_accepted_id_without_printing_full_
     assert result.request_ref == records[0].request_ref
     assert result.id_solicitud_redacted == "648a...7b27"
     assert full_request_id not in repr(result)
+
+
+def test_sat_metadata_request_state_lists_pending_refs_redacted(
+    tmp_path: Path,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    paths = _write_ready_setup_profile(appdata_root)
+    record = persist_live_metadata_request(
+        storage_root=paths.storage_root,
+        profile_id="dummy-profile",
+        query=_metadata_query(),
+        operation="SolicitaDescargaRecibidos",
+        id_solicitud="648a0000-1111-2222-3333-444444447b27",
+        sat_code="5000",
+        sat_message="Accepted",
+        source_command="sat metadata-request-smoke",
+        permit_ref=None,
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["sat", "metadata-request-state", "--profile", "dummy-profile"],
+        env={"LOCALAPPDATA": str(appdata_root)},
+    )
+
+    assert result.exit_code == 0, result.output
+    lines = _key_value_lines(result.output)
+    assert lines["mode"] == "metadata-request-state"
+    assert lines["pending_count"] == "1"
+    assert record.request_ref in result.output
+    assert "648a...7b27" in result.output
+    assert "648a0000-1111-2222-3333-444444447b27" not in result.output
+    _assert_no_profile_secrets_or_paths(result.output, appdata_root)
+
+
+def test_sat_metadata_verify_smoke_resolves_request_ref_without_new_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    paths = _write_ready_setup_profile(appdata_root)
+    full_request_id = "648a0000-1111-2222-3333-444444447b27"
+    record = persist_live_metadata_request(
+        storage_root=paths.storage_root,
+        profile_id="dummy-profile",
+        query=_metadata_query(),
+        operation="SolicitaDescargaRecibidos",
+        id_solicitud=full_request_id,
+        sat_code="5000",
+        sat_message="Accepted",
+        source_command="sat metadata-request-smoke",
+        permit_ref=None,
+    )
+    _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=True, doctor_ok=True)
+    seen: dict[str, str] = {}
+
+    def fake_verify(profile_id: str, request_id: str, *, live_permit_verified: bool = False) -> cli_module.LiveSmokeCliResult:
+        seen["profile_id"] = profile_id
+        seen["request_id"] = request_id
+        seen["live_permit_verified"] = str(live_permit_verified)
+        return cli_module.LiveSmokeCliResult(
+            result="metadata-verify-ok",
+            auth="authenticated",
+            request="not_run",
+            verification="in_progress",
+            operation="VerificaSolicitudDescarga",
+            id_solicitud_redacted="648a...7b27",
+            sat_state="in_process",
+            package_count=0,
+        )
+
+    monkeypatch.setattr(cli_module, "_run_live_metadata_verify_smoke", fake_verify)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "sat",
+            "metadata-verify-smoke",
+            "--profile",
+            "dummy-profile",
+            "--request-ref",
+            record.request_ref,
+            "--manual-real-sat",
+        ],
+        env=_live_smoke_env(appdata_root, {}),
+        input=f"{cli_module.LIVE_SMOKE_CONFIRMATION}\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen == {"profile_id": "dummy-profile", "request_id": full_request_id, "live_permit_verified": "False"}
+    lines = _key_value_lines(result.output)
+    assert lines["request"] == "not_run"
+    assert lines["verification"] == "in_progress"
+    assert lines["package_count"] == "0"
+    assert "648a...7b27" in result.output
+    assert full_request_id not in result.output
+
+
+def test_sat_metadata_verify_smoke_missing_request_ref_aborts_before_live_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    _write_ready_setup_profile(appdata_root)
+    calls: list[str] = []
+    monkeypatch.setattr(cli_module, "_validate_live_smoke_guard", lambda **_kwargs: calls.append("guard"))
+    monkeypatch.setattr(cli_module, "_run_live_metadata_verify_smoke", lambda *_args, **_kwargs: calls.append("verify"))
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "sat",
+            "metadata-verify-smoke",
+            "--profile",
+            "dummy-profile",
+            "--request-ref",
+            "req-missing",
+            "--manual-real-sat",
+        ],
+        env=_live_smoke_env(appdata_root, {}),
+    )
+
+    assert result.exit_code == 1
+    assert "error=request_state_not_found" in result.output
+    assert "reason=request-state-not-found" in result.output
+    assert calls == []
+
+
+def test_sat_metadata_verify_smoke_profile_mismatch_aborts_before_live_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    paths = _write_ready_setup_profile(appdata_root)
+    record = persist_live_metadata_request(
+        storage_root=paths.storage_root,
+        profile_id="other-profile",
+        query=_metadata_query(),
+        operation="SolicitaDescargaRecibidos",
+        id_solicitud="648a0000-1111-2222-3333-444444447b27",
+        sat_code="5000",
+        sat_message="Accepted",
+        source_command="sat metadata-request-smoke",
+        permit_ref=None,
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(cli_module, "_validate_live_smoke_guard", lambda **_kwargs: calls.append("guard"))
+    monkeypatch.setattr(cli_module, "_run_live_metadata_verify_smoke", lambda *_args, **_kwargs: calls.append("verify"))
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "sat",
+            "metadata-verify-smoke",
+            "--profile",
+            "dummy-profile",
+            "--request-ref",
+            record.request_ref,
+            "--manual-real-sat",
+        ],
+        env=_live_smoke_env(appdata_root, {}),
+    )
+
+    assert result.exit_code == 1
+    assert "error=request_state_profile_mismatch" in result.output
+    assert "648a0000-1111-2222-3333-444444447b27" not in result.output
+    assert calls == []
 
 
 def test_live_smoke_rejects_range_shorter_than_two_seconds(
