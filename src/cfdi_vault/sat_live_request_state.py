@@ -102,6 +102,7 @@ class LiveMetadataRequestRecord:
     sat_estado_solicitud: str = ""
     sat_codigo_estado: str = ""
     numero_cfdis: int = 0
+    package_ids: tuple[str, ...] = ()
     package_refs_redacted: tuple[str, ...] = ()
     updated_at: str = ""
     expires_at: str = ""
@@ -137,6 +138,7 @@ class LiveMetadataRequestRecord:
             "satEstadoSolicitud": self.sat_estado_solicitud,
             "satCodigoEstado": self.sat_codigo_estado,
             "numeroCfdis": self.numero_cfdis,
+            "packageIds": list(self.package_ids),
             "packageRefsRedacted": list(self.package_refs_redacted),
             "updatedAt": self.updated_at,
             "expiresAt": self.expires_at,
@@ -177,6 +179,7 @@ class LiveMetadataRequestRecord:
             sat_estado_solicitud=_optional_str(document, "satEstadoSolicitud"),
             sat_codigo_estado=_optional_str(document, "satCodigoEstado"),
             numero_cfdis=_optional_int(document, "numeroCfdis", default=0),
+            package_ids=_optional_str_tuple(document, "packageIds"),
             package_refs_redacted=_optional_str_tuple(document, "packageRefsRedacted"),
             updated_at=updated_at,
             expires_at=expires_at,

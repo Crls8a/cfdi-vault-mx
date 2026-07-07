@@ -139,7 +139,7 @@ def _value(row: dict[str, str], canonical: str) -> str:
 
 def _detect_delimiter(text: str) -> str:
     header = text.splitlines()[0] if text.splitlines() else ""
-    candidates = ("|", ",", "\t")
+    candidates = ("~", "|", ",", "\t")
     return max(candidates, key=header.count) if header else ","
 
 

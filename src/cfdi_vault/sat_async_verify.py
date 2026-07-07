@@ -244,6 +244,7 @@ def _record_result(
                 common,
                 status=PACKAGE_READY,
                 next_check_at="",
+                package_ids=tuple(result.package_ids),
                 package_refs_redacted=tuple(redact_package_ref(package_id) for package_id in result.package_ids),
             ),
         )

@@ -114,17 +114,19 @@ def parse_package_download_response(xml: XmlInput, *, package_id: str | None = N
     """Parse a synthetic SAT package-download response and decode package bytes."""
 
     root = _response_root(xml)
-    result = _required_element(root, "package download result", "DescargaResult", "DescargarResult", "DownloadResult")
-    sat_code = _required_value(result, "sat_code", "CodEstatus", "CodigoEstatus", "StatusCode")
+    result = _required_element(root, "package download result", "DescargaResult", "DescargarResult", "DownloadResult", "RespuestaDescargaMasivaTercerosSalida")
     message = _value(result, "Mensaje", "Message", "StatusMessage") or ""
     normalized_package_id = package_id or _value(result, "IdPaquete", "PackageId") or ""
     if not normalized_package_id:
         raise SatSoapParseError("package_id is required in package download response")
+    encoded = _value(result, "Paquete", "Package", "Contenido", "Content") or _direct_text(result)
+    sat_code = _value(result, "CodEstatus", "CodigoEstatus", "StatusCode") or ("5000" if encoded else "")
+    if not sat_code:
+        raise SatSoapParseError("sat_code is required in SOAP response")
 
     classification = classify_sat_outcome(SatOperation.DOWNLOAD, sat_code=sat_code)
     content = None
     if classification.action == SatOutcomeAction.FINISHED:
-        encoded = _value(result, "Paquete", "Package", "Contenido", "Content") or _direct_text(result)
         if not encoded:
             raise SatSoapParseError("package content is required when SAT download succeeds")
         content = _decode_base64(encoded)
