@@ -26,6 +26,21 @@ def test_parse_pipe_metadata_accepts_synthetic_rows() -> None:
     assert first.source_package_id == "SYN-PACKAGE-001"
 
 
+def test_parse_tilde_metadata_accepts_sat_txt_rows() -> None:
+    content = "\n".join(
+        [
+            "uuid~rfcEmisor~nombreEmisor~rfcReceptor~nombreReceptor~fechaEmision~montoTotal~estadoComprobante~tipoComprobante",
+            "00000000-0000-4000-8000-000000000010~AAA010101AAA~Synthetic Issuer~BBB010101BBB~Synthetic Receiver~2024-01-15T10:30:00Z~123.45~Vigente~I",
+        ]
+    ).encode("utf-8")
+
+    result = parse_metadata_bytes(content, source_package_id="SYN-PACKAGE-TXT")
+
+    assert result.accepted_count == 1
+    assert result.rejected_count == 0
+    assert result.entries[0].source_package_id == "SYN-PACKAGE-TXT"
+
+
 def test_parse_comma_metadata_accepts_alias_headers_and_default_package() -> None:
     content = "\n".join(
         [

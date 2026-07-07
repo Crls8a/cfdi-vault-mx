@@ -78,12 +78,18 @@ class MemoryPackageStorage:
         return StoredBytes(sha256=digest, size_bytes=len(content), written=True)
 
 
-def process_sat_package(package_id: str, content: bytes, storage: PackageStorage) -> ProcessedPackage:
+def process_sat_package(
+    package_id: str,
+    content: bytes,
+    storage: PackageStorage,
+    *,
+    allowed_extensions: frozenset[str] | None = None,
+) -> ProcessedPackage:
     """Validate, store, and safely extract a downloaded SAT ZIP package."""
 
     package_sha = sha256_bytes(content)
     package_key = f"sat-packages/{_safe_key_segment(package_id)}-{package_sha[:12]}.zip"
-    members = _safe_members(content)
+    members = _safe_members(content, allowed_extensions=allowed_extensions or _ALLOWED_EXTENSIONS)
 
     package_write = storage.write_bytes_idempotent(package_key, content)
     entries: list[ExtractedPackageEntry] = []
@@ -112,14 +118,14 @@ def process_sat_package(package_id: str, content: bytes, storage: PackageStorage
     )
 
 
-def _safe_members(content: bytes) -> tuple[tuple[str, bytes], ...]:
+def _safe_members(content: bytes, *, allowed_extensions: frozenset[str]) -> tuple[tuple[str, bytes], ...]:
     _reject_raw_backslash_names(content)
     try:
         with ZipFile(BytesIO(content)) as package:
             normalized_names: set[str] = set()
             members: list[tuple[str, bytes]] = []
             for info in package.infolist():
-                name = _validate_member_name(info.filename, is_dir=info.is_dir())
+                name = _validate_member_name(info.filename, is_dir=info.is_dir(), allowed_extensions=allowed_extensions)
                 duplicate_key = name.lower()
                 if duplicate_key in normalized_names:
                     raise PackageProcessingError(f"duplicate ZIP entry path rejected: {name}")
@@ -153,7 +159,7 @@ def _reject_raw_backslash_names(content: bytes) -> None:
             cursor = name_end + extra_length
 
 
-def _validate_member_name(raw_name: str, *, is_dir: bool) -> str:
+def _validate_member_name(raw_name: str, *, is_dir: bool, allowed_extensions: frozenset[str]) -> str:
     if is_dir or raw_name.endswith("/"):
         raise PackageProcessingError(f"directory ZIP entry rejected: {raw_name}")
     if "\\" in raw_name:
@@ -164,7 +170,7 @@ def _validate_member_name(raw_name: str, *, is_dir: bool) -> str:
     path = PurePosixPath(raw_name)
     if any(part in {"", ".", ".."} for part in path.parts):
         raise PackageProcessingError(f"unsafe ZIP entry path rejected: {raw_name}")
-    if path.suffix.lower() not in _ALLOWED_EXTENSIONS:
+    if path.suffix.lower() not in allowed_extensions:
         raise PackageProcessingError(f"unsupported ZIP entry extension rejected: {raw_name}")
     return path.as_posix()
 

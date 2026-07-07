@@ -116,6 +116,29 @@ def test_metadata_request_smoke_allows_explicit_weekly_backfill_range(tmp_path: 
     assert _body_operation_names(transport.requests[1].body) == ["SolicitaDescargaRecibidos"]
 
 
+def test_package_download_uses_download_endpoint_without_request_or_verify(tmp_path: Path) -> None:
+    payload = base64.b64encode(b"SYNTHETIC-ZIP-BYTES").decode("ascii")
+    responses = [
+        SoapTransportResponse(200, body=_soap("<sat:AutenticaResult>SYNTHETIC_TOKEN</sat:AutenticaResult>")),
+        SoapTransportResponse(200, body=_soap(f'<sat:DescargaResult IdPaquete="SYN-PKG-001" CodEstatus="5000">{payload}</sat:DescargaResult>')),
+    ]
+    transport = FakeSoapTransport(responses)
+
+    result = SatLiveMetadataSmokeAdapter(
+        profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material()
+    ).download_package("SYN-PKG-001")
+
+    assert result.package_id == "SYN-PKG-001"
+    assert result.content == b"SYNTHETIC-ZIP-BYTES"
+    assert [request.endpoint for request in transport.requests] == [
+        "https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/Autenticacion/Autenticacion.svc",
+        "https://cfdidescargamasiva.clouda.sat.gob.mx/DescargaMasivaService.svc",
+    ]
+    assert transport.requests[1].headers["SOAPAction"] == '"http://DescargaMasivaTerceros.sat.gob.mx/IDescargaMasivaTercerosService/Descargar"'
+    assert _body_operation_names(transport.requests[1].body) == ["Descargar"]
+    assert "SYNTHETIC_TOKEN" not in repr(transport.requests[1])
+
+
 def test_metadata_verify_smoke_uses_stored_request_id_without_new_request_or_download(tmp_path: Path) -> None:
     responses = [
         SoapTransportResponse(200, body=_soap("<sat:AutenticaResult>SYNTHETIC_TOKEN</sat:AutenticaResult>")),

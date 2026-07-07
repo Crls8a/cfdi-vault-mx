@@ -1,4 +1,4 @@
-"""Guarded live SAT metadata-smoke adapter: auth/request/verify only, no package download."""
+"""Guarded live SAT metadata adapter: auth/request/verify/package with explicit CLI gates."""
 from __future__ import annotations
 import base64
 from copy import deepcopy
@@ -40,6 +40,7 @@ from cfdi_vault.sat_soap_parse import (
     SatSoapParseError,
     parse_authentication_response,
     parse_download_request_response,
+    parse_package_download_response,
     parse_verification_response,
 )
 from cfdi_vault.sat_transport import SoapTransportPort, SoapTransportRequest
@@ -57,8 +58,10 @@ BASE64_ENCODING_TYPE = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-
 AUTH_ACTION = AUTH_SOAP_ACTION
 REQUEST_ACTION_BASE = "http://DescargaMasivaTerceros.sat.gob.mx/ISolicitaDescargaService"
 VERIFY_ACTION = "http://DescargaMasivaTerceros.sat.gob.mx/IVerificaSolicitudDescargaService/VerificaSolicitudDescarga"
+DOWNLOAD_ACTION = "http://DescargaMasivaTerceros.sat.gob.mx/IDescargaMasivaTercerosService/Descargar"
 DEFAULT_REQUEST_ENDPOINT = "https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/SolicitaDescargaService.svc"
 DEFAULT_VERIFY_ENDPOINT = "https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/VerificaSolicitudDescargaService.svc"
+DEFAULT_DOWNLOAD_ENDPOINT = "https://cfdidescargamasiva.clouda.sat.gob.mx/DescargaMasivaService.svc"
 SAFE_LIVE_ERROR_HINT = "inspect the redacted diagnostic stage; do not copy raw SOAP or local credential data"
 TRANSPORT_HINT = "check SOAPAction, content-type, logical endpoint, TLS, and SAT service availability"
 PARSE_HINT = "check SAT response shape with redacted diagnostics only"
@@ -309,6 +312,7 @@ class SatLiveSmokeEndpoints:
     auth: str = DEFAULT_AUTH_ENDPOINT
     request: str = DEFAULT_REQUEST_ENDPOINT
     verify: str = DEFAULT_VERIFY_ENDPOINT
+    download: str = DEFAULT_DOWNLOAD_ENDPOINT
 @dataclass(frozen=True)
 class SatLiveSmokeSummary:
     result: str
@@ -371,6 +375,7 @@ class SatLiveMetadataSmokeAdapter:
             resolve_auth_endpoint(os.environ),
             os.getenv("CFDI_VAULT_SAT_REQUEST_ENDPOINT", DEFAULT_REQUEST_ENDPOINT),
             os.getenv("CFDI_VAULT_SAT_VERIFY_ENDPOINT", DEFAULT_VERIFY_ENDPOINT),
+            os.getenv("CFDI_VAULT_SAT_DOWNLOAD_ENDPOINT", DEFAULT_DOWNLOAD_ENDPOINT),
         )
         self._timeout_seconds = timeout_seconds
         self._auth_envelope_variant = _validated_auth_envelope_variant(auth_envelope_variant)
@@ -445,6 +450,20 @@ class SatLiveMetadataSmokeAdapter:
             )
         authorization = self._authenticate()
         return self._send_verification(authorization, normalized_request_id)
+
+    def download_package(self, package_id: str):
+        """Download one stored package id; no request or verify."""
+
+        normalized_package_id = package_id.strip()
+        if not normalized_package_id:
+            raise SatLiveSmokeError(
+                "live package download requires a stored package id",
+                stage="preflight",
+                error_kind="guard_failed",
+                safe_hint="package-ref must resolve to an IdPaquete in local state",
+            )
+        authorization = self._authenticate()
+        return self._send_package_download(authorization, normalized_package_id)
 
     def _authenticate(self) -> str:
         body = _build_stage(
@@ -522,6 +541,30 @@ class SatLiveMetadataSmokeAdapter:
             raise SatLiveSmokeError(
                 "SAT verification response could not be parsed",
                 stage="verify_response_parse",
+                error_kind=_response_error_kind(response),
+                safe_hint=PARSE_HINT,
+                soap_fault_code=_soap_fault_code(response),
+                payload_size=len(response),
+                duration_ms=_elapsed_ms(started),
+            ) from None
+
+    def _send_package_download(self, authorization: str, package_id: str):
+        body = _build_stage("package_download", lambda: _build_package_download_envelope(package_id, self._profile.rfc, self._load_material()))
+        response = self._send(
+            self._endpoints.download,
+            DOWNLOAD_ACTION,
+            body,
+            authorization=authorization,
+            stage="package_download",
+            endpoint_label="package_download",
+        )
+        started = time.perf_counter()
+        try:
+            return parse_package_download_response(response, package_id=package_id)
+        except (SatSoapParseError, ValueError):
+            raise SatLiveSmokeError(
+                "SAT package download response could not be parsed",
+                stage="package_download",
                 error_kind=_response_error_kind(response),
                 safe_hint=PARSE_HINT,
                 soap_fault_code=_soap_fault_code(response),
@@ -820,6 +863,13 @@ def _request_attrs(query: DownloadQuery, operation: SatV15RequestOperation) -> d
 def _build_verify_envelope(request_id: str, requester_rfc: str, material: SatEfirmMaterial) -> bytes:
     payload = _signed_payload("solicitud", {"IdSolicitud": request_id, "RfcSolicitante": requester_rfc.upper()}, material)
     return _operation_envelope("VerificaSolicitudDescarga", payload)
+
+
+def _build_package_download_envelope(package_id: str, requester_rfc: str, material: SatEfirmMaterial) -> bytes:
+    payload = _signed_payload("peticionDescarga", {"IdPaquete": package_id, "RfcSolicitante": requester_rfc.upper()}, material)
+    return _operation_envelope("Descargar", payload)
+
+
 def _signed_payload(name: str, attrs: dict[str, str], material: SatEfirmMaterial) -> etree._Element:
     payload = etree.Element(f"{{{SAT_REQUEST_NS}}}{name}", attrs)
     return _SatSha1XmlSigner(

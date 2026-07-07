@@ -94,6 +94,10 @@ def test_parse_package_download_response_decodes_content_and_classifies_errors()
     downloaded = parse_package_download_response(
         _soap(f'<sat:DescargaResult IdPaquete="SYN-PKG-001" CodEstatus="5000" Mensaje="Downloaded">{payload}</sat:DescargaResult>')
     )
+    documented_shape = parse_package_download_response(
+        _soap(f"<sat:RespuestaDescargaMasivaTercerosSalida><sat:Paquete>{payload}</sat:Paquete></sat:RespuestaDescargaMasivaTercerosSalida>"),
+        package_id="SYN-PKG-DOCS",
+    )
     expired = parse_package_download_response(
         _soap('<sat:DescargaResult IdPaquete="SYN-PKG-002" CodEstatus="5007" Mensaje="Expired" />')
     )
@@ -105,6 +109,9 @@ def test_parse_package_download_response_decodes_content_and_classifies_errors()
     assert "SYNTHETIC-PACKAGE" not in repr(downloaded)
     assert payload not in repr(downloaded)
     assert "content=<redacted>" in repr(downloaded)
+    assert documented_shape.package_id == "SYN-PKG-DOCS"
+    assert documented_shape.sat_code == "5000"
+    assert documented_shape.content == b"SYNTHETIC-PACKAGE::SYN-PKG-001\n"
     assert expired.action == SatOutcomeAction.EXPIRED
     assert expired.content is None
 

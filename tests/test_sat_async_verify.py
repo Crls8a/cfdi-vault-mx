@@ -69,6 +69,7 @@ def test_finished_marks_package_ready_without_download(tmp_path: Path) -> None:
     assert record.status == PACKAGE_READY
     assert record.next_check_at == ""
     assert record.numero_cfdis == 2
+    assert record.package_ids == ("SYN-PKG-001", "SYN-PKG-002")
     assert len(record.package_refs_redacted) == 2
     assert all(item.startswith("pkg-") for item in record.package_refs_redacted)
     assert verifier.download_calls == []
