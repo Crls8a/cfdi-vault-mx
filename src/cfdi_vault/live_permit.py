@@ -17,11 +17,15 @@ from cfdi_vault.domain import DownloadDirection, DownloadQuery, RequestType
 from cfdi_vault.sat_auth_constants import AUTH_ENVELOPE_VARIANT_SECURITY_ONLY, DEFAULT_AUTH_ENVELOPE_VARIANT, AUTH_ENVELOPE_VARIANTS
 from cfdi_vault.setup_core import SetupError, find_repo_root, resolve_appdata_root, validate_profile_id
 
-ALLOWED_SCOPES = frozenset({"transport_probe", "auth_post_probe", "verify_post_probe", "auth_matrix_probe", "auth_live_smoke", "metadata_live_smoke"})
-CREDENTIAL_REQUIRED_SCOPES = frozenset({"auth_live_smoke", "metadata_live_smoke"})
+BACKFILL_SUBMIT_SCOPE = "metadata_backfill_submit"
+ALLOWED_SCOPES = frozenset(
+    {"transport_probe", "auth_post_probe", "verify_post_probe", "auth_matrix_probe", "auth_live_smoke", "metadata_live_smoke", BACKFILL_SUBMIT_SCOPE}
+)
+CREDENTIAL_REQUIRED_SCOPES = frozenset({"auth_live_smoke", "metadata_live_smoke", BACKFILL_SUBMIT_SCOPE})
 PERMIT_INDENT = 2
 MAX_EXPIRES_MINUTES = 15
 MAX_RANGE_DAYS = 1
+MAX_BACKFILL_RANGE_DAYS = 7
 MAX_ATTEMPTS = 1
 PERMIT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
 
@@ -185,7 +189,7 @@ def create_live_execution_permit(
         direction=safe_request.direction,
         date_from=safe_request.date_from,
         date_to=safe_request.date_to,
-        max_range_days=MAX_RANGE_DAYS,
+        max_range_days=_max_range_days(safe_request.scope),
         max_attempts=MAX_ATTEMPTS,
         allow_real_sat=True,
         allow_real_credentials=safe_request.scope in CREDENTIAL_REQUIRED_SCOPES,
@@ -349,7 +353,7 @@ def _validated_request(request: LivePermitRequest) -> LivePermitRequest:
         raise LivePermitError("metadata-only-required")
     if request.direction not in {DownloadDirection.RECEIVED.value, DownloadDirection.ISSUED.value}:
         raise LivePermitError("invalid-direction")
-    _validate_one_day_range(request.date_from, request.date_to)
+    _validate_date_range(request.date_from, request.date_to, max_days=_max_range_days(request.scope))
     if not request.reason.strip():
         raise LivePermitError("reason-required")
     if request.issued_by != "carlos-local":
@@ -389,13 +393,13 @@ def _validate_document_policy(permit: LiveExecutionPermit, *, now: datetime, rep
         raise LivePermitError("permit-already-consumed")
     if permit.expires_at <= now:
         raise LivePermitError("permit-expired")
-    if permit.max_range_days != MAX_RANGE_DAYS:
+    if permit.max_range_days != _max_range_days(permit.scope):
         raise LivePermitError("permit-range-policy-invalid")
     if permit.max_attempts != MAX_ATTEMPTS:
         raise LivePermitError("permit-attempt-policy-invalid")
     if permit.kind != RequestType.METADATA.value:
         raise LivePermitError("metadata-only-required")
-    _validate_one_day_range(permit.date_from, permit.date_to)
+    _validate_date_range(permit.date_from, permit.date_to, max_days=permit.max_range_days)
     if permit.allow_real_sat is not True:
         raise LivePermitError("permit-real-sat-not-allowed")
     if permit.scope in CREDENTIAL_REQUIRED_SCOPES and permit.allow_real_credentials is not True:
@@ -445,12 +449,16 @@ def _write_permit_document(path: Path, permit: LiveExecutionPermit) -> None:
     path.write_text(json.dumps(permit.to_document(), indent=PERMIT_INDENT, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def _validate_one_day_range(date_from: str, date_to: str) -> None:
+def _max_range_days(scope: str) -> int:
+    return MAX_BACKFILL_RANGE_DAYS if scope == BACKFILL_SUBMIT_SCOPE else MAX_RANGE_DAYS
+
+
+def _validate_date_range(date_from: str, date_to: str, *, max_days: int) -> None:
     start = _parse_date(date_from)
     end = _parse_date(date_to)
     if end < start:
         raise LivePermitError("invalid-date-range")
-    if (end - start).days + 1 > MAX_RANGE_DAYS:
+    if (end - start).days + 1 > max_days:
         raise LivePermitError("range-too-wide")
 
 

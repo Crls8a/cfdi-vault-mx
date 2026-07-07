@@ -49,6 +49,7 @@ from cfdi_vault.sat_live_request_state import (
     LiveMetadataRequestRecord,
     LiveMetadataRequestSummary,
     LiveRequestStateError,
+    VERIFY_SCHEDULED,
     list_live_metadata_requests,
     load_live_metadata_request,
     persist_live_metadata_request,
@@ -71,6 +72,7 @@ from cfdi_vault.sat_auth_post_probe import SatAuthPostProbeResult, run_sat_auth_
 from cfdi_vault.sat_transport_probe import SatProbeResult, run_sat_transport_probe
 from cfdi_vault.sat_verify_post_probe import SatVerifyPostProbeResult, run_sat_verify_post_probe
 from cfdi_vault.live_permit import (
+    BACKFILL_SUBMIT_SCOPE,
     LivePermitError,
     LivePermitRequest,
     auth_live_smoke_permit_expectation,
@@ -555,7 +557,7 @@ live_app.add_typer(permit_app, name="permit")
 
 @permit_app.command("create")
 def live_permit_create(
-    scope: str = typer.Option(..., "--scope", help="transport_probe, auth_post_probe, verify_post_probe, auth_matrix_probe, auth_live_smoke, or metadata_live_smoke."),
+    scope: str = typer.Option(..., "--scope", help="transport_probe, auth_post_probe, verify_post_probe, auth_matrix_probe, auth_live_smoke, metadata_live_smoke, or metadata_backfill_submit."),
     profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
     kind: str = typer.Option(..., "--kind", help="metadata only."),
     direction: str = typer.Option(..., "--direction", help="received or issued."),
@@ -971,6 +973,86 @@ def sat_backfill_plan(
         typer.echo(f"reason={exc}", err=True)
         raise typer.Exit(code=1) from exc
     _print_backfill_plan(plan)
+
+
+@backfill_app.command("submit")
+def sat_backfill_submit(
+    profile: str = typer.Option("default", "--profile", help="Local setup profile id."),
+    from_date: str = typer.Option(..., "--from", help="Start date: YYYY-MM-DD."),
+    to_date: str = typer.Option(..., "--to", help="End date: YYYY-MM-DD."),
+    direction: str = typer.Option("received", "--direction", help="received or issued."),
+    kind: str = typer.Option("metadata", "--kind", help="metadata only in this version."),
+    window: str = typer.Option("weekly", "--window", help="weekly or daily."),
+    limit_windows: int | None = typer.Option(None, "--limit-windows", min=1, help="Required; first live version allows exactly 1."),
+    manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Required human gate for real SAT backfill submit."),
+    permit: str | None = typer.Option(None, "--permit", help="One-time local metadata_backfill_submit permit id."),
+) -> None:
+    """Submit one planned historical metadata request; no verify or package download."""
+
+    if not manual_real_sat:
+        _deny_backfill_submit("manual-real-sat-required")
+    if permit is None:
+        _deny_backfill_submit("permit-required-for-live")
+    if limit_windows is None:
+        _deny_backfill_submit("limit-windows-required")
+    if limit_windows != 1:
+        _deny_backfill_submit("limit-one-required")
+    local_profile = _load_download_profile(profile)
+    try:
+        plan = build_backfill_plan(
+            storage_root=local_profile.storage_root,
+            profile_id=local_profile.profile_id,
+            requester_rfc=local_profile.rfc,
+            start_date=_parse_backfill_date(from_date, label="--from"),
+            end_date=_parse_backfill_date(to_date, label="--to"),
+            direction=_parse_download_direction(direction),
+            kind=_parse_download_kind(kind),
+            window=window,
+        )
+    except LiveRequestStateError as exc:
+        typer.echo("error=request_state_unavailable", err=True)
+        typer.echo(f"reason={exc.reason}", err=True)
+        raise typer.Exit(code=1) from exc
+    except ValueError as exc:
+        typer.echo("error=invalid_backfill_submit", err=True)
+        typer.echo(f"reason={exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    pending = tuple(window_plan for window_plan in plan.windows if not window_plan.existing_request_ref)
+    selected = pending[:limit_windows]
+    if not selected:
+        _print_backfill_submit_result(plan=plan, selected=(), result=None)
+        return
+    selected_window = selected[0]
+    permit_verified = _validate_live_smoke_guard(
+        profile_id=profile,
+        manual_real_sat=manual_real_sat,
+        query=selected_window.query,
+        metadata_only=True,
+        range_within_limit=_is_backfill_submit_range(selected_window.query),
+        mode="backfill-submit",
+        permit_ref=permit,
+        permit_scope=BACKFILL_SUBMIT_SCOPE,
+    )
+    try:
+        result = _run_live_metadata_request_smoke(
+            profile,
+            selected_window.query,
+            live_permit_verified=permit_verified,
+            permit_ref=permit,
+            source_command="sat backfill submit",
+            status=VERIFY_SCHEDULED,
+        )
+    except LiveRequestStateError as exc:
+        typer.echo("error=request_state_persist_failed", err=True)
+        typer.echo(f"reason={exc.reason}", err=True)
+        raise typer.Exit(code=1) from exc
+    except LiveSmokeAdapterUnavailable as exc:
+        typer.echo("error=live_adapter_unavailable", err=True)
+        raise typer.Exit(code=1) from exc
+    except SatLiveSmokeError as exc:
+        _print_live_adapter_error(exc)
+        raise typer.Exit(code=1) from exc
+    _print_backfill_submit_result(plan=plan, selected=selected, result=result)
 
 
 
@@ -2233,6 +2315,20 @@ def _is_minimal_live_smoke_range(query: DownloadQuery) -> bool:
     return query.period.start.date() == query.period.end.date() and 2 <= elapsed_seconds <= 86_400
 
 
+def _is_backfill_submit_range(query: DownloadQuery) -> bool:
+    if query.period is None:
+        return False
+    elapsed_seconds = (query.period.end - query.period.start).total_seconds()
+    elapsed_days = (query.period.end.date() - query.period.start.date()).days + 1
+    return 2 <= elapsed_seconds and elapsed_days <= 7
+
+
+def _deny_backfill_submit(reason: str) -> None:
+    typer.echo("error=backfill_submit_denied", err=True)
+    typer.echo(f"reason={reason}", err=True)
+    raise typer.Exit(code=1)
+
+
 def _build_profile_auth_envelope(profile_id: str, *, auth_envelope_variant: str = DEFAULT_AUTH_ENVELOPE_VARIANT) -> bytes:
     profile = _load_download_profile(profile_id)
     material = load_sat_efirma_material(profile, _setup_provider(profile_id))
@@ -2280,6 +2376,8 @@ def _run_live_metadata_request_smoke(
     *,
     live_permit_verified: bool = False,
     permit_ref: str | None = None,
+    source_command: str = "sat metadata-request-smoke",
+    status: str = "accepted",
 ) -> LiveSmokeCliResult:
     profile = _load_download_profile(profile_id)
     adapter = SatLiveMetadataSmokeAdapter(
@@ -2298,9 +2396,9 @@ def _run_live_metadata_request_smoke(
             id_solicitud=getattr(result, "id_solicitud"),
             sat_code=getattr(result, "sat_code", ""),
             sat_message=getattr(result, "sat_message", ""),
-            source_command="sat metadata-request-smoke",
+            source_command=source_command,
             permit_ref=permit_ref,
-            status="accepted",
+            status=status,
         )
         request_ref = stored.request_ref
     return _live_smoke_cli_result(result, request_ref=request_ref)
@@ -2467,6 +2565,36 @@ def _print_backfill_plan(plan: BackfillPlan) -> None:
             f"status={window.existing_status}",
         ]
         typer.echo("window_plan=" + "|".join(fields))
+
+
+def _print_backfill_submit_result(
+    *,
+    plan: BackfillPlan,
+    selected: tuple[object, ...],
+    result: LiveSmokeCliResult | None,
+) -> None:
+    typer.echo("mode=backfill-submit")
+    typer.echo(f"profile={plan.profile_id}")
+    typer.echo(f"kind={plan.kind.value}")
+    typer.echo(f"direction={plan.direction.value}")
+    typer.echo(f"window={plan.window}")
+    typer.echo(f"window_count={len(plan.windows)}")
+    typer.echo(f"existing_count={plan.existing_count}")
+    typer.echo(f"selected_count={len(selected)}")
+    typer.echo(f"submitted_count={1 if result and result.request == 'accepted' else 0}")
+    typer.echo(f"sat_real_execution={'adapter_enabled' if selected else 'no'}")
+    typer.echo("verification=not_run")
+    typer.echo("package_downloaded=no")
+    typer.echo("zip_downloaded=no")
+    typer.echo("xml_downloaded=no")
+    typer.echo("pdf_generated=no")
+    if result is not None:
+        typer.echo(f"criteria_hash={getattr(selected[0], 'criteria_hash', '')}")
+        typer.echo(f"operation={result.operation}")
+        typer.echo(f"request={result.request}")
+        typer.echo(f"request_ref={result.request_ref}")
+        typer.echo(f"id_solicitud_redacted={result.id_solicitud_redacted}")
+        typer.echo(f"scheduler_status={VERIFY_SCHEDULED}")
 
 
 def _print_verify_due_report(report: VerifyDueReport, *, sat_real_execution: str = "no") -> None:
