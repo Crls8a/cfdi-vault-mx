@@ -76,6 +76,7 @@ from cfdi_vault.live_permit import (
     LivePermitError,
     LivePermitRequest,
     MAX_BACKFILL_RANGE_DAYS,
+    METADATA_LIVE_SMOKE_SCOPE,
     auth_live_smoke_permit_expectation,
     create_live_execution_permit,
     load_live_execution_permit,
@@ -1119,10 +1120,10 @@ def sat_verify_due(
             manual_real_sat=manual_real_sat,
             query=query,
             metadata_only=True,
-            range_within_limit=_is_minimal_live_smoke_range(query),
+            range_within_limit=_is_backfill_submit_range(query),
             mode="verify-due",
             permit_ref=permit,
-            permit_scope="metadata_live_smoke",
+            permit_scope=METADATA_LIVE_SMOKE_SCOPE,
         )
         verifier = _live_verify_due_verifier(profile, live_permit_verified=permit_verified)
     else:

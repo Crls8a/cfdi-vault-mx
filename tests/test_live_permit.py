@@ -196,6 +196,22 @@ def test_live_execution_permit_allows_backfill_submit_week_with_credentials(tmp_
     assert permit.allow_real_credentials is True
 
 
+def test_live_execution_permit_allows_metadata_verify_week_with_credentials(tmp_path: Path) -> None:
+    env = {"LOCALAPPDATA": str(tmp_path / "appdata")}
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    permit = create_live_execution_permit(
+        _request(scope="metadata_live_smoke", date_from="2026-01-01", date_to="2026-01-07"),
+        env=env,
+        now=NOW,
+        repo_root=repo_root,
+    )
+
+    assert permit.scope == "metadata_live_smoke"
+    assert permit.max_range_days == 7
+    assert permit.allow_real_credentials is True
+
+
 @pytest.mark.parametrize(
     ("permit_request", "reason"),
     [

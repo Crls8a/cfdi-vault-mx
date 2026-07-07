@@ -938,10 +938,11 @@ def test_sat_verify_due_live_permit_runs_scheduler_once_without_download(
     appdata_root = tmp_path / "appdata"
     paths = _write_ready_setup_profile(appdata_root)
     full_request_id = "648a0000-1111-2222-3333-444444447b27"
+    query = _weekly_metadata_query()
     record = persist_live_metadata_request(
         storage_root=paths.storage_root,
         profile_id="dummy-profile",
-        query=_metadata_query(),
+        query=query,
         operation="SolicitaDescargaRecibidos",
         id_solicitud=full_request_id,
         sat_code="5000",
@@ -958,7 +959,7 @@ def test_sat_verify_due_live_permit_runs_scheduler_once_without_download(
             kind="metadata",
             direction="received",
             date_from="2024-01-01",
-            date_to="2024-01-01",
+            date_to="2024-01-07",
             reason="Carlos authorized scheduler verify-due live smoke",
         ),
         env={"LOCALAPPDATA": str(appdata_root)},
@@ -1658,6 +1659,19 @@ def _metadata_query() -> cli_module.DownloadQuery:
         cli_module.DateTimePeriod(
             datetime(2024, 1, 1, tzinfo=timezone.utc),
             datetime(2024, 1, 1, 0, 0, 2, tzinfo=timezone.utc),
+        ),
+    )
+
+
+def _weekly_metadata_query() -> cli_module.DownloadQuery:
+    return cli_module.DownloadQuery(
+        "dummy-profile",
+        "XAXX010101000",
+        cli_module.DownloadDirection.RECEIVED,
+        cli_module.RequestType.METADATA,
+        cli_module.DateTimePeriod(
+            datetime(2024, 1, 1, tzinfo=timezone.utc),
+            datetime(2024, 1, 7, 23, 59, 59, tzinfo=timezone.utc),
         ),
     )
 
