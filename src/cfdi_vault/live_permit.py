@@ -18,10 +18,11 @@ from cfdi_vault.sat_auth_constants import AUTH_ENVELOPE_VARIANT_SECURITY_ONLY, D
 from cfdi_vault.setup_core import SetupError, find_repo_root, resolve_appdata_root, validate_profile_id
 
 BACKFILL_SUBMIT_SCOPE = "metadata_backfill_submit"
+METADATA_LIVE_SMOKE_SCOPE = "metadata_live_smoke"
 ALLOWED_SCOPES = frozenset(
-    {"transport_probe", "auth_post_probe", "verify_post_probe", "auth_matrix_probe", "auth_live_smoke", "metadata_live_smoke", BACKFILL_SUBMIT_SCOPE}
+    {"transport_probe", "auth_post_probe", "verify_post_probe", "auth_matrix_probe", "auth_live_smoke", METADATA_LIVE_SMOKE_SCOPE, BACKFILL_SUBMIT_SCOPE}
 )
-CREDENTIAL_REQUIRED_SCOPES = frozenset({"auth_live_smoke", "metadata_live_smoke", BACKFILL_SUBMIT_SCOPE})
+CREDENTIAL_REQUIRED_SCOPES = frozenset({"auth_live_smoke", METADATA_LIVE_SMOKE_SCOPE, BACKFILL_SUBMIT_SCOPE})
 PERMIT_INDENT = 2
 MAX_EXPIRES_MINUTES = 15
 MAX_RANGE_DAYS = 1
@@ -450,7 +451,7 @@ def _write_permit_document(path: Path, permit: LiveExecutionPermit) -> None:
 
 
 def _max_range_days(scope: str) -> int:
-    return MAX_BACKFILL_RANGE_DAYS if scope == BACKFILL_SUBMIT_SCOPE else MAX_RANGE_DAYS
+    return MAX_BACKFILL_RANGE_DAYS if scope in {BACKFILL_SUBMIT_SCOPE, METADATA_LIVE_SMOKE_SCOPE} else MAX_RANGE_DAYS
 
 
 def _validate_date_range(date_from: str, date_to: str, *, max_days: int) -> None:
