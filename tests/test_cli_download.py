@@ -643,7 +643,8 @@ def test_live_metadata_request_smoke_persists_accepted_id_without_printing_full_
         def __init__(self, **_kwargs: object) -> None:
             pass
 
-        def metadata_request_smoke(self, _query: object) -> SimpleNamespace:
+        def metadata_request_smoke(self, _query: object, *, max_range_days: int = 1) -> SimpleNamespace:
+            assert max_range_days == 1
             return SimpleNamespace(
                 result="metadata-request-submitted",
                 auth="authenticated",
@@ -675,6 +676,41 @@ def test_live_metadata_request_smoke_persists_accepted_id_without_printing_full_
     assert result.request_ref == records[0].request_ref
     assert result.id_solicitud_redacted == "648a...7b27"
     assert full_request_id not in repr(result)
+
+
+def test_live_permit_create_prints_backfill_submit_max_range(tmp_path: Path) -> None:
+    appdata_root = tmp_path / "appdata"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "live",
+            "permit",
+            "create",
+            "--scope",
+            "metadata_backfill_submit",
+            "--profile",
+            "dummy-profile",
+            "--kind",
+            "metadata",
+            "--direction",
+            "received",
+            "--from",
+            "2026-01-01",
+            "--to",
+            "2026-01-07",
+            "--expires-minutes",
+            "15",
+            "--reason",
+            "Carlos authorized synthetic backfill submit test",
+        ],
+        env={"LOCALAPPDATA": str(appdata_root)},
+    )
+
+    assert result.exit_code == 0, result.output
+    lines = _key_value_lines(result.output)
+    assert lines["scope"] == "metadata_backfill_submit"
+    assert lines["max_range_days"] == "7"
 
 
 def test_sat_metadata_request_state_lists_pending_refs_redacted(

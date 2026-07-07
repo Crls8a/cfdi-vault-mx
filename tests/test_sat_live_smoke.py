@@ -89,6 +89,33 @@ def test_metadata_request_smoke_does_not_verify_or_download(tmp_path: Path) -> N
     assert len(transport.requests) == 2
 
 
+def test_metadata_request_smoke_allows_explicit_weekly_backfill_range(tmp_path: Path) -> None:
+    responses = [
+        SoapTransportResponse(200, body=_soap("<sat:AutenticaResult>SYNTHETIC_TOKEN</sat:AutenticaResult>")),
+        SoapTransportResponse(200, body=_soap('<sat:SolicitaDescargaRecibidosResult IdSolicitud="SYN-REQ-003" CodEstatus="5000" Mensaje="Accepted" />')),
+    ]
+    transport = FakeSoapTransport(responses)
+    query = DownloadQuery(
+        "default",
+        "XAXX010101000",
+        DownloadDirection.RECEIVED,
+        RequestType.METADATA,
+        DateTimePeriod(
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            datetime(2026, 1, 7, 23, 59, 59, tzinfo=timezone.utc),
+        ),
+    )
+
+    result = SatLiveMetadataSmokeAdapter(
+        profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material()
+    ).metadata_request_smoke(query, max_range_days=7)
+
+    assert (result.result, result.request, result.verification) == ("metadata-request-submitted", "accepted", "not_run")
+    assert result.operation == "SolicitaDescargaRecibidos"
+    assert len(transport.requests) == 2
+    assert _body_operation_names(transport.requests[1].body) == ["SolicitaDescargaRecibidos"]
+
+
 def test_metadata_verify_smoke_uses_stored_request_id_without_new_request_or_download(tmp_path: Path) -> None:
     responses = [
         SoapTransportResponse(200, body=_soap("<sat:AutenticaResult>SYNTHETIC_TOKEN</sat:AutenticaResult>")),
