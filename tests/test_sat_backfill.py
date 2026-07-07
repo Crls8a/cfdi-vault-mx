@@ -187,9 +187,10 @@ def test_sat_backfill_submit_persists_accepted_request_for_scheduler(
         def __init__(self, **_kwargs: object) -> None:
             pass
 
-        def metadata_request_smoke(self, query: DownloadQuery) -> SimpleNamespace:
+        def metadata_request_smoke(self, query: DownloadQuery, *, max_range_days: int = 1) -> SimpleNamespace:
             seen["direction"] = query.direction.value
             seen["period_start"] = query.period.start.date().isoformat() if query.period else ""
+            seen["max_range_days"] = max_range_days
             return SimpleNamespace(
                 result="metadata-request-submitted",
                 auth="authenticated",
@@ -214,7 +215,7 @@ def test_sat_backfill_submit_persists_accepted_request_for_scheduler(
     lines = _key_value_lines(result.output)
     records = list_live_metadata_requests(paths.storage_root)
     state_text = live_metadata_state_path(paths.storage_root).read_text(encoding="utf-8")
-    assert seen == {"direction": direction, "period_start": "2026-01-01"}
+    assert seen == {"direction": direction, "period_start": "2026-01-01", "max_range_days": 7}
     assert lines["mode"] == "backfill-submit"
     assert lines["operation"] == operation
     assert lines["request_ref"] == records[0].request_ref

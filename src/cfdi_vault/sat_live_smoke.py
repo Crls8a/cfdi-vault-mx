@@ -404,10 +404,10 @@ class SatLiveMetadataSmokeAdapter:
             signed_reference_count=attempt.signed_reference_count,
         )
 
-    def metadata_request_smoke(self, query: DownloadQuery) -> SatLiveSmokeSummary:
+    def metadata_request_smoke(self, query: DownloadQuery, *, max_range_days: int = 1) -> SatLiveSmokeSummary:
         """Run guarded auth + SAT v1.5 metadata request only; no verify or package download."""
 
-        self._require_metadata_only(query)
+        self._require_metadata_only(query, max_range_days=max_range_days)
         authorization = self._authenticate()
         attempt = self._send_request(authorization, query)
         result = "metadata-request-submitted" if attempt.result.action == SatOutcomeAction.ACCEPTED else "request-not-accepted"
@@ -608,7 +608,7 @@ class SatLiveMetadataSmokeAdapter:
             self._material = load_sat_efirma_material(self._profile, self._provider)  # type: ignore[misc]
         return self._material
     @staticmethod
-    def _require_metadata_only(query: DownloadQuery) -> None:
+    def _require_metadata_only(query: DownloadQuery, *, max_range_days: int = 1) -> None:
         if query.request_type.value != "metadata":
             raise SatLiveSmokeError(
                 "live smoke requires metadata-only query",
@@ -616,7 +616,7 @@ class SatLiveMetadataSmokeAdapter:
                 error_kind="guard_failed",
                 safe_hint="metadata-only live smoke is required",
             )
-        _validate_v15_live_metadata_query(query)
+        _validate_v15_live_metadata_query(query, max_range_days=max_range_days)
 def load_sat_efirma_material(profile: LocalProfile, provider: ExistenceProvider) -> SatEfirmMaterial:
     started = time.perf_counter()
     try:
@@ -757,7 +757,9 @@ def v15_request_soap_action(operation: SatV15RequestOperation) -> str:
     return f"{REQUEST_ACTION_BASE}/{operation.value}"
 
 
-def _validate_v15_live_metadata_query(query: DownloadQuery) -> None:
+def _validate_v15_live_metadata_query(query: DownloadQuery, *, max_range_days: int = 1) -> None:
+    if max_range_days < 1:
+        raise _v15_guard_error("live metadata smoke max range must be positive", "invalid-max-range-days")
     operation = resolve_v15_request_operation(query)
     if operation == SatV15RequestOperation.FOLIO:
         if not query.uuid:
@@ -770,8 +772,8 @@ def _validate_v15_live_metadata_query(query: DownloadQuery) -> None:
         raise _v15_guard_error("FechaInicial must be before FechaFinal", "fecha-inicial-must-be-before-fecha-final")
     if elapsed_seconds < 2:
         raise _v15_guard_error("v1.5 metadata smoke requires at least 2 seconds", "minimum-two-second-range-required")
-    if elapsed_seconds > 86_400:
-        raise _v15_guard_error("live metadata smoke range must be at most 1 day", "range-too-wide")
+    if elapsed_seconds > 86_400 * max_range_days:
+        raise _v15_guard_error(f"live metadata smoke range must be at most {max_range_days} day(s)", "range-too-wide")
 
 
 def _v15_guard_error(message: str, hint: str) -> SatLiveSmokeError:

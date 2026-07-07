@@ -75,6 +75,7 @@ from cfdi_vault.live_permit import (
     BACKFILL_SUBMIT_SCOPE,
     LivePermitError,
     LivePermitRequest,
+    MAX_BACKFILL_RANGE_DAYS,
     auth_live_smoke_permit_expectation,
     create_live_execution_permit,
     load_live_execution_permit,
@@ -597,7 +598,7 @@ def live_permit_create(
     typer.echo(f"direction={direction}")
     typer.echo(f"date_from={from_date}")
     typer.echo(f"date_to={to_date}")
-    typer.echo("max_range_days=1")
+    typer.echo(f"max_range_days={permit.max_range_days}")
     typer.echo("max_attempts=1")
     typer.echo(f"expires_at={permit.expires_at.isoformat().replace('+00:00', 'Z')}")
     typer.echo("permit_storage=appdata-local")
@@ -1041,6 +1042,7 @@ def sat_backfill_submit(
             permit_ref=permit,
             source_command="sat backfill submit",
             status=VERIFY_SCHEDULED,
+            max_range_days=MAX_BACKFILL_RANGE_DAYS,
         )
     except LiveRequestStateError as exc:
         typer.echo("error=request_state_persist_failed", err=True)
@@ -2320,7 +2322,7 @@ def _is_backfill_submit_range(query: DownloadQuery) -> bool:
         return False
     elapsed_seconds = (query.period.end - query.period.start).total_seconds()
     elapsed_days = (query.period.end.date() - query.period.start.date()).days + 1
-    return 2 <= elapsed_seconds and elapsed_days <= 7
+    return 2 <= elapsed_seconds and elapsed_days <= MAX_BACKFILL_RANGE_DAYS
 
 
 def _deny_backfill_submit(reason: str) -> None:
@@ -2378,6 +2380,7 @@ def _run_live_metadata_request_smoke(
     permit_ref: str | None = None,
     source_command: str = "sat metadata-request-smoke",
     status: str = "accepted",
+    max_range_days: int = 1,
 ) -> LiveSmokeCliResult:
     profile = _load_download_profile(profile_id)
     adapter = SatLiveMetadataSmokeAdapter(
@@ -2385,7 +2388,7 @@ def _run_live_metadata_request_smoke(
         provider=_setup_provider(profile_id),
         transport=_live_smoke_transport(live_permit_verified=live_permit_verified),
     )
-    result = adapter.metadata_request_smoke(query)
+    result = adapter.metadata_request_smoke(query, max_range_days=max_range_days)
     request_ref = ""
     if getattr(result, "request", "") == "accepted" and getattr(result, "id_solicitud", ""):
         stored = persist_live_metadata_request(
