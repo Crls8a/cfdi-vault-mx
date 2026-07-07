@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, time, timezone
+from datetime import date, datetime, time, timezone
 import os
 from pathlib import Path
 import subprocess
@@ -35,6 +35,7 @@ from cfdi_vault.recovery_service import (
 from cfdi_vault.secrets import CredentialKind, CredentialProviderError, CredentialReference, DummySecretProvider
 from cfdi_vault.service import ImportBatchResult, ImportRecord, SummaryRow, VaultService
 from cfdi_vault.sat_async_verify import VerifyBackoffPolicy, VerifyDueReport, run_verify_due
+from cfdi_vault.sat_backfill import BackfillPlan, build_backfill_plan
 from cfdi_vault.sat_orchestration import DownloadRequestOrchestrator
 from cfdi_vault.sat_simulator import FakeSatScenario, FakeSatScenarioClient
 from cfdi_vault.sat_live_smoke import (
@@ -100,6 +101,7 @@ worker_app = typer.Typer(help="Run recovery workers.", no_args_is_help=True)
 sync_app = typer.Typer(help="Submit SAT recovery sync jobs.", no_args_is_help=True)
 download_app = typer.Typer(help="Plan and submit fake/offline SAT download requests.", no_args_is_help=True)
 sat_app = typer.Typer(help="Run human-gated SAT live smoke checks.", no_args_is_help=True)
+backfill_app = typer.Typer(help="Plan safe SAT metadata historical backfills.", no_args_is_help=True)
 custody_app = typer.Typer(help="Manage local secret references without printing values.", no_args_is_help=True)
 live_app = typer.Typer(help="Create one-time local live execution permits.", no_args_is_help=True)
 
@@ -111,6 +113,7 @@ app.add_typer(download_app, name="download")
 app.add_typer(sat_app, name="sat")
 app.add_typer(custody_app, name="secret")
 app.add_typer(live_app, name="live")
+sat_app.add_typer(backfill_app, name="backfill")
 
 
 COMMAND_HELP: tuple[dict[str, str], ...] = (
@@ -932,6 +935,42 @@ def sat_metadata_request_state(
         typer.echo(f"reason={exc.reason}", err=True)
         raise typer.Exit(code=1) from exc
     _print_live_metadata_request_state(profile_id=profile, records=records)
+
+
+@backfill_app.command("plan")
+def sat_backfill_plan(
+    profile: str = typer.Option("default", "--profile", help="Local setup profile id."),
+    from_date: str = typer.Option(..., "--from", help="Start date: YYYY-MM-DD."),
+    to_date: str = typer.Option(..., "--to", help="End date: YYYY-MM-DD."),
+    direction: str = typer.Option("received", "--direction", help="received or issued."),
+    kind: str = typer.Option("metadata", "--kind", help="metadata only in this version."),
+    window: str = typer.Option("weekly", "--window", help="weekly or daily."),
+) -> None:
+    """Plan historical metadata windows without calling SAT."""
+
+    local_profile = _load_download_profile(profile)
+    request_type = _parse_download_kind(kind)
+    download_direction = _parse_download_direction(direction)
+    try:
+        plan = build_backfill_plan(
+            storage_root=local_profile.storage_root,
+            profile_id=local_profile.profile_id,
+            requester_rfc=local_profile.rfc,
+            start_date=_parse_backfill_date(from_date, label="--from"),
+            end_date=_parse_backfill_date(to_date, label="--to"),
+            direction=download_direction,
+            kind=request_type,
+            window=window,
+        )
+    except LiveRequestStateError as exc:
+        typer.echo("error=request_state_unavailable", err=True)
+        typer.echo(f"reason={exc.reason}", err=True)
+        raise typer.Exit(code=1) from exc
+    except ValueError as exc:
+        typer.echo("error=invalid_backfill_plan", err=True)
+        typer.echo(f"reason={exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    _print_backfill_plan(plan)
 
 
 
@@ -2398,6 +2437,38 @@ def _print_live_metadata_scheduler_status(*, profile_id: str, summary: LiveMetad
     typer.echo("redacted=true")
 
 
+def _print_backfill_plan(plan: BackfillPlan) -> None:
+    typer.echo("mode=backfill-plan")
+    typer.echo(f"profile={plan.profile_id}")
+    typer.echo(f"kind={plan.kind.value}")
+    typer.echo(f"direction={plan.direction.value}")
+    typer.echo(f"window={plan.window}")
+    typer.echo(f"from={plan.start_date.isoformat()}")
+    typer.echo(f"to={plan.end_date.isoformat()}")
+    typer.echo(f"window_count={len(plan.windows)}")
+    typer.echo(f"existing_count={plan.existing_count}")
+    typer.echo(f"new_count={plan.new_count}")
+    typer.echo("sat_real_execution=no")
+    typer.echo("package_downloaded=no")
+    typer.echo("zip_downloaded=no")
+    typer.echo("xml_downloaded=no")
+    typer.echo("pdf_generated=no")
+    typer.echo("redacted=true")
+    for window in plan.windows:
+        period = window.query.period
+        fields = [
+            f"index={window.index}",
+            f"from={period.start.isoformat() if period else ''}",
+            f"to={period.end.isoformat() if period else ''}",
+            f"operation={window.operation}",
+            f"criteria_hash={window.criteria_hash}",
+            f"exists={str(bool(window.existing_request_ref)).lower()}",
+            f"request_ref={window.existing_request_ref}",
+            f"status={window.existing_status}",
+        ]
+        typer.echo("window_plan=" + "|".join(fields))
+
+
 def _print_verify_due_report(report: VerifyDueReport, *, sat_real_execution: str = "no") -> None:
     typer.echo("mode=verify-due")
     typer.echo(f"profile={report.profile_id}")
@@ -2943,6 +3014,13 @@ def _parse_download_direction(value: str) -> DownloadDirection:
 def _parse_download_date(value: str, *, label: str, end_of_day: bool) -> datetime:
     try:
         return _parse_cli_datetime(value, end_of_day=end_of_day)
+    except ValueError as exc:
+        raise typer.BadParameter(f"{label} must be a valid YYYY-MM-DD date") from exc
+
+
+def _parse_backfill_date(value: str, *, label: str) -> date:
+    try:
+        return datetime.fromisoformat(value.strip()).date()
     except ValueError as exc:
         raise typer.BadParameter(f"{label} must be a valid YYYY-MM-DD date") from exc
 
