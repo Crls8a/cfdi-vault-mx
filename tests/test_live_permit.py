@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from cfdi_vault.live_permit import (
+    BACKFILL_SUBMIT_SCOPE,
     LivePermitError,
     LivePermitRequest,
     create_live_execution_permit,
@@ -177,6 +178,22 @@ def test_live_execution_permit_allows_auth_live_smoke_scope_with_credentials(tmp
     assert consumed.consumed is True
     assert consumed.auth_envelope_variant == AUTH_ENVELOPE_VARIANT_SECURITY_ONLY
     assert consumed.wcf_action_header_enabled is False
+
+
+def test_live_execution_permit_allows_backfill_submit_week_with_credentials(tmp_path: Path) -> None:
+    env = {"LOCALAPPDATA": str(tmp_path / "appdata")}
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    permit = create_live_execution_permit(
+        _request(scope=BACKFILL_SUBMIT_SCOPE, date_from="2026-01-01", date_to="2026-01-07"),
+        env=env,
+        now=NOW,
+        repo_root=repo_root,
+    )
+
+    assert permit.scope == BACKFILL_SUBMIT_SCOPE
+    assert permit.max_range_days == 7
+    assert permit.allow_real_credentials is True
 
 
 @pytest.mark.parametrize(
