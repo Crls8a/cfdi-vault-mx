@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timezone
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -32,6 +33,8 @@ from cfdi_vault.recovery_service import (
     read_download_status,
     write_minimal_pdf,
 )
+from cfdi_vault.metadata_parser import parse_metadata_bytes
+from cfdi_vault.package_processor import PackageProcessingError, ProcessedPackage, process_sat_package
 from cfdi_vault.secrets import CredentialKind, CredentialProviderError, CredentialReference, DummySecretProvider
 from cfdi_vault.service import ImportBatchResult, ImportRecord, SummaryRow, VaultService
 from cfdi_vault.sat_async_verify import VerifyBackoffPolicy, VerifyDueReport, run_verify_due
@@ -49,11 +52,15 @@ from cfdi_vault.sat_live_request_state import (
     LiveMetadataRequestRecord,
     LiveMetadataRequestSummary,
     LiveRequestStateError,
+    PACKAGE_DOWNLOADED,
+    PACKAGE_READY,
     VERIFY_SCHEDULED,
     list_live_metadata_requests,
     load_live_metadata_request,
     persist_live_metadata_request,
+    redact_package_ref,
     summarize_live_metadata_requests,
+    upsert_live_metadata_request,
 )
 from cfdi_vault.sat_auth_envelope_lint import AuthEnvelopeLintResult, build_dummy_auth_envelope, lint_auth_envelope
 from cfdi_vault.sat_auth_contract import AuthWsdlContract, fetch_auth_wsdl_contract
@@ -69,6 +76,7 @@ from cfdi_vault.sat_auth_oracle import (
     fingerprint_phpcfdi_oracle,
 )
 from cfdi_vault.sat_auth_post_probe import SatAuthPostProbeResult, run_sat_auth_post_probe
+from cfdi_vault.sat_contract import SatOutcomeAction
 from cfdi_vault.sat_transport_probe import SatProbeResult, run_sat_transport_probe
 from cfdi_vault.sat_verify_post_probe import SatVerifyPostProbeResult, run_sat_verify_post_probe
 from cfdi_vault.live_permit import (
@@ -77,6 +85,7 @@ from cfdi_vault.live_permit import (
     LivePermitRequest,
     MAX_BACKFILL_RANGE_DAYS,
     METADATA_LIVE_SMOKE_SCOPE,
+    PACKAGE_DOWNLOAD_SCOPE,
     auth_live_smoke_permit_expectation,
     create_live_execution_permit,
     load_live_execution_permit,
@@ -92,6 +101,7 @@ from cfdi_vault.sat_transport import (
     validate_live_sat_guard,
 )
 from cfdi_vault.worker import RecoveryWorker
+from cfdi_vault.storage import LocalStorage
 from cfdi_vault.windows_secrets import WindowsCredentialManagerSecretProvider
 
 app = typer.Typer(
@@ -385,6 +395,24 @@ class LiveSmokeCliResult:
     signed_reference_count: int | None = None
 
 
+@dataclass(frozen=True)
+class PackageDownloadCliResult:
+    """Redacted one-package download result for CLI output."""
+
+    request_ref: str
+    package_ref: str
+    request_status_before: str
+    download_result: str
+    sat_code: str
+    message_redacted: str
+    package_size_bytes: int
+    zip_valid: bool
+    txt_files: int
+    metadata_accepted_count: int
+    metadata_rejected_count: int
+    status_after: str
+
+
 class LiveSmokeAdapterUnavailable(RuntimeError):
     """Raised after guards pass when the real live adapter is not wired yet."""
 
@@ -559,7 +587,7 @@ live_app.add_typer(permit_app, name="permit")
 
 @permit_app.command("create")
 def live_permit_create(
-    scope: str = typer.Option(..., "--scope", help="transport_probe, auth_post_probe, verify_post_probe, auth_matrix_probe, auth_live_smoke, metadata_live_smoke, or metadata_backfill_submit."),
+    scope: str = typer.Option(..., "--scope", help="transport_probe, auth_post_probe, verify_post_probe, auth_matrix_probe, auth_live_smoke, metadata_live_smoke, metadata_backfill_submit, or package_download_smoke."),
     profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
     kind: str = typer.Option(..., "--kind", help="metadata only."),
     direction: str = typer.Option(..., "--direction", help="received or issued."),
@@ -1143,6 +1171,65 @@ def sat_verify_due(
         typer.echo(f"reason={exc.reason}", err=True)
         raise typer.Exit(code=1) from exc
     _print_verify_due_report(report, sat_real_execution="adapter_enabled" if live_requested else "no")
+
+
+@sat_app.command("package-download-smoke")
+def sat_package_download_smoke(
+    profile: str = typer.Option("default", "--profile", help="Local setup profile id."),
+    request_ref: str = typer.Option(..., "--request-ref", help="Local request reference with PACKAGE_READY state."),
+    package_ref: str = typer.Option(..., "--package-ref", help="Redacted package reference from scheduler state."),
+    manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Required human gate for real SAT package download."),
+    permit: str | None = typer.Option(None, "--permit", help="One-time local package_download_smoke permit id."),
+) -> None:
+    """Download exactly one metadata package and extract TXT only."""
+
+    if not manual_real_sat:
+        _deny_package_download("manual-real-sat-required")
+    if permit is None:
+        _deny_package_download("permit-required-for-live")
+    local_profile = _load_download_profile(profile)
+    try:
+        record = load_live_metadata_request(local_profile.storage_root, request_ref)
+    except LiveRequestStateError as exc:
+        typer.echo("error=request_state_not_found", err=True)
+        typer.echo(f"reason={exc.reason}", err=True)
+        raise typer.Exit(code=1) from exc
+    if record.profile_id != profile:
+        _deny_package_download("request-state-profile-mismatch")
+    if record.status != PACKAGE_READY:
+        _deny_package_download("request-not-package-ready")
+    package_id = _resolve_package_id(record, package_ref)
+    query = _query_from_live_request_record(local_profile.rfc, record)
+    permit_verified = _validate_live_smoke_guard(
+        profile_id=profile,
+        manual_real_sat=manual_real_sat,
+        query=query,
+        metadata_only=True,
+        range_within_limit=_is_backfill_submit_range(query),
+        mode="package-download-smoke",
+        permit_ref=permit,
+        permit_scope=PACKAGE_DOWNLOAD_SCOPE,
+    )
+    try:
+        result = _run_live_package_download_smoke(
+            profile,
+            record,
+            package_id,
+            package_ref=package_ref,
+            live_permit_verified=permit_verified,
+        )
+    except PackageProcessingError as exc:
+        typer.echo("error=package_process_failed", err=True)
+        typer.echo(f"reason={_safe_error_reason(str(exc))}", err=True)
+        raise typer.Exit(code=1) from exc
+    except (UnicodeDecodeError, ValueError) as exc:
+        typer.echo("error=metadata_parse_failed", err=True)
+        typer.echo(f"reason={_safe_error_reason(str(exc))}", err=True)
+        raise typer.Exit(code=1) from exc
+    except SatLiveSmokeError as exc:
+        _print_live_adapter_error(exc)
+        raise typer.Exit(code=1) from exc
+    _print_package_download_result(profile_id=profile, result=result)
 
 
 @sat_app.command("metadata-verify-smoke")
@@ -2332,6 +2419,12 @@ def _deny_backfill_submit(reason: str) -> None:
     raise typer.Exit(code=1)
 
 
+def _deny_package_download(reason: str) -> None:
+    typer.echo("error=package_download_denied", err=True)
+    typer.echo(f"reason={reason}", err=True)
+    raise typer.Exit(code=1)
+
+
 def _build_profile_auth_envelope(profile_id: str, *, auth_envelope_variant: str = DEFAULT_AUTH_ENVELOPE_VARIANT) -> bytes:
     profile = _load_download_profile(profile_id)
     material = load_sat_efirma_material(profile, _setup_provider(profile_id))
@@ -2431,6 +2524,89 @@ def _live_verify_due_verifier(profile_id: str, *, live_permit_verified: bool = F
         provider=_setup_provider(profile_id),
         transport=_live_smoke_transport(live_permit_verified=live_permit_verified),
     )
+
+
+def _live_package_downloader(profile_id: str, *, live_permit_verified: bool = False) -> SatLiveMetadataSmokeAdapter:
+    profile = _load_download_profile(profile_id)
+    return SatLiveMetadataSmokeAdapter(
+        profile=profile,
+        provider=_setup_provider(profile_id),
+        transport=_live_smoke_transport(live_permit_verified=live_permit_verified),
+    )
+
+
+def _resolve_package_id(record: LiveMetadataRequestRecord, package_ref: str) -> str:
+    requested = str(package_ref or "").strip()
+    if not requested:
+        _deny_package_download("package-ref-required")
+    for package_id in record.package_ids:
+        if redact_package_ref(package_id) == requested:
+            return package_id
+    _deny_package_download("package-ref-not-found")
+
+
+def _run_live_package_download_smoke(
+    profile_id: str,
+    record: LiveMetadataRequestRecord,
+    package_id: str,
+    *,
+    package_ref: str,
+    live_permit_verified: bool = False,
+) -> PackageDownloadCliResult:
+    downloader = _live_package_downloader(profile_id, live_permit_verified=live_permit_verified)
+    download = downloader.download_package(package_id)
+    if download.action != SatOutcomeAction.FINISHED or download.content is None:
+        return PackageDownloadCliResult(
+            request_ref=record.request_ref,
+            package_ref=package_ref,
+            request_status_before=record.status,
+            download_result=download.action.value,
+            sat_code=download.sat_code,
+            message_redacted=_safe_error_reason(download.message),
+            package_size_bytes=0,
+            zip_valid=False,
+            txt_files=0,
+            metadata_accepted_count=0,
+            metadata_rejected_count=0,
+            status_after=record.status,
+        )
+
+    storage = LocalStorage(_load_download_profile(profile_id).storage_root)
+    processed = process_sat_package(package_id, download.content, storage, allowed_extensions=frozenset({".txt"}))
+    accepted, rejected = _parse_extracted_metadata_txt(storage, processed, source_package_id=package_id)
+    updated = replace(
+        record,
+        status=PACKAGE_DOWNLOADED,
+        updated_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    )
+    upsert_live_metadata_request(storage_root=storage.root, record=updated)
+    return PackageDownloadCliResult(
+        request_ref=record.request_ref,
+        package_ref=package_ref,
+        request_status_before=record.status,
+        download_result=download.action.value,
+        sat_code=download.sat_code,
+        message_redacted=_safe_error_reason(download.message),
+        package_size_bytes=processed.size,
+        zip_valid=True,
+        txt_files=sum(1 for entry in processed.entries if entry.kind == "txt"),
+        metadata_accepted_count=accepted,
+        metadata_rejected_count=rejected,
+        status_after=updated.status,
+    )
+
+
+def _parse_extracted_metadata_txt(storage: LocalStorage, processed: ProcessedPackage, *, source_package_id: str) -> tuple[int, int]:
+    accepted = 0
+    rejected = 0
+    for entry in processed.entries:
+        if entry.kind != "txt":
+            continue
+        content = storage.path_for_key(entry.storage_key).read_bytes()
+        parsed = parse_metadata_bytes(content, source_package_id=source_package_id)
+        accepted += parsed.accepted_count
+        rejected += parsed.rejected_count
+    return accepted, rejected
 
 
 def _live_smoke_cli_result(result: object, *, request_ref: str = "") -> LiveSmokeCliResult:
@@ -2629,6 +2805,35 @@ def _print_verify_due_report(report: VerifyDueReport, *, sat_real_execution: str
             "full_id_printed=no",
         ]
         typer.echo("verify_item=" + "|".join(fields))
+
+
+def _print_package_download_result(*, profile_id: str, result: PackageDownloadCliResult) -> None:
+    typer.echo("mode=package-download-smoke")
+    typer.echo(f"profile={profile_id}")
+    typer.echo(f"request_ref={result.request_ref}")
+    typer.echo(f"request_status_before={result.request_status_before}")
+    typer.echo(f"package_ref={result.package_ref}")
+    typer.echo(f"download_result={result.download_result}")
+    typer.echo(f"CodEstatus={result.sat_code}")
+    if result.message_redacted:
+        typer.echo(f"Mensaje_redacted={result.message_redacted}")
+    typer.echo("package_downloaded=yes" if result.zip_valid else "package_downloaded=no")
+    typer.echo("zip_downloaded=yes" if result.zip_valid else "zip_downloaded=no")
+    typer.echo(f"zip_valid={'true' if result.zip_valid else 'false'}")
+    typer.echo("path_traversal=blocked")
+    typer.echo(f"package_size_bytes={result.package_size_bytes}")
+    typer.echo(f"txt_files={result.txt_files}")
+    typer.echo("xml_files=0")
+    typer.echo(f"metadata_accepted_count={result.metadata_accepted_count}")
+    typer.echo(f"metadata_rejected_count={result.metadata_rejected_count}")
+    typer.echo("raw_response_printed=no")
+    typer.echo("IdPaquete_full_printed=no")
+    typer.echo(f"status_after={result.status_after}")
+
+
+def _safe_error_reason(value: str) -> str:
+    text = " ".join(str(value or "").replace("\\", "/").split())
+    return re.sub(r"(?i)\b[0-9a-z][0-9a-z_-]{12,}[0-9a-z]\b", "<redacted>", text)[:160]
 
 
 def _live_smoke_transport(*, live_permit_verified: bool = False) -> GuardedSoapHttpTransport:

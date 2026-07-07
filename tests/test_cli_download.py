@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 from typer.testing import CliRunner
@@ -13,10 +16,13 @@ from cfdi_vault import setup as setup_flow
 from cfdi_vault.cli import app
 from cfdi_vault.domain import SatRequestState
 from cfdi_vault.live_permit import LivePermitRequest, create_live_execution_permit, load_live_execution_permit
-from cfdi_vault.sat_contract import SatOutcomeAction, SatVerificationResult
+from cfdi_vault.sat_contract import SatDownloadResult, SatOutcomeAction, SatVerificationResult
 from cfdi_vault.sat_live_request_state import (
+    PACKAGE_READY,
     list_live_metadata_requests,
     persist_live_metadata_request,
+    redact_package_ref,
+    upsert_live_metadata_request,
 )
 from cfdi_vault.sat_auth_constants import (
     AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
@@ -1037,11 +1043,116 @@ def test_sat_verify_due_live_permit_runs_scheduler_once_without_download(
     assert stored.status == "PACKAGE_READY"
     assert stored.attempt_count == 1
     assert stored.numero_cfdis == 2
+    assert stored.package_ids == ("SYNTHETIC-PACKAGE-0001", "SYNTHETIC-PACKAGE-0002")
     assert len(stored.package_refs_redacted) == 2
     assert all(item.startswith("pkg-") for item in stored.package_refs_redacted)
     assert "download_called" not in seen
     assert load_live_execution_permit(permit.permit_id, env={"LOCALAPPDATA": str(appdata_root)}).consumed is True
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
+
+
+def test_sat_package_download_smoke_downloads_one_metadata_txt_without_printing_package_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    paths = _write_ready_setup_profile(appdata_root)
+    package_id = "SYNTHETIC-PACKAGE-SECRET-0001"
+    package_ref = redact_package_ref(package_id)
+    record = persist_live_metadata_request(
+        storage_root=paths.storage_root,
+        profile_id="dummy-profile",
+        query=_weekly_metadata_query(),
+        operation="SolicitaDescargaRecibidos",
+        id_solicitud="648a0000-1111-2222-3333-444444447b27",
+        sat_code="5000",
+        sat_message="Accepted",
+        source_command="sat backfill submit",
+        permit_ref=None,
+        now=datetime.now(timezone.utc) - timedelta(minutes=10),
+    )
+    ready = replace(
+        record,
+        status=PACKAGE_READY,
+        package_ids=(package_id,),
+        package_refs_redacted=(package_ref,),
+        numero_cfdis=1,
+    )
+    upsert_live_metadata_request(storage_root=paths.storage_root, record=ready)
+    _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=False, doctor_ok=True)
+    permit = create_live_execution_permit(
+        LivePermitRequest(
+            scope="package_download_smoke",
+            profile_id="dummy-profile",
+            kind="metadata",
+            direction="received",
+            date_from="2024-01-01",
+            date_to="2024-01-07",
+            reason="Carlos authorized package download smoke test",
+        ),
+        env={"LOCALAPPDATA": str(appdata_root)},
+    )
+    seen: dict[str, object] = {}
+
+    class FakeDownloader:
+        def __init__(self, profile_id: str, *, live_permit_verified: bool = False) -> None:
+            seen["profile_id"] = profile_id
+            seen["live_permit_verified"] = live_permit_verified
+
+        def download_package(self, requested_package_id: str) -> SatDownloadResult:
+            seen["package_id"] = requested_package_id
+            return SatDownloadResult(
+                package_id=requested_package_id,
+                sat_code="5000",
+                message="Downloaded",
+                action=SatOutcomeAction.FINISHED,
+                content=_metadata_txt_zip(),
+            )
+
+    monkeypatch.setattr(cli_module, "_live_package_downloader", FakeDownloader)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "sat",
+            "package-download-smoke",
+            "--profile",
+            "dummy-profile",
+            "--request-ref",
+            ready.request_ref,
+            "--package-ref",
+            package_ref,
+            "--manual-real-sat",
+            "--permit",
+            permit.permit_id,
+        ],
+        env=_live_smoke_env(
+            appdata_root,
+            {
+                "CFDI_VAULT_ALLOW_REAL_SAT": None,
+                "CFDI_VAULT_ALLOW_REAL_CREDENTIALS": None,
+            },
+        ),
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen == {"profile_id": "dummy-profile", "live_permit_verified": True, "package_id": package_id}
+    lines = _key_value_lines(result.output)
+    assert lines["mode"] == "package-download-smoke"
+    assert lines["request_ref"] == ready.request_ref
+    assert lines["package_ref"] == package_ref
+    assert lines["package_downloaded"] == "yes"
+    assert lines["zip_valid"] == "true"
+    assert lines["txt_files"] == "1"
+    assert lines["xml_files"] == "0"
+    assert lines["metadata_accepted_count"] == "1"
+    assert lines["status_after"] == "PACKAGE_DOWNLOADED"
+    assert package_id not in result.output
+    assert "648a0000-1111-2222-3333-444444447b27" not in result.output
+    assert str(appdata_root) not in result.output
+    stored = list_live_metadata_requests(paths.storage_root)[0]
+    assert stored.status == "PACKAGE_DOWNLOADED"
+    assert load_live_execution_permit(permit.permit_id, env={"LOCALAPPDATA": str(appdata_root)}).consumed is True
 
 
 def test_download_status_without_job_id_prints_scheduler_aggregates(
@@ -1674,6 +1785,21 @@ def _weekly_metadata_query() -> cli_module.DownloadQuery:
             datetime(2024, 1, 7, 23, 59, 59, tzinfo=timezone.utc),
         ),
     )
+
+
+def _metadata_txt_zip() -> bytes:
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", ZIP_DEFLATED) as package:
+        package.writestr(
+            "metadata.txt",
+            "\n".join(
+                [
+                    "uuid~rfcEmisor~nombreEmisor~rfcReceptor~nombreReceptor~fechaEmision~montoTotal~estadoComprobante~tipoComprobante",
+                    "00000000-0000-4000-8000-000000000099~AAA010101AAA~Synthetic Issuer~BBB010101BBB~Synthetic Receiver~2024-01-15T10:30:00Z~123.45~Vigente~I",
+                ]
+            ).encode("utf-8"),
+        )
+    return buffer.getvalue()
 
 
 def _key_value_lines(output: str) -> dict[str, str]:
