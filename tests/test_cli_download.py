@@ -11,7 +11,9 @@ from typer.testing import CliRunner
 from cfdi_vault import cli as cli_module
 from cfdi_vault import setup as setup_flow
 from cfdi_vault.cli import app
-from cfdi_vault.live_permit import LivePermitRequest, create_live_execution_permit
+from cfdi_vault.domain import SatRequestState
+from cfdi_vault.live_permit import LivePermitRequest, create_live_execution_permit, load_live_execution_permit
+from cfdi_vault.sat_contract import SatOutcomeAction, SatVerificationResult
 from cfdi_vault.sat_live_request_state import (
     list_live_metadata_requests,
     persist_live_metadata_request,
@@ -783,6 +785,225 @@ def test_sat_verify_due_one_shot_updates_next_check_and_exits(
     assert stored.attempt_count == 1
     assert stored.next_check_at
     assert "SYNTHETIC-SCHEDULER-REQUEST-0001" not in result.output
+    _assert_no_profile_secrets_or_paths(result.output, appdata_root)
+
+
+def test_sat_verify_due_live_requires_request_ref_before_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    _write_ready_setup_profile(appdata_root)
+    calls: list[str] = []
+    monkeypatch.setattr(cli_module, "_validate_live_smoke_guard", lambda **_kwargs: calls.append("guard"))
+
+    result = CliRunner().invoke(
+        app,
+        ["sat", "verify-due", "--profile", "dummy-profile", "--manual-real-sat", "--permit", "permit-local-id"],
+        env=_live_smoke_env(appdata_root, {}),
+    )
+
+    assert result.exit_code == 1
+    assert "error=live_scheduler_verify_denied" in result.output
+    assert "reason=request-ref-required-for-live" in result.output
+    assert calls == []
+
+
+def test_sat_verify_due_live_requires_limit_one_before_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    paths = _write_ready_setup_profile(appdata_root)
+    record = persist_live_metadata_request(
+        storage_root=paths.storage_root,
+        profile_id="dummy-profile",
+        query=_metadata_query(),
+        operation="SolicitaDescargaRecibidos",
+        id_solicitud="SYNTHETIC-SCHEDULER-REQUEST-0001",
+        sat_code="5000",
+        sat_message="Accepted",
+        source_command="sat metadata-request-smoke",
+        permit_ref=None,
+        now=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(cli_module, "_validate_live_smoke_guard", lambda **_kwargs: calls.append("guard"))
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "sat",
+            "verify-due",
+            "--profile",
+            "dummy-profile",
+            "--request-ref",
+            record.request_ref,
+            "--limit",
+            "2",
+            "--manual-real-sat",
+            "--permit",
+            "permit-local-id",
+        ],
+        env=_live_smoke_env(appdata_root, {}),
+    )
+
+    assert result.exit_code == 1
+    assert "reason=limit-one-required" in result.output
+    assert calls == []
+
+
+def test_sat_verify_due_live_requires_permit_before_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    paths = _write_ready_setup_profile(appdata_root)
+    record = persist_live_metadata_request(
+        storage_root=paths.storage_root,
+        profile_id="dummy-profile",
+        query=_metadata_query(),
+        operation="SolicitaDescargaRecibidos",
+        id_solicitud="SYNTHETIC-SCHEDULER-REQUEST-0001",
+        sat_code="5000",
+        sat_message="Accepted",
+        source_command="sat metadata-request-smoke",
+        permit_ref=None,
+        now=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(cli_module, "_validate_live_smoke_guard", lambda **_kwargs: calls.append("guard"))
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "sat",
+            "verify-due",
+            "--profile",
+            "dummy-profile",
+            "--request-ref",
+            record.request_ref,
+            "--limit",
+            "1",
+            "--manual-real-sat",
+        ],
+        env=_live_smoke_env(appdata_root, {}),
+    )
+
+    assert result.exit_code == 1
+    assert "reason=permit-required-for-live" in result.output
+    assert calls == []
+
+
+def test_sat_verify_due_live_permit_runs_scheduler_once_without_download(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    paths = _write_ready_setup_profile(appdata_root)
+    full_request_id = "648a0000-1111-2222-3333-444444447b27"
+    record = persist_live_metadata_request(
+        storage_root=paths.storage_root,
+        profile_id="dummy-profile",
+        query=_metadata_query(),
+        operation="SolicitaDescargaRecibidos",
+        id_solicitud=full_request_id,
+        sat_code="5000",
+        sat_message="Accepted",
+        source_command="sat metadata-request-smoke",
+        permit_ref=None,
+        now=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=False, doctor_ok=True)
+    permit = create_live_execution_permit(
+        LivePermitRequest(
+            scope="metadata_live_smoke",
+            profile_id="dummy-profile",
+            kind="metadata",
+            direction="received",
+            date_from="2024-01-01",
+            date_to="2024-01-01",
+            reason="Carlos authorized scheduler verify-due live smoke",
+        ),
+        env={"LOCALAPPDATA": str(appdata_root)},
+    )
+    seen: dict[str, object] = {}
+
+    class FakeLiveVerifier:
+        def __init__(self, profile_id: str, *, live_permit_verified: bool = False) -> None:
+            seen["profile_id"] = profile_id
+            seen["live_permit_verified"] = live_permit_verified
+            self.download_calls: list[str] = []
+
+        def verify_request(self, request_id: str) -> SatVerificationResult:
+            seen["request_id"] = request_id
+            return SatVerificationResult(
+                request_id=request_id,
+                state=SatRequestState.FINISHED,
+                sat_code="5000",
+                message="Synthetic finished",
+                action=SatOutcomeAction.FINISHED,
+                package_ids=("SYNTHETIC-PACKAGE-0001", "SYNTHETIC-PACKAGE-0002"),
+            )
+
+        def download_package(self, package_id: str) -> bytes:
+            seen["download_called"] = package_id
+            return b""
+
+    monkeypatch.setattr(cli_module, "_live_verify_due_verifier", FakeLiveVerifier)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "sat",
+            "verify-due",
+            "--profile",
+            "dummy-profile",
+            "--request-ref",
+            record.request_ref,
+            "--limit",
+            "1",
+            "--manual-real-sat",
+            "--permit",
+            permit.permit_id,
+        ],
+        env=_live_smoke_env(
+            appdata_root,
+            {
+                "CFDI_VAULT_ALLOW_REAL_SAT": None,
+                "CFDI_VAULT_ALLOW_REAL_CREDENTIALS": None,
+            },
+        ),
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen == {
+        "profile_id": "dummy-profile",
+        "live_permit_verified": True,
+        "request_id": full_request_id,
+    }
+    lines = _key_value_lines(result.output)
+    assert lines["dry_run"] == "false"
+    assert lines["selected_count"] == "1"
+    assert lines["processed_count"] == "1"
+    assert lines["sat_real_execution"] == "adapter_enabled"
+    assert lines["package_downloaded"] == "no"
+    assert lines["zip_downloaded"] == "no"
+    assert lines["xml_downloaded"] == "no"
+    assert lines["verify_item"].startswith(f"request_ref={record.request_ref}|status=PACKAGE_READY")
+    assert "package_count=2" in lines["verify_item"]
+    assert record.request_ref in result.output
+    assert full_request_id not in result.output
+    assert "SYNTHETIC-PACKAGE-0001" not in result.output
+    assert "SYNTHETIC-PACKAGE-0002" not in result.output
+    stored = list_live_metadata_requests(paths.storage_root)[0]
+    assert stored.status == "PACKAGE_READY"
+    assert stored.attempt_count == 1
+    assert stored.numero_cfdis == 2
+    assert len(stored.package_refs_redacted) == 2
+    assert all(item.startswith("pkg-") for item in stored.package_refs_redacted)
+    assert "download_called" not in seen
+    assert load_live_execution_permit(permit.permit_id, env={"LOCALAPPDATA": str(appdata_root)}).consumed is True
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
 
 

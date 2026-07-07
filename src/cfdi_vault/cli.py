@@ -941,11 +941,69 @@ def sat_verify_due(
     profile: str = typer.Option("default", "--profile", help="Local setup profile id."),
     limit: int = typer.Option(1, "--limit", min=1, max=50, help="Maximum due requests to verify once."),
     dry_run: bool = typer.Option(False, "--dry-run", help="List due verifications without calling the verifier."),
+    request_ref: str | None = typer.Option(None, "--request-ref", help="Optional local request reference to verify through the scheduler."),
+    manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Required human gate for live SAT scheduler verify."),
+    permit: str | None = typer.Option(None, "--permit", help="One-time local metadata_live_smoke permit id for live scheduler verify."),
 ) -> None:
-    """Verify due SAT metadata requests once using the non-live fake verifier."""
+    """Verify due SAT metadata requests once; live runs require an explicit permit."""
 
     local_profile = _load_download_profile(profile)
-    verifier = FakeSatScenarioClient(FakeSatScenario.VERIFY_IN_PROCESS)
+    live_requested = manual_real_sat or permit is not None
+    if live_requested and dry_run:
+        typer.echo("error=live_scheduler_verify_denied", err=True)
+        typer.echo("reason=dry-run-cannot-use-live-gate", err=True)
+        raise typer.Exit(code=1)
+    if live_requested:
+        if not manual_real_sat:
+            typer.echo("error=live_scheduler_verify_denied", err=True)
+            typer.echo("reason=manual-real-sat-required", err=True)
+            raise typer.Exit(code=1)
+        if permit is None:
+            typer.echo("error=live_scheduler_verify_denied", err=True)
+            typer.echo("reason=permit-required-for-live", err=True)
+            raise typer.Exit(code=1)
+        if limit != 1:
+            typer.echo("error=live_scheduler_verify_denied", err=True)
+            typer.echo("reason=limit-one-required", err=True)
+            raise typer.Exit(code=1)
+        if not request_ref:
+            typer.echo("error=live_scheduler_verify_denied", err=True)
+            typer.echo("reason=request-ref-required-for-live", err=True)
+            raise typer.Exit(code=1)
+        try:
+            preflight = run_verify_due(
+                storage_root=local_profile.storage_root,
+                profile_id=profile,
+                verifier=FakeSatScenarioClient(FakeSatScenario.VERIFY_IN_PROCESS),
+                limit=1,
+                dry_run=True,
+                request_ref=request_ref,
+                policy=VerifyBackoffPolicy(),
+            )
+            record = load_live_metadata_request(local_profile.storage_root, request_ref)
+        except LiveRequestStateError as exc:
+            typer.echo("error=request_state_unavailable", err=True)
+            typer.echo(f"reason={exc.reason}", err=True)
+            raise typer.Exit(code=1) from exc
+        if preflight.selected_count != 1:
+            typer.echo("error=live_scheduler_verify_denied", err=True)
+            typer.echo("reason=request-not-due", err=True)
+            _print_verify_due_report(preflight)
+            raise typer.Exit(code=1)
+        query = _query_from_live_request_record(local_profile.rfc, record)
+        permit_verified = _validate_live_smoke_guard(
+            profile_id=profile,
+            manual_real_sat=manual_real_sat,
+            query=query,
+            metadata_only=True,
+            range_within_limit=_is_minimal_live_smoke_range(query),
+            mode="verify-due",
+            permit_ref=permit,
+            permit_scope="metadata_live_smoke",
+        )
+        verifier = _live_verify_due_verifier(profile, live_permit_verified=permit_verified)
+    else:
+        verifier = FakeSatScenarioClient(FakeSatScenario.VERIFY_IN_PROCESS)
     try:
         report = run_verify_due(
             storage_root=local_profile.storage_root,
@@ -953,13 +1011,14 @@ def sat_verify_due(
             verifier=verifier,
             limit=limit,
             dry_run=dry_run,
+            request_ref=request_ref,
             policy=VerifyBackoffPolicy(),
         )
     except LiveRequestStateError as exc:
         typer.echo("error=request_state_unavailable", err=True)
         typer.echo(f"reason={exc.reason}", err=True)
         raise typer.Exit(code=1) from exc
-    _print_verify_due_report(report)
+    _print_verify_due_report(report, sat_real_execution="adapter_enabled" if live_requested else "no")
 
 
 @sat_app.command("metadata-verify-smoke")
@@ -2224,6 +2283,15 @@ def _run_live_metadata_verify_smoke(
     return _live_smoke_cli_result(result)
 
 
+def _live_verify_due_verifier(profile_id: str, *, live_permit_verified: bool = False) -> SatLiveMetadataSmokeAdapter:
+    profile = _load_download_profile(profile_id)
+    return SatLiveMetadataSmokeAdapter(
+        profile=profile,
+        provider=_setup_provider(profile_id),
+        transport=_live_smoke_transport(live_permit_verified=live_permit_verified),
+    )
+
+
 def _live_smoke_cli_result(result: object, *, request_ref: str = "") -> LiveSmokeCliResult:
     return LiveSmokeCliResult(
         result=getattr(result, "result"),
@@ -2330,7 +2398,7 @@ def _print_live_metadata_scheduler_status(*, profile_id: str, summary: LiveMetad
     typer.echo("redacted=true")
 
 
-def _print_verify_due_report(report: VerifyDueReport) -> None:
+def _print_verify_due_report(report: VerifyDueReport, *, sat_real_execution: str = "no") -> None:
     typer.echo("mode=verify-due")
     typer.echo(f"profile={report.profile_id}")
     typer.echo(f"dry_run={str(report.dry_run).lower()}")
@@ -2341,7 +2409,7 @@ def _print_verify_due_report(report: VerifyDueReport) -> None:
     typer.echo(f"next_due_verification={report.next_due_verification}")
     typer.echo(f"package_ready_count={report.package_ready_count}")
     typer.echo(f"failed_requests={report.failed_requests}")
-    typer.echo("sat_real_execution=no")
+    typer.echo(f"sat_real_execution={sat_real_execution}")
     typer.echo("package_downloaded=no")
     typer.echo("zip_downloaded=no")
     typer.echo("xml_downloaded=no")

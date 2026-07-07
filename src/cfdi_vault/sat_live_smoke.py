@@ -35,7 +35,7 @@ from cfdi_vault.sat_auth_constants import (
 )
 from cfdi_vault.sat_auth_endpoints import DEFAULT_AUTH_ENDPOINT, resolve_auth_endpoint
 from cfdi_vault.sat_auth_http import build_soap11_headers
-from cfdi_vault.sat_contract import SatOutcomeAction, SatRequestResult
+from cfdi_vault.sat_contract import SatOutcomeAction, SatRequestResult, SatVerificationResult
 from cfdi_vault.sat_soap_parse import (
     SatSoapParseError,
     parse_authentication_response,
@@ -416,16 +416,8 @@ class SatLiveMetadataSmokeAdapter:
     def metadata_verify_smoke(self, request_id: str) -> SatLiveSmokeSummary:
         """Run guarded auth + SAT verification for one stored request id; no request/download."""
 
+        verification = self.verify_request(request_id)
         normalized_request_id = request_id.strip()
-        if not normalized_request_id:
-            raise SatLiveSmokeError(
-                "live verify requires a stored request id",
-                stage="preflight",
-                error_kind="guard_failed",
-                safe_hint="request-ref must resolve to an IdSolicitud in local state",
-            )
-        authorization = self._authenticate()
-        verification = self._send_verification(authorization, normalized_request_id)
         return SatLiveSmokeSummary(
             result="metadata-verify-ok",
             auth="authenticated",
@@ -439,6 +431,21 @@ class SatLiveMetadataSmokeAdapter:
             sat_message=verification.message,
             package_count=len(verification.package_ids),
         )
+
+    def verify_request(self, request_id: str) -> SatVerificationResult:
+        """Verify one stored request id for the scheduler port; no request/download."""
+
+        normalized_request_id = request_id.strip()
+        if not normalized_request_id:
+            raise SatLiveSmokeError(
+                "live verify requires a stored request id",
+                stage="preflight",
+                error_kind="guard_failed",
+                safe_hint="request-ref must resolve to an IdSolicitud in local state",
+            )
+        authorization = self._authenticate()
+        return self._send_verification(authorization, normalized_request_id)
+
     def _authenticate(self) -> str:
         body = _build_stage(
             "auth_envelope_build",
