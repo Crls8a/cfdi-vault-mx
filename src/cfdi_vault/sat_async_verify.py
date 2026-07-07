@@ -106,6 +106,7 @@ def run_verify_due(
     verifier: SatVerificationPort,
     limit: int = 1,
     dry_run: bool = False,
+    request_ref: str | None = None,
     now: datetime | None = None,
     policy: VerifyBackoffPolicy | None = None,
 ) -> VerifyDueReport:
@@ -114,6 +115,9 @@ def run_verify_due(
     current = _normalize_dt(now or datetime.now(timezone.utc))
     active_policy = policy or VerifyBackoffPolicy()
     records = tuple(record for record in list_live_metadata_requests(storage_root) if record.profile_id == profile_id)
+    if request_ref is not None:
+        requested = str(request_ref).strip()
+        records = tuple(record for record in records if record.request_ref == requested)
     due_records = _due_records(records, current)
     selected = due_records[:limit]
     if dry_run:
@@ -344,11 +348,21 @@ def _item_from_record(record: LiveMetadataRequestRecord) -> VerifyDueItem:
 def _error_kind(exc: Exception) -> str:
     if isinstance(exc, TimeoutError):
         return "transport_timeout"
+    diagnostic = getattr(exc, "diagnostic", None)
+    diagnostic_kind = getattr(diagnostic, "error_kind", None)
+    if isinstance(diagnostic_kind, str) and diagnostic_kind:
+        if diagnostic_kind in {"timeout", "verify_read_timeout", "transport_timeout"}:
+            return "transport_timeout"
+        return diagnostic_kind
+    error_kind = getattr(exc, "error_kind", None)
+    if isinstance(error_kind, str) and error_kind:
+        return error_kind
     return "transport_error"
 
 
 def _http_status(exc: Exception) -> int | None:
-    status = getattr(exc, "status_code", None) or getattr(exc, "http_status", None)
+    diagnostic = getattr(exc, "diagnostic", None)
+    status = getattr(exc, "status_code", None) or getattr(exc, "http_status", None) or getattr(diagnostic, "http_status", None)
     if isinstance(status, int) and status in _RETRYABLE_HTTP_STATUS_CODES:
         return status
     return status if isinstance(status, int) else None

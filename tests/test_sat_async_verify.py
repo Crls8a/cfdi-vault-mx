@@ -196,6 +196,29 @@ def test_limit_prevents_busy_loop(tmp_path: Path) -> None:
     assert len(verifier.calls) == 1
 
 
+def test_request_ref_targets_one_due_request(tmp_path: Path) -> None:
+    first = _persist_due(tmp_path, request_id=REQUEST_ID)
+    second = _persist_due(tmp_path, request_id="SYNTHETIC-SCHEDULER-REQUEST-0002")
+    verifier = _Verifier(_verification(SatRequestState.IN_PROCESS, SatOutcomeAction.IN_PROGRESS))
+
+    report = run_verify_due(
+        storage_root=tmp_path,
+        profile_id="default",
+        verifier=verifier,
+        now=DUE_AT,
+        request_ref=second.request_ref,
+    )
+
+    assert report.due_count == 1
+    assert report.selected_count == 1
+    assert report.processed_count == 1
+    assert report.items[0].request_ref == second.request_ref
+    assert verifier.calls == [second.id_solicitud]
+    stored = {record.request_ref: record for record in list_live_metadata_requests(tmp_path)}
+    assert stored[first.request_ref].attempt_count == 0
+    assert stored[second.request_ref].attempt_count == 1
+
+
 def test_scheduler_source_has_no_sleep_call() -> None:
     assert "sleep(" not in inspect.getsource(sat_async_verify)
 
