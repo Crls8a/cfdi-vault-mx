@@ -52,6 +52,16 @@ When a merge or rebase touches CLI files, the source of truth is the split adapt
 - Clear PR description.
 - Clean working tree after completion.
 
+## Dev integration rule
+
+Completed agent work must not remain indefinitely in side worktrees. After a worktree is finished, committed, and tested, merge it into the local `dev` integration branch before marking the worktree complete.
+
+- If `dev` does not exist, create it from the most advanced clean branch that has passed the relevant gates.
+- Do not merge dirty, partially staged, untested, or sensitive work into `dev`.
+- Re-run scanner, `git diff --check`, and relevant tests from `dev` after the merge.
+- Keep worktrees until their work is integrated into `dev` or explicitly retained for audit.
+- Follow [Agent worktree to dev merge runbook](docs/runbooks/agents/worktree-dev-merge.md) for exact steps and cleanup rules.
+
 ## Never allowed
 
 - Real CFDI files.
