@@ -290,7 +290,6 @@ def _validate_live_smoke_guard(
     if query is not None:
         _print_download_query(profile_id=profile_id, query=query, will_submit=False, mode=mode)
     return permit_verified
-    return permit_verified
 
 def _live_smoke_doctor_ok(profile: setup_flow.LocalProfile) -> bool:
     service = _download_profile_service(profile)
