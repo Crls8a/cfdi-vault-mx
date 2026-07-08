@@ -11,17 +11,18 @@ This repository is split into the current PostgreSQL-backed CFDI recovery refere
 5. Read [Architecture](architecture.md) to understand the existing local parser/storage boundaries.
 6. Read [Security model](security-model.md) before touching real CFDI data or certificates.
 7. Read [Foundation-first plan](foundation/README.md) before adding more recovery features.
-8. Read [Agile planning workspace](planning/README.md) and [Lightweight governance policy](planning/governance.md) before assigning sprint work.
-9. Read [Safe RFC profile configuration](config/README.md) before adding local profile settings.
-10. Read [Local RFC setup and credential intake](setup.md) before changing AppData setup or credential import.
-11. Read [First-run onboarding](installer/onboarding.md) before changing installer or profile setup.
-12. Read [Local installer alpha](installer/local-installer-alpha.md) before changing editable install or bootstrap behavior.
-13. Read [Idempotent local storage](storage-design.md) before writing package, metadata, or XML evidence.
-14. Read [Infrastructure boundary](foundation/infrastructure-boundary.md) before changing PostgreSQL, RabbitMQ, Redis, Docker, workers, or future FastAPI ingestion behavior.
-15. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
-16. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
-17. Read [Offline/local SAT download operations](sat-download/offline-local-operations.md) before validating issue #51.
-18. Read [MANUAL-SAT-001](sat-download/manual-sat-runbook.md) before requesting any human-gated live SAT smoke.
+8. Read [Living system plan](planning/living-system-plan.md) before changing objectives, architecture, security, source-of-truth docs, or release promises.
+9. Read [Agile planning workspace](planning/README.md) and [Lightweight governance policy](planning/governance.md) before assigning sprint work.
+10. Read [Safe RFC profile configuration](config/README.md) before adding local profile settings.
+11. Read [Local RFC setup and credential intake](setup.md) before changing AppData setup or credential import.
+12. Read [First-run onboarding](installer/onboarding.md) before changing installer or profile setup.
+13. Read [Local installer alpha](installer/local-installer-alpha.md) before changing editable install or bootstrap behavior.
+14. Read [Idempotent local storage](storage-design.md) before writing package, metadata, or XML evidence.
+15. Read [Infrastructure boundary](foundation/infrastructure-boundary.md) before changing PostgreSQL, RabbitMQ, Redis, Docker, workers, or future FastAPI ingestion behavior.
+16. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
+17. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
+18. Read [Offline/local SAT download operations](sat-download/offline-local-operations.md) before validating issue #51.
+19. Read [MANUAL-SAT-001](sat-download/manual-sat-runbook.md) before requesting any human-gated live SAT smoke.
 
 ## Documentation map
 
@@ -43,6 +44,7 @@ This repository is split into the current PostgreSQL-backed CFDI recovery refere
 | Foundation | [Foundation-first plan](foundation/README.md) | Gate before more code: scope, stories, CLI/UX, installer, unified recovery pipeline, storage, architecture, data model, ambiguity, ownership, delegation. |
 | Foundation | [Infrastructure boundary](foundation/infrastructure-boundary.md) | PostgreSQL-first recovery runtime, RabbitMQ queue boundary, Redis transient state, Docker services, and future FastAPI ingestion boundary. |
 | Planning | [Agile planning workspace](planning/README.md) | Sprint roadmap, backlog, team board, delegation model, and agile operating rules. |
+| Planning | [Living system plan](planning/living-system-plan.md) | Source-of-truth hierarchy, security workstream, architecture/doc gaps, and next work units for the case study. |
 | Planning | [Lightweight governance policy](planning/governance.md) | Solo-maintainer issue policy, PR/CI expectations, and mandatory security gates. |
 | Recovery v2 | [Recovery v2](recovery-v2.md) | Implemented fake SAT, queue/cache/storage ports, Docker, CLI, and next steps. |
 | Recovery v2 | [ADR 0002](adr/0002-recovery-v2-rabbitmq-redis-postgres.md) | Decision record for RabbitMQ, Redis, PostgreSQL, JSON payloads, and search. |

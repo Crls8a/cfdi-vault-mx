@@ -10,10 +10,11 @@ The planning source of truth is Markdown in this repository. This keeps the plan
 
 1. Read [Agile operating model](agile-operating-model.md) to understand cadence, roles, and quality gates.
 2. Read [Lightweight governance policy](governance.md) before deciding whether an issue is required.
-3. Read [Sprint roadmap](sprint-roadmap.md) to see the recommended execution order.
-4. Use [Sprint 0 execution plan](sprint-0-execution.md) to start the first sprint safely.
-5. Use [Backlog](backlog.md) to create Sprint Packets, issues, or assign work.
-6. Use [Team board](team-board.md) to track the current sprint.
+3. Read [Living system plan](living-system-plan.md) before changing objectives, architecture, security, source-of-truth docs, or release promises.
+4. Read [Sprint roadmap](sprint-roadmap.md) to see the recommended execution order.
+5. Use [Sprint 0 execution plan](sprint-0-execution.md) to start the first sprint safely.
+6. Use [Backlog](backlog.md) to create Sprint Packets, issues, or assign work.
+7. Use [Team board](team-board.md) to track the current sprint.
 
 ## Planning map
 
@@ -21,6 +22,7 @@ The planning source of truth is Markdown in this repository. This keeps the plan
 |---|---|
 | [Agile operating model](agile-operating-model.md) | Team rules, roles, ceremonies, Definition of Ready, Definition of Done. |
 | [Lightweight governance policy](governance.md) | Solo-maintainer issue policy, PR/CI requirements, and mandatory security gates. |
+| [Living system plan](living-system-plan.md) | Source-of-truth hierarchy, security workstream, architecture/doc gaps, and next work units for the case study. |
 | [Sprint roadmap](sprint-roadmap.md) | Sequencing, sprint goals, parallel tracks, blockers, exit criteria. |
 | [Sprint 0 execution plan](sprint-0-execution.md) | First sprint scope, agent assignments, handoff prompts, acceptance gate. |
 | [Sprint 0 review findings](sprint-0-review-findings.md) | Agent review results and Sprint 0 acceptance evidence. |
