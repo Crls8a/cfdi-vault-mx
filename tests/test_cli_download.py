@@ -14,7 +14,10 @@ from typer.testing import CliRunner
 from cfdi_vault import setup as setup_flow
 from cfdi_vault.adapters.cli import common as common_cli
 from cfdi_vault.adapters.cli import download as download_cli
-from cfdi_vault.adapters.cli import sat as cli_module
+from cfdi_vault.adapters.cli import sat_auth as sat_auth_cli
+from cfdi_vault.adapters.cli import sat_common as sat_common_cli
+from cfdi_vault.adapters.cli import sat_metadata as sat_metadata_cli
+from cfdi_vault.adapters.cli import sat_verify as sat_verify_cli
 from cfdi_vault.cli import app
 from cfdi_vault.domain import SatRequestState
 from cfdi_vault.live_permit import LivePermitRequest, create_live_execution_permit, load_live_execution_permit
@@ -469,7 +472,7 @@ def test_download_live_smoke_aborts_before_adapter_for_guard_failures(
         app,
         _live_smoke_args(args),
         env=_live_smoke_env(appdata_root, env_overrides),
-        input=f"{cli_module.LIVE_SMOKE_CONFIRMATION}\n",
+        input=f"{common_cli.LIVE_SMOKE_CONFIRMATION}\n",
     )
 
     assert result.exit_code == 1
@@ -489,7 +492,7 @@ def test_download_live_smoke_fake_adapter_happy_path_is_redacted(
     monkeypatch.setattr(
         download_cli,
         "_run_live_metadata_smoke",
-        lambda profile_id, query: cli_module.LiveSmokeCliResult(
+        lambda profile_id, query: common_cli.LiveSmokeCliResult(
             result="synthetic-ok",
             auth="attempted",
             request="metadata-submitted",
@@ -501,7 +504,7 @@ def test_download_live_smoke_fake_adapter_happy_path_is_redacted(
         app,
         _live_smoke_args(["--manual-real-sat"]),
         env=_live_smoke_env(appdata_root, {}),
-        input=f"{cli_module.LIVE_SMOKE_CONFIRMATION}\n",
+        input=f"{common_cli.LIVE_SMOKE_CONFIRMATION}\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -541,10 +544,10 @@ def test_download_live_smoke_permit_replaces_interactive_prompt_once(
     )
     seen: dict[str, object] = {}
 
-    def fake_live_smoke(profile_id: str, query: object, *, live_permit_verified: bool = False) -> cli_module.LiveSmokeCliResult:
+    def fake_live_smoke(profile_id: str, query: object, *, live_permit_verified: bool = False) -> common_cli.LiveSmokeCliResult:
         seen["profile_id"] = profile_id
         seen["live_permit_verified"] = live_permit_verified
-        return cli_module.LiveSmokeCliResult(
+        return common_cli.LiveSmokeCliResult(
             result="synthetic-ok",
             auth="attempted",
             request="metadata-submitted",
@@ -589,12 +592,12 @@ def test_sat_metadata_request_smoke_is_request_only_and_redacted(
         *,
         live_permit_verified: bool = False,
         permit_ref: str | None = None,
-    ) -> cli_module.LiveSmokeCliResult:
+    ) -> common_cli.LiveSmokeCliResult:
         seen["profile_id"] = profile_id
         seen["live_permit_verified"] = live_permit_verified
         seen["permit_ref"] = permit_ref
         seen["direction"] = getattr(query, "direction").value
-        return cli_module.LiveSmokeCliResult(
+        return common_cli.LiveSmokeCliResult(
             result="metadata-request-submitted",
             auth="authenticated",
             request="accepted",
@@ -606,7 +609,7 @@ def test_sat_metadata_request_smoke_is_request_only_and_redacted(
             signed_reference_count=1,
         )
 
-    monkeypatch.setattr(cli_module, "_run_live_metadata_request_smoke", fake_request_smoke)
+    monkeypatch.setattr(sat_metadata_cli, "_run_live_metadata_request_smoke", fake_request_smoke)
 
     result = CliRunner().invoke(
         app,
@@ -624,7 +627,7 @@ def test_sat_metadata_request_smoke_is_request_only_and_redacted(
             "--manual-real-sat",
         ],
         env=_live_smoke_env(appdata_root, {}),
-        input=f"{cli_module.LIVE_SMOKE_CONFIRMATION}\n",
+        input=f"{common_cli.LIVE_SMOKE_CONFIRMATION}\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -667,9 +670,9 @@ def test_live_metadata_request_smoke_persists_accepted_id_without_printing_full_
             )
 
     monkeypatch.setenv("LOCALAPPDATA", str(appdata_root))
-    monkeypatch.setattr(cli_module, "SatLiveMetadataSmokeAdapter", FakeAdapter)
+    monkeypatch.setattr(sat_common_cli, "SatLiveMetadataSmokeAdapter", FakeAdapter)
 
-    result = cli_module._run_live_metadata_request_smoke(
+    result = sat_common_cli._run_live_metadata_request_smoke(
         "dummy-profile",
         _metadata_query(),
         live_permit_verified=False,
@@ -839,7 +842,7 @@ def test_sat_verify_due_live_requires_request_ref_before_guard(
     appdata_root = tmp_path / "appdata"
     _write_ready_setup_profile(appdata_root)
     calls: list[str] = []
-    monkeypatch.setattr(cli_module, "_validate_live_smoke_guard", lambda **_kwargs: calls.append("guard"))
+    monkeypatch.setattr(sat_verify_cli, "_validate_live_smoke_guard", lambda **_kwargs: calls.append("guard"))
 
     result = CliRunner().invoke(
         app,
@@ -872,7 +875,7 @@ def test_sat_verify_due_live_requires_limit_one_before_guard(
         now=datetime.now(timezone.utc) - timedelta(minutes=5),
     )
     calls: list[str] = []
-    monkeypatch.setattr(cli_module, "_validate_live_smoke_guard", lambda **_kwargs: calls.append("guard"))
+    monkeypatch.setattr(sat_verify_cli, "_validate_live_smoke_guard", lambda **_kwargs: calls.append("guard"))
 
     result = CliRunner().invoke(
         app,
@@ -916,7 +919,7 @@ def test_sat_verify_due_live_requires_permit_before_guard(
         now=datetime.now(timezone.utc) - timedelta(minutes=5),
     )
     calls: list[str] = []
-    monkeypatch.setattr(cli_module, "_validate_live_smoke_guard", lambda **_kwargs: calls.append("guard"))
+    monkeypatch.setattr(sat_verify_cli, "_validate_live_smoke_guard", lambda **_kwargs: calls.append("guard"))
 
     result = CliRunner().invoke(
         app,
@@ -995,7 +998,7 @@ def test_sat_verify_due_live_permit_runs_scheduler_once_without_download(
             seen["download_called"] = package_id
             return b""
 
-    monkeypatch.setattr(cli_module, "_live_verify_due_verifier", FakeLiveVerifier)
+    monkeypatch.setattr(sat_verify_cli, "_live_verify_due_verifier", FakeLiveVerifier)
 
     result = CliRunner().invoke(
         app,
@@ -1111,7 +1114,7 @@ def test_sat_package_download_smoke_downloads_one_metadata_txt_without_printing_
                 content=_metadata_txt_zip(),
             )
 
-    monkeypatch.setattr(cli_module, "_live_package_downloader", FakeDownloader)
+    monkeypatch.setattr(sat_verify_cli, "_live_package_downloader", FakeDownloader)
 
     result = CliRunner().invoke(
         app,
@@ -1213,11 +1216,11 @@ def test_sat_metadata_verify_smoke_resolves_request_ref_without_new_request(
     _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=True, doctor_ok=True)
     seen: dict[str, str] = {}
 
-    def fake_verify(profile_id: str, request_id: str, *, live_permit_verified: bool = False) -> cli_module.LiveSmokeCliResult:
+    def fake_verify(profile_id: str, request_id: str, *, live_permit_verified: bool = False) -> common_cli.LiveSmokeCliResult:
         seen["profile_id"] = profile_id
         seen["request_id"] = request_id
         seen["live_permit_verified"] = str(live_permit_verified)
-        return cli_module.LiveSmokeCliResult(
+        return common_cli.LiveSmokeCliResult(
             result="metadata-verify-ok",
             auth="authenticated",
             request="not_run",
@@ -1228,7 +1231,7 @@ def test_sat_metadata_verify_smoke_resolves_request_ref_without_new_request(
             package_count=0,
         )
 
-    monkeypatch.setattr(cli_module, "_run_live_metadata_verify_smoke", fake_verify)
+    monkeypatch.setattr(sat_verify_cli, "_run_live_metadata_verify_smoke", fake_verify)
 
     result = CliRunner().invoke(
         app,
@@ -1242,7 +1245,7 @@ def test_sat_metadata_verify_smoke_resolves_request_ref_without_new_request(
             "--manual-real-sat",
         ],
         env=_live_smoke_env(appdata_root, {}),
-        input=f"{cli_module.LIVE_SMOKE_CONFIRMATION}\n",
+        input=f"{common_cli.LIVE_SMOKE_CONFIRMATION}\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -1262,8 +1265,8 @@ def test_sat_metadata_verify_smoke_missing_request_ref_aborts_before_live_guard(
     appdata_root = tmp_path / "appdata"
     _write_ready_setup_profile(appdata_root)
     calls: list[str] = []
-    monkeypatch.setattr(cli_module, "_validate_live_smoke_guard", lambda **_kwargs: calls.append("guard"))
-    monkeypatch.setattr(cli_module, "_run_live_metadata_verify_smoke", lambda *_args, **_kwargs: calls.append("verify"))
+    monkeypatch.setattr(sat_verify_cli, "_validate_live_smoke_guard", lambda **_kwargs: calls.append("guard"))
+    monkeypatch.setattr(sat_verify_cli, "_run_live_metadata_verify_smoke", lambda *_args, **_kwargs: calls.append("verify"))
 
     result = CliRunner().invoke(
         app,
@@ -1303,8 +1306,8 @@ def test_sat_metadata_verify_smoke_profile_mismatch_aborts_before_live_guard(
         permit_ref=None,
     )
     calls: list[str] = []
-    monkeypatch.setattr(cli_module, "_validate_live_smoke_guard", lambda **_kwargs: calls.append("guard"))
-    monkeypatch.setattr(cli_module, "_run_live_metadata_verify_smoke", lambda *_args, **_kwargs: calls.append("verify"))
+    monkeypatch.setattr(sat_verify_cli, "_validate_live_smoke_guard", lambda **_kwargs: calls.append("guard"))
+    monkeypatch.setattr(sat_verify_cli, "_run_live_metadata_verify_smoke", lambda *_args, **_kwargs: calls.append("verify"))
 
     result = CliRunner().invoke(
         app,
@@ -1334,7 +1337,7 @@ def test_live_smoke_rejects_range_shorter_than_two_seconds(
     _write_ready_setup_profile(appdata_root)
     _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=True, doctor_ok=True)
     calls: list[str] = []
-    monkeypatch.setattr(cli_module, "_run_live_metadata_request_smoke", lambda profile_id, query, **_kwargs: calls.append(profile_id))
+    monkeypatch.setattr(sat_metadata_cli, "_run_live_metadata_request_smoke", lambda profile_id, query, **_kwargs: calls.append(profile_id))
 
     result = CliRunner().invoke(
         app,
@@ -1352,7 +1355,7 @@ def test_live_smoke_rejects_range_shorter_than_two_seconds(
             "--manual-real-sat",
         ],
         env=_live_smoke_env(appdata_root, {}),
-        input=f"{cli_module.LIVE_SMOKE_CONFIRMATION}\n",
+        input=f"{common_cli.LIVE_SMOKE_CONFIRMATION}\n",
     )
 
     assert result.exit_code == 1
@@ -1370,7 +1373,7 @@ def test_download_live_smoke_adapter_failure_prints_redacted_diagnostic(
     _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=True, doctor_ok=True)
 
     def fail_live_smoke(_profile_id: str, _query: object) -> None:
-        raise cli_module.SatLiveSmokeError(
+        raise common_cli.SatLiveSmokeError(
             "raw adapter detail must stay hidden",
             stage="auth_transport",
             error_kind="http_status_error",
@@ -1407,7 +1410,7 @@ def test_download_live_smoke_adapter_failure_prints_redacted_diagnostic(
         app,
         _live_smoke_args(["--manual-real-sat"]),
         env=_live_smoke_env(appdata_root, {}),
-        input=f"{cli_module.LIVE_SMOKE_CONFIRMATION}\n",
+        input=f"{common_cli.LIVE_SMOKE_CONFIRMATION}\n",
     )
 
     assert result.exit_code == 1
@@ -1449,9 +1452,9 @@ def test_sat_diagnose_live_fake_adapter_happy_path_is_redacted(
     _write_ready_setup_profile(appdata_root)
     _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=True, doctor_ok=True)
     monkeypatch.setattr(
-        cli_module,
+        sat_metadata_cli,
         "_run_live_diagnose",
-        lambda profile_id, query: cli_module.LiveSmokeCliResult(
+        lambda profile_id, query: common_cli.LiveSmokeCliResult(
             result="synthetic-diagnostic-ok",
             auth="authenticated",
             request="accepted",
@@ -1463,7 +1466,7 @@ def test_sat_diagnose_live_fake_adapter_happy_path_is_redacted(
         app,
         _diagnose_live_args(["--manual-real-sat"]),
         env=_live_smoke_env(appdata_root, {}),
-        input=f"{cli_module.LIVE_SMOKE_CONFIRMATION}\n",
+        input=f"{common_cli.LIVE_SMOKE_CONFIRMATION}\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -1487,7 +1490,7 @@ def test_sat_diagnose_live_adapter_failure_prints_stage_summary(
     _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=True, doctor_ok=True)
 
     def fail_diagnose(_profile_id: str, _query: object) -> None:
-        raise cli_module.SatLiveSmokeError(
+        raise common_cli.SatLiveSmokeError(
             "raw diagnostic detail must stay hidden",
             stage="metadata_request_transport",
             error_kind="transport_timeout",
@@ -1497,13 +1500,13 @@ def test_sat_diagnose_live_adapter_failure_prints_stage_summary(
             correlation_id="diag-timeout",
         )
 
-    monkeypatch.setattr(cli_module, "_run_live_diagnose", fail_diagnose)
+    monkeypatch.setattr(sat_metadata_cli, "_run_live_diagnose", fail_diagnose)
 
     result = CliRunner().invoke(
         app,
         _diagnose_live_args(["--manual-real-sat"]),
         env=_live_smoke_env(appdata_root, {}),
-        input=f"{cli_module.LIVE_SMOKE_CONFIRMATION}\n",
+        input=f"{common_cli.LIVE_SMOKE_CONFIRMATION}\n",
     )
 
     assert result.exit_code == 1
@@ -1527,7 +1530,7 @@ def test_sat_diagnose_live_aborts_before_adapter_without_manual_flag(
     _write_ready_setup_profile(appdata_root)
     _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=True, doctor_ok=True)
     calls: list[str] = []
-    monkeypatch.setattr(cli_module, "_run_live_diagnose", lambda profile_id, query: calls.append(profile_id))
+    monkeypatch.setattr(sat_metadata_cli, "_run_live_diagnose", lambda profile_id, query: calls.append(profile_id))
 
     result = CliRunner().invoke(app, _diagnose_live_args([]), env=_live_smoke_env(appdata_root, {}))
 
@@ -1553,20 +1556,20 @@ def test_sat_auth_smoke_requires_same_manual_guard(
         live_permit_verified: bool = False,
         auth_envelope_variant: str = AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
         wcf_action_header_enabled: bool = True,
-    ) -> cli_module.LiveSmokeCliResult:
+    ) -> common_cli.LiveSmokeCliResult:
         seen["profile_id"] = profile_id
         seen["live_permit_verified"] = live_permit_verified
         seen["auth_envelope_variant"] = auth_envelope_variant
         seen["wcf_action_header_enabled"] = wcf_action_header_enabled
-        return cli_module.LiveSmokeCliResult(result="synthetic-auth-ok", auth="attempted")
+        return common_cli.LiveSmokeCliResult(result="synthetic-auth-ok", auth="attempted")
 
-    monkeypatch.setattr(cli_module, "_run_live_auth_smoke", fake_auth_smoke)
+    monkeypatch.setattr(sat_auth_cli, "_run_live_auth_smoke", fake_auth_smoke)
 
     result = CliRunner().invoke(
         app,
         ["sat", "auth-smoke", "--profile", "dummy-profile", "--manual-real-sat"],
         env=_live_smoke_env(appdata_root, {}),
-        input=f"{cli_module.LIVE_SMOKE_CONFIRMATION}\n",
+        input=f"{common_cli.LIVE_SMOKE_CONFIRMATION}\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -1612,14 +1615,14 @@ def test_sat_auth_smoke_permit_replaces_interactive_prompt_once(
         live_permit_verified: bool = False,
         auth_envelope_variant: str = AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
         wcf_action_header_enabled: bool = True,
-    ) -> cli_module.LiveSmokeCliResult:
+    ) -> common_cli.LiveSmokeCliResult:
         calls.append(profile_id)
         seen["live_permit_verified"] = live_permit_verified
         seen["auth_envelope_variant"] = auth_envelope_variant
         seen["wcf_action_header_enabled"] = wcf_action_header_enabled
-        return cli_module.LiveSmokeCliResult(result="synthetic-auth-ok", auth="attempted")
+        return common_cli.LiveSmokeCliResult(result="synthetic-auth-ok", auth="attempted")
 
-    monkeypatch.setattr(cli_module, "_run_live_auth_smoke", fake_auth_smoke)
+    monkeypatch.setattr(sat_auth_cli, "_run_live_auth_smoke", fake_auth_smoke)
 
     result = CliRunner().invoke(
         app,
@@ -1667,7 +1670,7 @@ def test_live_smoke_checkout_guard_fails_closed_outside_git_checkout(
 ) -> None:
     monkeypatch.chdir(tmp_path)
 
-    assert cli_module._checkout_guard_status() == (False, False)
+    assert common_cli._checkout_guard_status() == (False, False)
 
 
 def _write_setup_profile(
@@ -1763,26 +1766,26 @@ def _dummy_phrase_ref(profile_id: str) -> str:
     return f"local-dev-dummy://cfdi-vault/setup/{profile_id}/private-key-phrase"
 
 
-def _metadata_query() -> cli_module.DownloadQuery:
-    return cli_module.DownloadQuery(
+def _metadata_query() -> common_cli.DownloadQuery:
+    return common_cli.DownloadQuery(
         "dummy-profile",
         "XAXX010101000",
-        cli_module.DownloadDirection.RECEIVED,
-        cli_module.RequestType.METADATA,
-        cli_module.DateTimePeriod(
+        common_cli.DownloadDirection.RECEIVED,
+        common_cli.RequestType.METADATA,
+        common_cli.DateTimePeriod(
             datetime(2024, 1, 1, tzinfo=timezone.utc),
             datetime(2024, 1, 1, 0, 0, 2, tzinfo=timezone.utc),
         ),
     )
 
 
-def _weekly_metadata_query() -> cli_module.DownloadQuery:
-    return cli_module.DownloadQuery(
+def _weekly_metadata_query() -> common_cli.DownloadQuery:
+    return common_cli.DownloadQuery(
         "dummy-profile",
         "XAXX010101000",
-        cli_module.DownloadDirection.RECEIVED,
-        cli_module.RequestType.METADATA,
-        cli_module.DateTimePeriod(
+        common_cli.DownloadDirection.RECEIVED,
+        common_cli.RequestType.METADATA,
+        common_cli.DateTimePeriod(
             datetime(2024, 1, 1, tzinfo=timezone.utc),
             datetime(2024, 1, 7, 23, 59, 59, tzinfo=timezone.utc),
         ),

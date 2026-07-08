@@ -9,7 +9,8 @@ import pytest
 from typer.testing import CliRunner
 
 from cfdi_vault import setup as setup_flow
-from cfdi_vault.adapters.cli import sat as cli_module
+from cfdi_vault.adapters.cli import sat_backfill as cli_module
+from cfdi_vault.adapters.cli import sat_common as sat_common_cli
 from cfdi_vault.cli import app
 from cfdi_vault.domain import DownloadDirection, DownloadQuery, RequestType
 from cfdi_vault.sat_backfill import build_backfill_plan, generate_backfill_periods
@@ -204,7 +205,7 @@ def test_sat_backfill_submit_persists_accepted_request_for_scheduler(
             )
 
     monkeypatch.setattr(cli_module, "_validate_live_smoke_guard", lambda **_kwargs: True)
-    monkeypatch.setattr(cli_module, "SatLiveMetadataSmokeAdapter", FakeAdapter)
+    monkeypatch.setattr(sat_common_cli, "SatLiveMetadataSmokeAdapter", FakeAdapter)
     result = CliRunner().invoke(
         app,
         [*_submit_args(direction=direction), "--manual-real-sat", "--permit", "permit-local-id", "--limit-windows", "1"],

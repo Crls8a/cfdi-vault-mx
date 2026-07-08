@@ -14,7 +14,7 @@ This is the living plan for keeping the `cfdi-vault` Typer CLI split by responsi
 | Family modules | Done | Commands are split under `adapters/cli/`. |
 | Merge-conflict policy | Done | `AGENTS.md` says not to restore the 3,400+ line file. |
 | Architecture docs | In progress | Keep this plan, README, architecture, and SDD aligned with the split. |
-| SAT sub-splitting | Deferred | `sat.py` is the largest family and can be split later by SAT operation. |
+| SAT sub-splitting | Done | `sat.py` now delegates registration to focused SAT subfamily modules. |
 
 ## Family ownership
 
@@ -27,7 +27,13 @@ This is the living plan for keeping the `cfdi-vault` Typer CLI split by responsi
 | `live.py` | Local live execution permit commands. | Real SAT execution. |
 | `download.py` | Fake/offline download, sync, queue, worker, and download status commands. | SAT live probes or signing rules. |
 | `operations.py` | Local import/search/show/print/export/reconcile operations. | SAT transport or credential custody. |
-| `sat.py` | SAT-gated smoke/probe/backfill/verify commands. | Generic local import/export commands. |
+| `sat.py` | SAT command registration glue. | Command logic or business rules. |
+| `sat_auth.py` | SAT auth smoke, WSDL contract, envelope lint, and oracle commands. | Metadata backfill, verify scheduler, or transport probe command bodies. |
+| `sat_metadata.py` | SAT metadata request smoke, request-state listing, and live diagnosis. | Auth oracle internals, package download, or probe command bodies. |
+| `sat_backfill.py` | Historical metadata backfill plan and single-window submit commands. | Scheduler verify loops or package extraction. |
+| `sat_probes.py` | SAT transport/auth/verify probe commands and probe guards. | e.firma-backed metadata requests or package downloads. |
+| `sat_verify.py` | Verify-due, metadata verify smoke, and package download smoke commands. | Auth oracle/lint or transport probe matrices. |
+| `sat_common.py` | Shared SAT-only helper seams used by multiple SAT subfamilies. | Generic CLI helpers or unrelated command registration. |
 | `common.py` | Shared CLI DTOs, parsing, guard helpers, and output helpers used by multiple families. | Family-specific command bodies. |
 
 ## Work plan
@@ -39,12 +45,13 @@ This is the living plan for keeping the `cfdi-vault` Typer CLI split by responsi
 - [x] Document merge-conflict policy in `AGENTS.md`.
 - [x] Add this living plan.
 - [x] Update high-level docs that still pointed at monolithic `cli.py`.
-- [ ] If SAT keeps growing, split `sat.py` into SAT subfamilies:
+- [x] Split `sat.py` into SAT subfamilies:
   - `sat_auth.py`
   - `sat_metadata.py`
   - `sat_backfill.py`
   - `sat_probes.py`
   - `sat_verify.py`
+  - `sat_common.py` for SAT-only shared seams
 - [ ] Before PR merge, decide review strategy: `size:exception` or chained review slices.
 
 ## Agent task slices
@@ -53,7 +60,7 @@ This is the living plan for keeping the `cfdi-vault` Typer CLI split by responsi
 |---|---|---|
 | Setup/custody/live | Worker | `setup.py`, `secrets.py`, `live.py`, related tests. |
 | Download/operations | Worker | `download.py`, `operations.py`, related tests. |
-| SAT commands | Worker | `sat.py`, SAT/backfill/probe tests. |
+| SAT commands | Worker | `sat.py`, `sat_auth.py`, `sat_metadata.py`, `sat_backfill.py`, `sat_probes.py`, `sat_verify.py`, `sat_common.py`, SAT/backfill/probe tests. |
 | Docs and governance | Worker/reviewer | `AGENTS.md`, `README.md`, `docs/architecture.md`, this plan. |
 | Fresh review | Reviewer | Diff behavior, command tree, monkeypatch targets, merge-conflict risk. |
 
