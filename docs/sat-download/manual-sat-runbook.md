@@ -44,6 +44,13 @@ Any future live command must require all three explicit operator choices:
 
 These gates are not permission by themselves. They only make the future command eligible to continue after issue #50 is explicitly approved.
 
+The verify-only v1.5 live gate adds two explicit opt-ins before any network I/O:
+
+| Gate | Required value |
+|---|---|
+| Verify live gate opt-in | `CFDI_VAULT_SAT_LIVE=1` |
+| Production-signed verify opt-in | `CFDI_VAULT_SAT_PRODUCTION_SIGNED=1` |
+
 ## Enablement commands
 
 The safe CLI surface is:
@@ -68,6 +75,13 @@ cfdi-vault sat diagnose-live `
   --kind metadata `
   --direction received `
   --manual-real-sat
+
+cfdi-vault sat verify-live-gate `
+  --profile <PROFILE_ID> `
+  --request-ref <REQUEST_REF> `
+  --manual-real-sat `
+  --permit <PERMIT_ID> `
+  --read-timeout-seconds 60
 ```
 
 Use `--direction issued` only when that exact direction is approved for the manual run.
@@ -141,6 +155,35 @@ The first authorized smoke must be intentionally small:
 - one local manual profile and its configured storage root;
 - no XML/package download until metadata-only evidence is reviewed;
 - no recurrent job, scheduler, CI run, or shared agent environment.
+
+## Verify v1.5 live gate
+
+Use `sat verify-live-gate` only after one metadata request has already been accepted and persisted locally as a redacted `request-ref`.
+
+This command performs, in order:
+
+1. redacted preflight only;
+2. local production-signed `VerificaSolicitudDescarga` oracle parity;
+3. at most one live auth + verify attempt with the configured read timeout.
+
+It does not create a new request, download packages, persist XML/PDF, or store raw SOAP/SAT responses.
+
+Required extra evidence:
+
+- `production_signed=yes`;
+- `oracle_parity=passed`;
+- `read_timeout_seconds=60` or the approved timeout;
+- `download_executed=no`;
+- `raw_soap_persisted=no`;
+- `raw_response_persisted=no`.
+
+Local gate result on 2026-07-08:
+
+- live SAT executed: no;
+- production-signed: no;
+- oracle parity: not run;
+- read timeout: 60 seconds;
+- reason: preflight blocked by missing `CFDI_VAULT_SAT_LIVE`, missing `CFDI_VAULT_SAT_PRODUCTION_SIGNED`, missing `--manual-real-sat`, missing `--permit`, and missing `--request-ref`.
 
 ## Required confirmation
 
@@ -226,6 +269,7 @@ Stop the smoke and do not retry automatically if:
 - `cfdi-vault status` or `cfdi-vault doctor` fails readiness checks;
 - the profile is not ready, `passwordRef` is missing, or the approved `SecretProvider` cannot resolve locally;
 - `CFDI_VAULT_ALLOW_REAL_SAT=1`, `CFDI_VAULT_ALLOW_REAL_CREDENTIALS=1`, or `--manual-real-sat` is missing;
+- `CFDI_VAULT_SAT_LIVE=1`, `CFDI_VAULT_SAT_PRODUCTION_SIGNED=1`, `--permit`, or `--request-ref` is missing for `sat verify-live-gate`;
 - the command is non-interactive or the typed confirmation is missing;
 - `--kind` is anything other than `metadata`;
 - the requested range is more than one calendar day;
@@ -240,7 +284,7 @@ Stop the smoke and do not retry automatically if:
 
 After any approved manual attempt:
 
-1. Clear `CFDI_VAULT_ALLOW_REAL_SAT` and `CFDI_VAULT_ALLOW_REAL_CREDENTIALS` from the shell.
+1. Clear live SAT opt-in environment variables from the shell.
 2. Inspect generated artifacts and logs before copying any evidence.
 3. Run the sensitive fixture scanner again.
 4. Confirm `git status --short` is clean.
@@ -251,6 +295,8 @@ PowerShell cleanup:
 ```powershell
 Remove-Item Env:CFDI_VAULT_ALLOW_REAL_SAT -ErrorAction SilentlyContinue
 Remove-Item Env:CFDI_VAULT_ALLOW_REAL_CREDENTIALS -ErrorAction SilentlyContinue
+Remove-Item Env:CFDI_VAULT_SAT_LIVE -ErrorAction SilentlyContinue
+Remove-Item Env:CFDI_VAULT_SAT_PRODUCTION_SIGNED -ErrorAction SilentlyContinue
 git status --short
 py scripts/scan_sensitive_fixtures.py --root .
 ```

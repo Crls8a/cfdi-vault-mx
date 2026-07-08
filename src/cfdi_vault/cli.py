@@ -79,6 +79,13 @@ from cfdi_vault.sat_auth_post_probe import SatAuthPostProbeResult, run_sat_auth_
 from cfdi_vault.sat_contract import SatOutcomeAction
 from cfdi_vault.sat_transport_probe import SatProbeResult, run_sat_transport_probe
 from cfdi_vault.sat_verify_post_probe import SatVerifyPostProbeResult, run_sat_verify_post_probe
+from cfdi_vault.sat_verify_live_gate import (
+    DEFAULT_VERIFY_READ_TIMEOUT_SECONDS,
+    VerifyLiveGatePreflight,
+    VerifyOracleParityResult,
+    build_verify_live_gate_preflight,
+    run_verify_oracle_parity,
+)
 from cfdi_vault.live_permit import (
     BACKFILL_SUBMIT_SCOPE,
     LivePermitError,
@@ -250,6 +257,12 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "purpose": "Verify one locally persisted metadata request-ref without creating a new request or downloading packages.",
         "when": "Run only after explicit approval for one verify-only SAT smoke.",
         "example": "cfdi-vault sat metadata-verify-smoke --profile default --request-ref <request-ref> --permit PERMIT_ID",
+    },
+    {
+        "command": "sat verify-live-gate",
+        "purpose": "Run the controlled v1.5 production-signed verify gate after redacted preflight and local oracle parity.",
+        "when": "Use for the single approved verify live gate only; it never downloads packages.",
+        "example": "cfdi-vault sat verify-live-gate --profile default --request-ref <request-ref> --manual-real-sat --permit PERMIT_ID --read-timeout-seconds 60",
     },
     {
         "command": "sat inspect-auth-contract",
@@ -1271,6 +1284,77 @@ def sat_metadata_verify_smoke(
         _print_live_adapter_error(exc)
         raise typer.Exit(code=1) from exc
     _print_live_smoke_result(profile_id=profile, kind=query.request_type.value, direction=query.direction.value, result=result)
+
+
+@sat_app.command("verify-live-gate")
+def sat_verify_live_gate(
+    profile: str = typer.Option("default", "--profile", help="Local setup profile id."),
+    request_ref: str | None = typer.Option(None, "--request-ref", help="Local redacted request reference from metadata-request-state."),
+    manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Required human gate for real SAT verify."),
+    permit: str | None = typer.Option(None, "--permit", help="One-time local metadata_live_smoke permit id."),
+    read_timeout_seconds: float = typer.Option(
+        DEFAULT_VERIFY_READ_TIMEOUT_SECONDS,
+        "--read-timeout-seconds",
+        min=1.0,
+        help="Explicit verify read timeout in seconds.",
+    ),
+) -> None:
+    """Run the controlled v1.5 production-signed verify live gate only when preflight passes."""
+
+    local_profile = _load_download_profile_or_none(profile)
+    provider = _setup_provider(profile) if local_profile is not None else None
+    record = _load_request_record_or_none(local_profile, request_ref) if local_profile is not None and request_ref else None
+    preflight = build_verify_live_gate_preflight(
+        profile=local_profile,
+        record=record,
+        provider=provider,
+        env=os.environ,
+        manual_real_sat=manual_real_sat,
+        permit_ref=permit,
+        read_timeout_seconds=read_timeout_seconds,
+        repo_root=_find_checkout_root(Path.cwd()),
+    )
+    oracle = VerifyOracleParityResult(status="not-run", reason="preflight-not-ready")
+    result: LiveSmokeCliResult | None = None
+    live_executed = False
+    error_kind = ""
+    if preflight.ready and local_profile is not None and record is not None and provider is not None:
+        try:
+            oracle = run_verify_oracle_parity(profile=local_profile, record=record, provider=provider)
+        except SatLiveSmokeError as exc:
+            oracle = VerifyOracleParityResult(status="failed", reason=exc.error_kind)
+        if oracle.status == "passed":
+            query = _query_from_live_request_record(local_profile.rfc, record)
+            permit_verified = _validate_live_smoke_guard(
+                profile_id=profile,
+                manual_real_sat=manual_real_sat,
+                query=query,
+                metadata_only=True,
+                range_within_limit=_is_minimal_live_smoke_range(query),
+                mode="verify-live-gate",
+                permit_ref=permit,
+            )
+            try:
+                result = _run_live_metadata_verify_smoke(
+                    profile,
+                    record.id_solicitud,
+                    live_permit_verified=permit_verified,
+                    timeout_seconds=read_timeout_seconds,
+                )
+                live_executed = True
+            except SatLiveSmokeError as exc:
+                live_executed = exc.failed_stage in {"auth_transport", "auth_response_parse", "token_extract", "verify_transport", "verify_response_parse"}
+                error_kind = exc.error_kind
+    _print_verify_live_gate_result(
+        profile_id=profile,
+        preflight=preflight,
+        oracle=oracle,
+        result=result,
+        live_executed=live_executed,
+        error_kind=error_kind,
+    )
+    if not preflight.ready or oracle.status != "passed" or result is None:
+        raise typer.Exit(code=1)
 
 
 @sat_app.command("inspect-auth-contract")
@@ -2506,12 +2590,14 @@ def _run_live_metadata_verify_smoke(
     request_id: str,
     *,
     live_permit_verified: bool = False,
+    timeout_seconds: float = DEFAULT_VERIFY_READ_TIMEOUT_SECONDS,
 ) -> LiveSmokeCliResult:
     profile = _load_download_profile(profile_id)
     adapter = SatLiveMetadataSmokeAdapter(
         profile=profile,
         provider=_setup_provider(profile_id),
         transport=_live_smoke_transport(live_permit_verified=live_permit_verified),
+        timeout_seconds=timeout_seconds,
     )
     result = adapter.metadata_verify_smoke(request_id)
     return _live_smoke_cli_result(result)
@@ -2891,6 +2977,69 @@ def _print_live_smoke_result(
     typer.echo("zip_downloaded=no")
     typer.echo("package_downloaded=no")
     typer.echo("recurrent_automation=no")
+
+
+def _print_verify_live_gate_result(
+    *,
+    profile_id: str,
+    preflight: VerifyLiveGatePreflight,
+    oracle: VerifyOracleParityResult,
+    result: LiveSmokeCliResult | None,
+    live_executed: bool,
+    error_kind: str,
+) -> None:
+    completed = result is not None and oracle.status == "passed"
+    package_summary = (
+        "not-run"
+        if result is None
+        else f"present_count={result.package_count}"
+        if result.package_count > 0
+        else "none"
+    )
+    typer.echo("mode=verify-live-gate")
+    typer.echo(f"profile={profile_id}")
+    typer.echo(f"completed={_yes_no(completed)}")
+    typer.echo(f"live_sat_executed={_yes_no(live_executed)}")
+    typer.echo(f"production_signed={_yes_no(preflight.opt_in_production_signed and oracle.status == 'passed')}")
+    typer.echo(f"oracle_parity={oracle.status}")
+    typer.echo(f"read_timeout_seconds={preflight.read_timeout_seconds:g}")
+    typer.echo(f"preflight_ready={_yes_no(preflight.ready)}")
+    typer.echo(f"preflight_missing={','.join(preflight.missing) if preflight.missing else 'none'}")
+    typer.echo(f"opt_in_live={_yes_no(preflight.opt_in_live)}")
+    typer.echo(f"opt_in_production_signed={_yes_no(preflight.opt_in_production_signed)}")
+    typer.echo(f"manual_real_sat={_yes_no(preflight.manual_real_sat)}")
+    typer.echo(f"permit_present={_yes_no(preflight.permit_present)}")
+    typer.echo(f"profile_ready={_yes_no(preflight.profile_ready)}")
+    typer.echo(f"certificate_local_detected={_yes_no(preflight.certificate_local_detected)}")
+    typer.echo(f"private_key_local_detected={_yes_no(preflight.private_key_local_detected)}")
+    typer.echo(f"phrase_available={_yes_no(preflight.phrase_available)}")
+    typer.echo(f"rfc_redacted={preflight.rfc_redacted}")
+    typer.echo(f"id_solicitud_redacted={preflight.id_solicitud_redacted}")
+    typer.echo(f"endpoint_verify={preflight.endpoint_verify}")
+    typer.echo(f"soap_action={preflight.soap_action}")
+    typer.echo(f"oracle_operation={oracle.operation or 'not-run'}")
+    typer.echo(f"oracle_namespace={oracle.namespace or 'not-run'}")
+    typer.echo(f"oracle_signature_placement={oracle.signature_placement or 'not-run'}")
+    typer.echo(f"oracle_signed_target={oracle.signed_target or 'not-run'}")
+    typer.echo(f"oracle_canonicalization={oracle.canonicalization or 'not-run'}")
+    typer.echo(f"oracle_x509_issuer_serial={_yes_no(oracle.x509_issuer_serial)}")
+    typer.echo(f"oracle_x509_certificate={_yes_no(oracle.x509_certificate)}")
+    typer.echo(f"result={result.result if result else 'not-run'}")
+    typer.echo(f"auth={result.auth if result else 'not-run'}")
+    typer.echo(f"request={result.request if result else 'not-run'}")
+    typer.echo(f"verification={result.verification if result else 'not-run'}")
+    typer.echo(f"estado_solicitud={result.sat_state if result and result.sat_state else 'not-run'}")
+    typer.echo("codigo_estado=not_reported")
+    typer.echo("numero_cfdis=not_reported")
+    typer.echo(f"ids_paquetes={package_summary}")
+    typer.echo("download_executed=no")
+    typer.echo("raw_soap_persisted=no")
+    typer.echo("raw_response_persisted=no")
+    typer.echo("authorization_value_visible=no")
+    typer.echo("full_rfc_visible=no")
+    typer.echo("full_id_solicitud_visible=no")
+    typer.echo("full_id_paquete_visible=no")
+    typer.echo(f"error_kind={error_kind or oracle.reason or 'none'}")
 
 
 def _print_auth_contract(contract: AuthWsdlContract) -> None:
@@ -3325,6 +3474,25 @@ def _load_download_profile(profile_id: str) -> setup_flow.LocalProfile:
         typer.echo(f"profile={profile_id}", err=True)
         typer.echo(f"error={reason}", err=True)
         raise typer.Exit(code=1) from exc
+
+
+def _load_download_profile_or_none(profile_id: str) -> setup_flow.LocalProfile | None:
+    try:
+        return setup_flow.load_profile(profile_id)
+    except setup_flow.SetupError:
+        return None
+
+
+def _load_request_record_or_none(
+    profile: setup_flow.LocalProfile,
+    request_ref: str | None,
+) -> LiveMetadataRequestRecord | None:
+    if not request_ref:
+        return None
+    try:
+        return load_live_metadata_request(profile.storage_root, request_ref)
+    except LiveRequestStateError:
+        return None
 
 
 def _has_profile_not_configured_error(exc: setup_flow.SetupError) -> bool:
