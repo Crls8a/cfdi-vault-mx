@@ -85,7 +85,7 @@ Parser retroactivity should run through the API/queue/worker boundary. Stored XM
 | Recovery runtime | PostgreSQL only. |
 | Docker Compose | `DATABASE_URL` points to the `postgres` service. |
 | Synthetic `import-xml` demo | Uses the same PostgreSQL `DATABASE_URL` path as the rest of the app. |
-| Tests | Use a PostgreSQL test database through `CFDI_VAULT_TEST_DATABASE_URL`. |
+| Tests | Use a dedicated PostgreSQL test database through `CFDI_VAULT_TEST_DATABASE_URL`; pytest resets that schema from the Flyway baseline. |
 | Migrations/indexes | Flyway migrations + PostgreSQL-specific JSONB/full-text/trigram indexes. |
 
 Do not introduce another database runtime. A second persistence path creates the exact mixed architecture this foundation is trying to avoid.

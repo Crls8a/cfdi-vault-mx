@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
 from decimal import Decimal
 import os
 
-from sqlalchemy import DateTime, Numeric, String, create_engine
+from sqlalchemy import DateTime, Numeric, String, create_engine, inspect
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -63,6 +64,20 @@ def create_session_factory(engine: Engine) -> SessionFactory:
 
 
 def init_db(engine: Engine) -> None:
-    """Create the vault schema if it does not exist."""
+    """Validate that Flyway has created the vault schema."""
 
-    Base.metadata.create_all(engine)
+    ensure_tables_exist(engine, ("invoices",))
+
+
+def ensure_tables_exist(engine: Engine, table_names: Iterable[str]) -> None:
+    """Fail fast when a PostgreSQL database has not been bootstrapped by Flyway."""
+
+    expected = set(table_names)
+    existing = set(inspect(engine).get_table_names())
+    missing = sorted(expected - existing)
+    if missing:
+        missing_list = ", ".join(missing)
+        raise RuntimeError(
+            "PostgreSQL schema is not initialized. Run Flyway migrations from "
+            f"db/migration/ before starting CFDI Vault MX. Missing tables: {missing_list}."
+        )

@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from cfdi_vault.db import Base
+from cfdi_vault.db import Base, ensure_tables_exist
 
 
 class Tenant(Base):
@@ -322,6 +322,6 @@ class XmlEvidence(Base):
 
 
 def init_recovery_schema(engine: Engine) -> None:
-    """Create all recovery tables."""
+    """Validate that Flyway has created all recovery tables."""
 
-    Base.metadata.create_all(engine)
+    ensure_tables_exist(engine, Base.metadata.tables)

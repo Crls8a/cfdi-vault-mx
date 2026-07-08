@@ -119,8 +119,12 @@ Windows local setup can also use:
 For the no-Docker local installer alpha, run:
 
 ```powershell
-.\scripts\bootstrap_local.ps1
+.\scripts\bootstrap_local.ps1 `
+  -DatabaseUrl "postgresql+psycopg://cfdi_vault:cfdi_vault@localhost:5432/cfdi_vault" `
+  -TestDatabaseUrl "postgresql+psycopg://cfdi_vault:cfdi_vault@localhost:5432/cfdi_vault_test"
 ```
+
+`-TestDatabaseUrl` must point to a disposable PostgreSQL database because tests reset the schema from the Flyway baseline.
 
 See `docs/installer/local-installer-alpha.md` for the editable install and fake/offline first-use flow.
 

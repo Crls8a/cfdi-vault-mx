@@ -86,7 +86,7 @@ sequenceDiagram
     Acq->>Storage: store package ZIP and extracted XML
     Acq->>PG: register job/evidence references
     Acq->>API: submit storage keys + correlation id
-    API->>MQ: publish cfdi.ingest.xml
+    API->>MQ: publish cfdi.parse.xml
     MQ-->>Worker: deliver ingestion job
     Worker->>Storage: read stored XML
     Worker->>PG: upsert cfdi_documents and related tables
@@ -136,7 +136,7 @@ Docker Compose now injects `DATABASE_URL`, `RABBITMQ_URL`, `REDIS_URL`, and `CFD
 
 1. Expand Flyway migrations and add PostgreSQL full-text/trigram indexes where measured search needs justify them.
 2. Define the FastAPI ingestion contract for stored XML/package references.
-3. Add post-XML RabbitMQ jobs such as `cfdi.ingest.xml`, `cfdi.parse.xml`, and `cfdi.reconcile`.
+3. Add post-XML RabbitMQ jobs such as `cfdi.parse.xml` and `cfdi.reconcile`.
 4. Expand the RabbitMQ worker into a real consumer with retry and dead-letter routing.
 5. Parse package XML into full `cfdi_documents`, concepts, taxes, payments, payroll, and complement JSON through the worker path.
 6. Add real SAT SOAP client behind `--live`.

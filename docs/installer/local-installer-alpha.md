@@ -7,7 +7,9 @@ This alpha path gives a technical Windows user a repeatable local install withou
 From the repository root:
 
 ```powershell
-.\scripts\bootstrap_local.ps1
+.\scripts\bootstrap_local.ps1 `
+  -DatabaseUrl "postgresql+psycopg://cfdi_vault:cfdi_vault@localhost:5432/cfdi_vault" `
+  -TestDatabaseUrl "postgresql+psycopg://cfdi_vault:cfdi_vault@localhost:5432/cfdi_vault_test"
 ```
 
 Expected result:
@@ -59,6 +61,8 @@ For package/XML fake evidence, use `--kind cfdi` only with synthetic/local data 
 | `-VenvPath <path>` | You want a virtual environment somewhere other than `.venv`. |
 | `-ProfileId <profile>` | You want the temporary smoke profile to use a different id. |
 | `-From YYYY-MM-DD -To YYYY-MM-DD` | You want a different synthetic smoke range. Keep it small. |
+| `-DatabaseUrl <url>` | Runtime PostgreSQL database for the fake/offline smoke. |
+| `-TestDatabaseUrl <url>` | Disposable PostgreSQL test database. The database name should contain `test` because pytest resets its schema from the Flyway baseline. |
 | `-SkipScanner` | You are only checking install mechanics locally. Do not use before PR. |
 | `-SkipTests` | You are only checking install mechanics locally. Do not use before PR. |
 | `-SkipOfflineSmoke` | You cannot run the fake smoke, but still want install/help validation. |
@@ -70,6 +74,7 @@ The alpha installer does not:
 - execute SAT real;
 - use real e.firma against SAT;
 - require real credentials for the bootstrap smoke;
+- run destructive test resets against the runtime database;
 - commit or copy certificates, keys, passwords, SAT metadata, SAT ZIPs, or CFDI files;
 - approve or close issue #50;
 - build a desktop installer;

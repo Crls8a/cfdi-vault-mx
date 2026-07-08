@@ -4,6 +4,7 @@ param(
     [string]$From = "2024-01-01",
     [string]$To = "2024-01-02",
     [string]$DatabaseUrl = $env:DATABASE_URL,
+    [string]$TestDatabaseUrl = $env:CFDI_VAULT_TEST_DATABASE_URL,
     [switch]$SkipScanner,
     [switch]$SkipTests,
     [switch]$SkipOfflineSmoke
@@ -30,6 +31,28 @@ function Clear-LiveSatEnv {
         if (Test-Path "Env:\$name") {
             Remove-Item "Env:\$name"
         }
+    }
+}
+
+function Get-DatabaseNameFromUrl {
+    param([string]$Url)
+
+    $withoutQuery = ($Url -split "[?#]", 2)[0]
+    return ($withoutQuery -split "/")[-1]
+}
+
+function Assert-SafeTestDatabaseUrl {
+    param(
+        [string]$Url
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Url)) {
+        throw "CFDI_VAULT_TEST_DATABASE_URL or -TestDatabaseUrl is required for PostgreSQL-backed tests."
+    }
+
+    $databaseName = Get-DatabaseNameFromUrl -Url $Url
+    if ($databaseName -notmatch "(?i)test" -and $env:CFDI_VAULT_ALLOW_DESTRUCTIVE_TEST_DB_RESET -ne "1") {
+        throw "Refusing to run tests against database '$databaseName'. Use a dedicated test database or set CFDI_VAULT_ALLOW_DESTRUCTIVE_TEST_DB_RESET=1 for an explicit disposable database."
     }
 }
 
@@ -63,13 +86,14 @@ if (-not $SkipScanner) {
 
 if (-not [string]::IsNullOrWhiteSpace($DatabaseUrl)) {
     $env:DATABASE_URL = $DatabaseUrl
-    $env:CFDI_VAULT_TEST_DATABASE_URL = $DatabaseUrl
 }
 
 if (-not $SkipTests) {
-    if ([string]::IsNullOrWhiteSpace($env:CFDI_VAULT_TEST_DATABASE_URL)) {
-        throw "CFDI_VAULT_TEST_DATABASE_URL or -DatabaseUrl is required for PostgreSQL-backed tests."
+    Assert-SafeTestDatabaseUrl -Url $TestDatabaseUrl
+    if (-not [string]::IsNullOrWhiteSpace($DatabaseUrl) -and $DatabaseUrl -eq $TestDatabaseUrl) {
+        throw "Refusing to use the same URL for DATABASE_URL and CFDI_VAULT_TEST_DATABASE_URL. Use a separate disposable test database."
     }
+    $env:CFDI_VAULT_TEST_DATABASE_URL = $TestDatabaseUrl
 
     Invoke-Step "Run pytest" {
         & $python -m pytest -q
