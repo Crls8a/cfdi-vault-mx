@@ -179,11 +179,31 @@ Required extra evidence:
 
 Local gate result on 2026-07-08:
 
+First preflight-only attempt:
+
 - live SAT executed: no;
 - production-signed: no;
 - oracle parity: not run;
 - read timeout: 60 seconds;
 - reason: preflight blocked by missing `CFDI_VAULT_SAT_LIVE`, missing `CFDI_VAULT_SAT_PRODUCTION_SIGNED`, missing `--manual-real-sat`, missing `--permit`, and missing `--request-ref`.
+
+Controlled rerun after resolving the missing preflight inputs:
+
+- live SAT executed: yes;
+- production-signed: yes;
+- oracle parity: passed;
+- read timeout: 60 seconds;
+- preflight: ready;
+- `EstadoSolicitud`: not run;
+- `CodigoEstado`: not reported;
+- `NumeroCFDIs`: not reported;
+- `IdsPaquetes`: not run;
+- download executed: no;
+- raw SOAP persisted: no;
+- raw SAT response persisted: no;
+- result: not completed because the single live verify attempt reached the approved read timeout (`error_kind=verify_read_timeout`).
+
+The controlled rerun used a clean detached worktree at the same gate commit to avoid stashing, deleting, or mixing unrelated local documentation edits present in the main worktree.
 
 ## Required confirmation
 
