@@ -77,6 +77,23 @@ flowchart TD
 | 12. Orchestrator | End-to-end job state machine works against fake SAT. | Contract tests with fake async states. |
 | 13. Optional live adapter | Manual integration path for maintainers with lawful credentials. | Explicit opt-in, skipped by default in CI. |
 
+## Branch integration rule
+
+All SAT v1.5 pull requests must target `dev`. `main` is reserved for later release
+merges from `dev`.
+
+Offline and live-gate slices may continue in separate branches when that keeps review small,
+but every SAT v1.5 branch must converge into `dev`. Do not continue creating SAT work branches
+from `main`.
+
+Recommended integration order:
+
+1. `chore/sat-v15-context-reset`
+2. `feat/sat-v15-verify-transport-offline`
+3. `test/sat-v15-verify-live-gate`
+4. `feat/sat-v15-package-download-offline`
+5. `test/sat-v15-download-live-gate`
+
 ## Design decisions
 
 | Decision | Tradeoff |

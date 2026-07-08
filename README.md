@@ -33,6 +33,10 @@ Important database boundary: synthetic import checks, recovery jobs, package/XML
 
 Live SAT SOAP access is still intentionally disabled until signing, credential custody, and compliance work are implemented.
 
+## Branching policy
+
+Use `dev` as the integration branch for normal feature, chore, test, refactor, and documentation work. `main` is reserved for release merges and documented hotfix exceptions. See `docs/branching-policy.md` before opening a pull request.
+
 ## Quick path
 
 1. Create a local Python 3.12 environment.
