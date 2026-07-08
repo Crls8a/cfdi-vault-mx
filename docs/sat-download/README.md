@@ -22,18 +22,19 @@ This folder turns SAT Descarga Masiva work into small, reviewable documents. The
 ## Quick path
 
 1. Start with [Source Policy](source-policy.md).
-2. Use [SAT Download v1.5 Checklist](v1_5_checklist.md) before changing SAT Download behavior.
-3. Understand the service shape in [Service flow](service-flow.md).
-4. Check source confidence in [Contract, runtime, and oracle behavior](official-vs-observed.md).
-5. Confirm initial setup in [Initial requirements](requirements.md).
-6. Review e.firma and secret-handling rules in [Authentication and security](auth-security.md).
-7. Model valid queries with [Request model](request-model.md).
-8. Design the recovery product with [Metadata-led reconciliation architecture](reconciliation-architecture.md).
-9. Implement around [Statuses, limits, and errors](statuses-limits-errors.md).
-10. Run the fake/offline local path with [Offline/local SAT download operations](offline-local-operations.md).
-11. Use [SAT async verify scheduler](async-verify-scheduler.md) for one-shot persisted verification work.
-12. Review [MANUAL-SAT-001](manual-sat-runbook.md) before requesting any human-gated live smoke.
-13. Use [Implementation plan](implementation-plan.md) to split future work into reviewable units.
+2. Read [SAT download public API research and contract](../api/sat-download-public-api.md) before changing the reusable Python boundary.
+3. Use [SAT Download v1.5 Checklist](v1_5_checklist.md) before changing SAT Download behavior.
+4. Understand the service shape in [Service flow](service-flow.md).
+5. Check source confidence in [Contract, runtime, and oracle behavior](official-vs-observed.md).
+6. Confirm initial setup in [Initial requirements](requirements.md).
+7. Review e.firma and secret-handling rules in [Authentication and security](auth-security.md).
+8. Model valid queries with [Request model](request-model.md).
+9. Design the recovery product with [Metadata-led reconciliation architecture](reconciliation-architecture.md).
+10. Implement around [Statuses, limits, and errors](statuses-limits-errors.md).
+11. Run the fake/offline local path with [Offline/local SAT download operations](offline-local-operations.md).
+12. Use [SAT async verify scheduler](async-verify-scheduler.md) for one-shot persisted verification work.
+13. Review [MANUAL-SAT-001](manual-sat-runbook.md) before requesting any human-gated live smoke.
+14. Use [Implementation plan](implementation-plan.md) to split future work into reviewable units.
 
 ## What the library is expected to do
 

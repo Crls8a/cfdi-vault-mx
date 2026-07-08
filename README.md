@@ -124,13 +124,19 @@ See `docs/installer/local-installer-alpha.md` for the editable install and fake/
 
 ## SAT download library documentation
 
-The repository includes design documentation for the SAT Web Service download library. Start at `docs/foundation/README.md`, then `docs/planning/README.md`, `docs/sat-download/README.md`, and `docs/recovery-v2.md`.
+The repository includes design documentation for the SAT SOAP download library and the separate reference system that consumes it. Start with:
 
-Important boundary: this implementation includes fake SAT only. It does not authenticate with SAT, upload e.firma files, or download real CFDI.
+- `docs/release/library-scope.md` for what belongs to the reusable Python library.
+- `docs/foundation/reference-system-scope.md` for what belongs to the CLI/runtime case study.
+- `docs/release/public-api.md` for the current import-first API plan.
+- `docs/api/sat-download-public-api.md` for SAT SOAP research, authentication, storage, and security boundaries.
+- `docs/sat-download/README.md` for the broader SAT download design.
+
+Important boundary: live SAT behavior is not default library behavior. It remains guarded behind source traceability, signing/credential custody, explicit opt-in, and human approval.
 
 ## Python package direction
 
-The package metadata already exposes the distribution name `cfdi-vault-mx`, import package `cfdi_vault`, and CLI command `cfdi-vault`. That package is the library track. The reference system remains the repository-level case study, docs, Docker/local runtime, and examples.
+The package metadata already exposes the distribution name `cfdi-vault-mx`, import package `cfdi_vault`, and CLI command `cfdi-vault`. The reusable contract is the documented Python API; the CLI is the reference-system interface and a packaging smoke target, not proof that the full system is production-ready.
 
 The release target is:
 

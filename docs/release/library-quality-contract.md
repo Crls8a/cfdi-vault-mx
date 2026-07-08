@@ -20,6 +20,7 @@ Only documented public APIs are stable. Everything else is internal, experimenta
 | Surface | Rule |
 |---|---|
 | `cfdi_vault.__init__` | Export only stable names. Do not re-export internal/probe modules by convenience. |
+| Public API docs | Every stable import must appear in [Repository public API plan](public-api.md). |
 | Public module | Has a module docstring that says what the module owns and what it does not own. |
 | Public class/function/method | Has type hints, a docstring, tests, and documented errors/side effects. |
 | Private helper | Uses `_name`; docstring optional unless security, SAT behavior, parsing, persistence, or non-obvious side effects are involved. |
@@ -74,6 +75,7 @@ PEP 257 and PEP 8 are the baseline for docstrings: public modules, functions, cl
 Before a package release candidate:
 
 - [ ] Public API list exists.
+- [ ] SAT SOAP public surfaces link to [SAT download public API research and contract](../api/sat-download-public-api.md).
 - [ ] Internal/probe/live modules are marked internal or excluded from public docs.
 - [ ] `pyproject.toml` metadata is accurate.
 - [ ] README states alpha/case-study limitations.

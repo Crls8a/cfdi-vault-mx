@@ -1,6 +1,6 @@
 # Python package release plan
 
-The reusable library track should become installable without cloning the repository. It is not published to PyPI yet. The target user experience is `pip install cfdi-vault-mx`, then either import the supported Python API from another project or run the packaged CLI entrypoint for documented fake/offline workflows.
+The reusable library track should become installable without cloning the repository. It is not published to PyPI yet. The target user experience is `pip install cfdi-vault-mx`, then import the supported Python API from another project. The packaged CLI can remain available for reference-system smoke checks and fake/offline demos, but it is not the library API contract by itself.
 
 Publishing the package is not the same as publishing or certifying the full reference system. The repository-level system remains a case study with Docker/local runtime, docs, and examples.
 
@@ -20,10 +20,10 @@ The package page, README, and release notes must invite users to open a GitHub i
 |---|---|
 | Supported `cfdi_vault` import APIs. | Architecture docs, planning docs, and implementation history. |
 | Stable fake/offline adapters and domain models selected for release. | Docker/local runtime used to demonstrate a personal CFDI vault workflow. |
-| The `cfdi-vault` CLI entrypoint for documented commands. | Broader examples, release planning, and operational runbooks. |
-| Package metadata, README, license, and release notes. | Experimental/probing modules until promoted to public API. |
+| Package metadata, README, license, release notes, and any intentionally packaged console script. | The `cfdi-vault` reference CLI workflow, broader examples, release planning, and operational runbooks. |
+| Explicit exclusions and disclaimers. | Experimental/probing modules until promoted to public API. |
 
-The package release must say which modules are supported public API and which modules are internal, experimental, or case-study-only.
+The package release must say which modules are supported public API and which modules are internal, experimental, reference-system-only, or packaging-smoke-only.
 
 ## Quick path
 
@@ -39,7 +39,7 @@ The package release must say which modules are supported public API and which mo
 |---|---|---|
 | Distribution name | `cfdi-vault-mx` | This is the name users will install with `pip`. |
 | Import package | `cfdi_vault` | This is the Python namespace users import. |
-| CLI command | `cfdi-vault` | This is already declared in `[project.scripts]`. |
+| CLI command | `cfdi-vault` | Declared in `[project.scripts]`; treat as reference-system interface unless a command is explicitly listed as public CLI API. |
 | Build backend | Hatchling | Keep using `pyproject.toml`; no `setup.py` needed. |
 | Version | `0.1.0` | First public release should be clearly marked alpha. |
 | PyPI name check | `https://pypi.org/pypi/cfdi-vault-mx/json` returned 404 on 2026-07-08 and was rechecked as 404 during this planning pass | Name appears unused now, but it is not reserved until publication. |
@@ -72,6 +72,7 @@ It must explicitly claim:
 - [ ] Add or confirm a license file that matches the `pyproject.toml` license.
 - [ ] Confirm package metadata: description, keywords, classifiers, authors, URLs, and Python version.
 - [ ] Define the supported public API modules.
+- [ ] Confirm `docs/release/public-api.md` lists every supported import.
 - [ ] Confirm every public API satisfies the library quality contract.
 - [ ] Mark probing, live-gate, and experimental modules as internal or document them as unsupported.
 - [ ] Add a minimal "library consumer" example that imports the package outside this repo.
@@ -96,7 +97,7 @@ python scripts/scan_sensitive_fixtures.py
 python -m pytest
 ```
 
-Clean install smoke:
+Clean install smoke. This proves the package artifacts install and the console script is wired; it does not promote CLI internals to the library API:
 
 ```powershell
 python -m venv .venv-package-smoke
@@ -128,14 +129,16 @@ Start narrow. A small stable API is better than exporting the whole repository a
 | Architecture ports | `cfdi_vault.ports` | Stable first. |
 | Fake/offline SAT | `cfdi_vault.fake_sat`, `cfdi_vault.sat_simulator` | Stable enough for tests/examples. |
 | Recovery orchestration | A future facade over `cfdi_vault.recovery_service` | Stabilize before release. |
-| CLI | `cfdi-vault` command | Stable for documented commands only. |
+| CLI | `cfdi-vault` command | Reference-system interface; only commands explicitly listed as public CLI API get semver promises. |
 | Probes/live gates | `sat_*_probe`, `sat_*_live_*` modules | Internal/experimental until explicitly promoted. |
+
+The source of truth for the current import-first boundary is [Repository public API plan](public-api.md). Use [SAT download public API research and contract](../api/sat-download-public-api.md) before promoting SAT SOAP behavior.
 
 ## Documentation required before publishing
 
 - README quickstart for `pip install cfdi-vault-mx`.
 - A library usage example that imports a supported API.
-- A CLI usage example that stays fake/offline by default.
+- A CLI/reference-system usage example that stays fake/offline by default and is labeled separately from the library API.
 - A release limitations section.
 - A security warning that real CFDI, SAT metadata, ZIPs, e.firma files, passwords, tokens, and private keys must never be committed.
 

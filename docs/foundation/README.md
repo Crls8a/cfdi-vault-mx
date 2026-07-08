@@ -16,21 +16,22 @@ No more live SAT, parser-depth, queue-retry, or installer expansion should be im
 
 ## Reading order
 
-1. [Product scope](product-scope.md)
-2. [User stories](user-stories.md)
-3. [CLI and terminal UX design](cli-ux-design.md)
-4. [CLI help design](cli-help-design.md)
-5. [Installer design](installer-design.md)
-6. [Recovery pipeline contract](recovery-pipeline.md)
-7. [XML storage and retention design](storage-and-retention.md)
-8. [Infrastructure boundary](infrastructure-boundary.md)
-9. [Architecture blueprint](architecture-blueprint.md)
-10. [Flows and states](flows-and-states.md)
-11. [Data and accounting model](data-and-accounting-model.md)
-12. [Open questions](open-questions.md)
-13. [Delegation plan](delegation-plan.md)
-14. [Workstream ownership](workstream-ownership.md)
-15. [Agile planning workspace](../planning/README.md)
+1. [Reference system scope](reference-system-scope.md)
+2. [Product scope](product-scope.md)
+3. [User stories](user-stories.md)
+4. [CLI and terminal UX design](cli-ux-design.md)
+5. [CLI help design](cli-help-design.md)
+6. [Installer design](installer-design.md)
+7. [Recovery pipeline contract](recovery-pipeline.md)
+8. [XML storage and retention design](storage-and-retention.md)
+9. [Infrastructure boundary](infrastructure-boundary.md)
+10. [Architecture blueprint](architecture-blueprint.md)
+11. [Flows and states](flows-and-states.md)
+12. [Data and accounting model](data-and-accounting-model.md)
+13. [Open questions](open-questions.md)
+14. [Delegation plan](delegation-plan.md)
+15. [Workstream ownership](workstream-ownership.md)
+16. [Agile planning workspace](../planning/README.md)
 
 ## Architecture gate checklist
 

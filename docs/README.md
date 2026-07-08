@@ -6,25 +6,28 @@ This repository is split into the current PostgreSQL-backed CFDI recovery refere
 
 1. Start with [the main README](../README.md) to run the current CLI.
 2. Read [Product split](product-archetype.md) to understand the library-versus-reference-system boundary.
-3. Read [Python package release plan](release/python-package-plan.md) before changing package metadata or release automation.
-4. Read [Library quality contract](release/library-quality-contract.md) before promoting modules, classes, functions, methods, or CLI commands as public API.
-5. Read [Developer CLI invocation](devx.md) before documenting local commands or `PYTHONPATH=src` fallbacks.
-6. Read [Architecture](architecture.md) to understand the existing local parser/storage boundaries.
-7. Read [CLI family refactor plan](planning/cli-family-refactor-plan.md) before changing CLI adapter ownership or resolving CLI merge conflicts.
-8. Read [Security model](security-model.md) before touching real CFDI data or certificates.
-9. Read [Foundation-first plan](foundation/README.md) before adding more recovery features.
-10. Read [Living system plan](planning/living-system-plan.md) before changing objectives, architecture, security, source-of-truth docs, or release promises.
-11. Read [Agile planning workspace](planning/README.md) and [Lightweight governance policy](planning/governance.md) before assigning sprint work.
-12. Read [Safe RFC profile configuration](config/README.md) before adding local profile settings.
-13. Read [Local RFC setup and credential intake](setup.md) before changing AppData setup or credential import.
-14. Read [First-run onboarding](installer/onboarding.md) before changing installer or profile setup.
-15. Read [Local installer alpha](installer/local-installer-alpha.md) before changing editable install or bootstrap behavior.
-16. Read [Idempotent local storage](storage-design.md) before writing package, metadata, or XML evidence.
-17. Read [Infrastructure boundary](foundation/infrastructure-boundary.md) before changing PostgreSQL, RabbitMQ, Redis, Docker, workers, or future FastAPI ingestion behavior.
-18. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
-19. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
-20. Read [Offline/local SAT download operations](sat-download/offline-local-operations.md) before validating issue #51.
-21. Read [MANUAL-SAT-001](sat-download/manual-sat-runbook.md) before requesting any human-gated live SAT smoke.
+3. Read [Library scope](release/library-scope.md) and [Reference system scope](foundation/reference-system-scope.md) when deciding what belongs in the package versus the case study.
+4. Read [Repository public API plan](release/public-api.md) before promoting an import as stable.
+5. Read [SAT download public API research and contract](api/sat-download-public-api.md) before changing SAT SOAP library boundaries.
+6. Read [Python package release plan](release/python-package-plan.md) before changing package metadata or release automation.
+7. Read [Library quality contract](release/library-quality-contract.md) before promoting modules, classes, functions, methods, or CLI commands as public API.
+8. Read [Developer CLI invocation](devx.md) before documenting local commands or `PYTHONPATH=src` fallbacks.
+9. Read [Architecture](architecture.md) to understand the existing local parser/storage boundaries.
+10. Read [CLI family refactor plan](planning/cli-family-refactor-plan.md) before changing CLI adapter ownership or resolving CLI merge conflicts.
+11. Read [Security model](security-model.md) before touching real CFDI data or certificates.
+12. Read [Foundation-first plan](foundation/README.md) before adding more recovery features.
+13. Read [Living system plan](planning/living-system-plan.md) before changing objectives, architecture, security, source-of-truth docs, or release promises.
+14. Read [Agile planning workspace](planning/README.md) and [Lightweight governance policy](planning/governance.md) before assigning sprint work.
+15. Read [Safe RFC profile configuration](config/README.md) before adding local profile settings.
+16. Read [Local RFC setup and credential intake](setup.md) before changing AppData setup or credential import.
+17. Read [First-run onboarding](installer/onboarding.md) before changing installer or profile setup.
+18. Read [Local installer alpha](installer/local-installer-alpha.md) before changing editable install or bootstrap behavior.
+19. Read [Idempotent local storage](storage-design.md) before writing package, metadata, or XML evidence.
+20. Read [Infrastructure boundary](foundation/infrastructure-boundary.md) before changing PostgreSQL, RabbitMQ, Redis, Docker, workers, or future FastAPI ingestion behavior.
+21. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
+22. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
+23. Read [Offline/local SAT download operations](sat-download/offline-local-operations.md) before validating issue #51.
+24. Read [MANUAL-SAT-001](sat-download/manual-sat-runbook.md) before requesting any human-gated live SAT smoke.
 
 ## Documentation map
 
@@ -33,6 +36,10 @@ This repository is split into the current PostgreSQL-backed CFDI recovery refere
 | Current repo | [Architecture](architecture.md) | PostgreSQL-backed CLI, parser, service, and recovery model. |
 | Current repo | [Case study](case-study.md) | Why fake/offline examples stay synthetic-only while using the PostgreSQL runtime. |
 | Current repo | [Product split](product-archetype.md) | Separates the reusable Python library from the CLI/local reference system and case study. |
+| Release | [Library scope](release/library-scope.md) | Defines what belongs in the importable package and what must stay outside the library contract. |
+| Foundation | [Reference system scope](foundation/reference-system-scope.md) | Defines the repository-level CLI/runtime/case-study boundary. |
+| API | [SAT download public API research and contract](api/sat-download-public-api.md) | Summarizes verified SAT SOAP evidence and the import-first API boundary. |
+| Release | [Repository public API plan](release/public-api.md) | Lists current public imports, candidate surfaces, internal surfaces, and promotion gates. |
 | Current repo | [CLI family refactor plan](planning/cli-family-refactor-plan.md) | CLI adapter ownership, merge-conflict source of truth, and follow-up slices. |
 | Release | [Python package release plan](release/python-package-plan.md) | PyPI/TestPyPI plan, public API gates, and Trusted Publishing checklist. |
 | Release | [Library quality contract](release/library-quality-contract.md) | Public API responsibilities, tests, docstrings, safety gates, and release readiness for `cfdi_vault`. |

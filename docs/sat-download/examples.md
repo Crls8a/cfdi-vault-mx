@@ -17,15 +17,25 @@ curl -X POST \
 
 The difficult part is not `curl`; it is building the WS-Security signed XML correctly.
 
-## Classic official request transport
+## v1.5 request transport
+
+Choose the operation that matches the query direction:
+
+| Direction | Operation | SOAPAction suffix |
+|---|---|---|
+| Issued CFDI | `SolicitaDescargaEmitidos` | `/SolicitaDescargaEmitidos` |
+| Received CFDI | `SolicitaDescargaRecibidos` | `/SolicitaDescargaRecibidos` |
+| Specific UUID | `SolicitaDescargaFolio` | `/SolicitaDescargaFolio` |
+
+Example for received CFDI:
 
 ```bash
 curl -X POST \
   'https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/SolicitaDescargaService.svc' \
   -H 'Content-Type: text/xml; charset=utf-8' \
-  -H 'SOAPAction: "http://DescargaMasivaTerceros.sat.gob.mx/ISolicitaDescargaService/SolicitaDescarga"' \
+  -H 'SOAPAction: "http://DescargaMasivaTerceros.sat.gob.mx/ISolicitaDescargaService/SolicitaDescargaRecibidos"' \
   -H 'Authorization: WRAP access_token="TOKEN_VIGENTE"' \
-  --data-binary @solicita-signed.xml
+  --data-binary @solicita-recibidos-signed.xml
 ```
 
 ## Verification transport
@@ -56,22 +66,20 @@ curl -X POST \
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
   <s:Header/>
   <s:Body>
-    <SolicitaDescarga xmlns="http://DescargaMasivaTerceros.sat.gob.mx">
+    <SolicitaDescargaRecibidos xmlns="http://DescargaMasivaTerceros.sat.gob.mx">
       <solicitud
         FechaInicial="2026-01-01T00:00:00"
         FechaFinal="2026-01-31T23:59:59"
         RfcEmisor="AAA010101AAA"
-        RfcSolicitante="AAA010101AAA"
+        RfcReceptor="XAXX010101000"
+        RfcSolicitante="XAXX010101000"
         TipoSolicitud="Metadata"
         EstadoComprobante="1">
-        <RfcReceptores>
-          <RfcReceptor>BBB010101BBB</RfcReceptor>
-        </RfcReceptores>
         <Signature xmlns="http://www.w3.org/2000/09/xmldsig#">
           <!-- XMLDSig content goes here -->
         </Signature>
       </solicitud>
-    </SolicitaDescarga>
+    </SolicitaDescargaRecibidos>
   </s:Body>
 </s:Envelope>
 ```
