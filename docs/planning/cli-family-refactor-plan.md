@@ -13,7 +13,7 @@ This is the living plan for keeping the `cfdi-vault` Typer CLI split by responsi
 | Public entrypoint | Done | `cfdi_vault.cli:app` still works through the shim. |
 | Family modules | Done | Commands are split under `adapters/cli/`. |
 | Merge-conflict policy | Done | `AGENTS.md` says not to restore the 3,400+ line file. |
-| Architecture docs | In progress | Keep this plan, README, architecture, and SDD aligned with the split. |
+| Architecture docs | In progress | Keep this plan, README, architecture, SDD, and the [review strategy](cli-refactor-review-strategy.md) aligned with the split. |
 | SAT sub-splitting | Done | `sat.py` now delegates registration to focused SAT subfamily modules. |
 
 ## Family ownership
@@ -52,7 +52,7 @@ This is the living plan for keeping the `cfdi-vault` Typer CLI split by responsi
   - `sat_probes.py`
   - `sat_verify.py`
   - `sat_common.py` for SAT-only shared seams
-- [ ] Before PR merge, decide review strategy: `size:exception` or chained review slices.
+- [x] Document PR review strategy, merge order, conflict rules, gates, and cleanup in [CLI refactor review strategy](cli-refactor-review-strategy.md).
 
 ## Agent task slices
 
