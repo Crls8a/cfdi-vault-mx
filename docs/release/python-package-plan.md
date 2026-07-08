@@ -44,6 +44,8 @@ The package release must say which modules are supported public API and which mo
 | Version | `0.1.0` | First public release should be clearly marked alpha. |
 | PyPI name check | `https://pypi.org/pypi/cfdi-vault-mx/json` returned 404 on 2026-07-08 and was rechecked as 404 during this planning pass | Name appears unused now, but it is not reserved until publication. |
 
+Before promoting any module or command to public package behavior, apply the [Library quality contract](library-quality-contract.md).
+
 ## Release positioning
 
 The first library/package release should be positioned as:
@@ -70,6 +72,7 @@ It must explicitly claim:
 - [ ] Add or confirm a license file that matches the `pyproject.toml` license.
 - [ ] Confirm package metadata: description, keywords, classifiers, authors, URLs, and Python version.
 - [ ] Define the supported public API modules.
+- [ ] Confirm every public API satisfies the library quality contract.
 - [ ] Mark probing, live-gate, and experimental modules as internal or document them as unsupported.
 - [ ] Add a minimal "library consumer" example that imports the package outside this repo.
 - [ ] Run the sensitive fixture scanner.
