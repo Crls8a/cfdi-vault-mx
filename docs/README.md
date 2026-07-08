@@ -1,31 +1,36 @@
 # Documentation index
 
-This repository is split into two documentation areas: the current local-first CFDI data lab, and the SAT Web Service recovery library being implemented behind a fake SAT boundary.
+This repository is split into the current PostgreSQL-backed CFDI recovery reference system and the SAT Web Service library design being implemented behind a fake SAT boundary.
 
 ## Quick path
 
 1. Start with [the main README](../README.md) to run the current CLI.
-2. Read [Developer CLI invocation](devx.md) before documenting local commands or `PYTHONPATH=src` fallbacks.
-3. Read [Architecture](architecture.md) to understand the existing local parser/storage boundaries.
-4. Read [Security model](security-model.md) before touching real CFDI data or certificates.
-5. Read [Foundation-first plan](foundation/README.md) before adding more recovery features.
-6. Read [Agile planning workspace](planning/README.md) and [Lightweight governance policy](planning/governance.md) before assigning sprint work.
-7. Read [Safe RFC profile configuration](config/README.md) before adding local profile settings.
-8. Read [Local RFC setup and credential intake](setup.md) before changing AppData setup or credential import.
-9. Read [First-run onboarding](installer/onboarding.md) before changing installer or profile setup.
-10. Read [Local installer alpha](installer/local-installer-alpha.md) before changing editable install or bootstrap behavior.
-11. Read [Idempotent local storage](storage-design.md) before writing package, metadata, or XML evidence.
-12. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
-13. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
-14. Read [Offline/local SAT download operations](sat-download/offline-local-operations.md) before validating issue #51.
-15. Read [MANUAL-SAT-001](sat-download/manual-sat-runbook.md) before requesting any human-gated live SAT smoke.
+2. Read [Product split](product-archetype.md) to understand the library-versus-reference-system boundary.
+3. Read [Python package release plan](release/python-package-plan.md) before changing package metadata or release automation.
+4. Read [Developer CLI invocation](devx.md) before documenting local commands or `PYTHONPATH=src` fallbacks.
+5. Read [Architecture](architecture.md) to understand the existing local parser/storage boundaries.
+6. Read [Security model](security-model.md) before touching real CFDI data or certificates.
+7. Read [Foundation-first plan](foundation/README.md) before adding more recovery features.
+8. Read [Agile planning workspace](planning/README.md) and [Lightweight governance policy](planning/governance.md) before assigning sprint work.
+9. Read [Safe RFC profile configuration](config/README.md) before adding local profile settings.
+10. Read [Local RFC setup and credential intake](setup.md) before changing AppData setup or credential import.
+11. Read [First-run onboarding](installer/onboarding.md) before changing installer or profile setup.
+12. Read [Local installer alpha](installer/local-installer-alpha.md) before changing editable install or bootstrap behavior.
+13. Read [Idempotent local storage](storage-design.md) before writing package, metadata, or XML evidence.
+14. Read [Infrastructure boundary](foundation/infrastructure-boundary.md) before changing PostgreSQL, RabbitMQ, Redis, Docker, workers, or future FastAPI ingestion behavior.
+15. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
+16. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
+17. Read [Offline/local SAT download operations](sat-download/offline-local-operations.md) before validating issue #51.
+18. Read [MANUAL-SAT-001](sat-download/manual-sat-runbook.md) before requesting any human-gated live SAT smoke.
 
 ## Documentation map
 
 | Area | Document | Purpose |
 |---|---|---|
-| Current repo | [Architecture](architecture.md) | Existing CLI, parser, service, and SQLite model. |
-| Current repo | [Case study](case-study.md) | Why phase one is local-first and synthetic-only. |
+| Current repo | [Architecture](architecture.md) | PostgreSQL-backed CLI, parser, service, and recovery model. |
+| Current repo | [Case study](case-study.md) | Why fake/offline examples stay synthetic-only while using the PostgreSQL runtime. |
+| Current repo | [Product split](product-archetype.md) | Separates the reusable Python library from the CLI/local reference system and case study. |
+| Release | [Python package release plan](release/python-package-plan.md) | PyPI/TestPyPI plan, public API gates, and Trusted Publishing checklist. |
 | Current repo | [Developer CLI invocation](devx.md) | Editable install path, installed CLI usage, and dev-only `PYTHONPATH=src` fallback. |
 | Current repo | [Security model](security-model.md) | Current safety boundaries and forbidden data. |
 | Current repo | [Fixture and fake-data policy](testing/fixture-policy.md) | Allowed fixture categories, fake RFC strategy, and no-real-CFDI rules. |
@@ -36,6 +41,7 @@ This repository is split into two documentation areas: the current local-first C
 | Current repo | [Idempotent local storage](storage-design.md) | RFC/period storage layout, metadata-first index, idempotency rules, and pipeline states. |
 | Current repo | [SDD](sdd.md) | Initial implemented requirements. |
 | Foundation | [Foundation-first plan](foundation/README.md) | Gate before more code: scope, stories, CLI/UX, installer, unified recovery pipeline, storage, architecture, data model, ambiguity, ownership, delegation. |
+| Foundation | [Infrastructure boundary](foundation/infrastructure-boundary.md) | PostgreSQL-first recovery runtime, RabbitMQ queue boundary, Redis transient state, Docker services, and future FastAPI ingestion boundary. |
 | Planning | [Agile planning workspace](planning/README.md) | Sprint roadmap, backlog, team board, delegation model, and agile operating rules. |
 | Planning | [Lightweight governance policy](planning/governance.md) | Solo-maintainer issue policy, PR/CI expectations, and mandatory security gates. |
 | Recovery v2 | [Recovery v2](recovery-v2.md) | Implemented fake SAT, queue/cache/storage ports, Docker, CLI, and next steps. |

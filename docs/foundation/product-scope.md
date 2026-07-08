@@ -1,10 +1,19 @@
 # Product scope
 
-CFDI Vault MX v2 is a recovery and reconciliation library for Mexican CFDI data. It is not just a downloader: it must prove what was requested, what SAT returned, what was stored, what could not be recovered, and why.
+CFDI Vault MX v2 separates a reusable Python library from a CLI/local reference system for Mexican CFDI recovery and reconciliation. It is not just a downloader: it must prove what was requested, what SAT returned, what was stored, what could not be recovered, and why.
 
 ## Problem
 
-Accounting teams need a repeatable way to recover CFDI metadata and XML evidence from SAT while keeping an audit trail. A simple "download everything" command is not enough because SAT requests are asynchronous, packages expire, documents can be cancelled, and parser support varies by CFDI version/complement.
+Accounting teams and developers need a repeatable way to recover CFDI metadata and XML evidence from SAT while keeping an audit trail. A simple "download everything" command is not enough because SAT Descarga Masiva v1.5 is under-documented, SAT requests are asynchronous, packages expire, documents can be cancelled, and parser support varies by CFDI version/complement.
+
+## Product archetype
+
+| Artifact | Purpose |
+|---|---|
+| Reusable Python library | Provides importable domain models, ports, fake/offline adapters, parsers, reconciliation, and orchestration surfaces for other repositories. |
+| CLI/local reference system | Shows how the library can support setup, sync, queue status, search, print, export, and recovery diagnostics for a personal CFDI vault workflow. |
+| Architecture case study | Documents how to combine SAT request/verify/download, storage, queues, workers, database state, and user-facing errors. |
+| Safe test harness | Uses fake SAT and synthetic fixtures so CI and examples do not need live SAT, real CFDI, or e.firma material. |
 
 ## Users
 

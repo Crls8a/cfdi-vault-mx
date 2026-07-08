@@ -5,15 +5,27 @@ build-backend = "hatchling.build"
 [project]
 name = "cfdi-vault-mx"
 version = "0.1.0"
-description = "Local-first architecture lab for synthetic Mexican CFDI/XML data."
+description = "Development-stage Python library and CLI tools for fake/offline-first SAT CFDI recovery."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "CFDI Vault MX Lab" }]
+keywords = ["cfdi", "sat", "mexico", "invoices", "cli", "reconciliation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Accounting",
+]
 dependencies = [
     "cryptography>=45.0,<46.0",
     "rich>=13.7,<14.0",
     "signxml>=5.0,<6.0",
+    "psycopg[binary]>=3.1,<4.0",
     "SQLAlchemy>=2.0,<3.0",
     "typer>=0.16,<1.0",
 ]
@@ -24,9 +36,17 @@ dev = [
 ]
 infra = [
     "pika>=1.3,<2.0",
-    "psycopg[binary]>=3.1,<4.0",
     "redis>=5.0,<6.0",
 ]
+release = [
+    "build>=1.2,<2.0",
+    "twine>=5.0,<7.0",
+]
+
+[project.urls]
+Repository = "https://github.com/Crls8a/cfdi-vault-mx"
+Issues = "https://github.com/Crls8a/cfdi-vault-mx/issues"
+Documentation = "https://github.com/Crls8a/cfdi-vault-mx/tree/main/docs"
 
 [project.scripts]
 cfdi-vault = "cfdi_vault.cli:app"

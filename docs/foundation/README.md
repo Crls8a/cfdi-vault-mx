@@ -23,22 +23,27 @@ No more live SAT, parser-depth, queue-retry, or installer expansion should be im
 5. [Installer design](installer-design.md)
 6. [Recovery pipeline contract](recovery-pipeline.md)
 7. [XML storage and retention design](storage-and-retention.md)
-8. [Architecture blueprint](architecture-blueprint.md)
-9. [Flows and states](flows-and-states.md)
-10. [Data and accounting model](data-and-accounting-model.md)
-11. [Open questions](open-questions.md)
-12. [Delegation plan](delegation-plan.md)
-13. [Workstream ownership](workstream-ownership.md)
-14. [Agile planning workspace](../planning/README.md)
+8. [Infrastructure boundary](infrastructure-boundary.md)
+9. [Architecture blueprint](architecture-blueprint.md)
+10. [Flows and states](flows-and-states.md)
+11. [Data and accounting model](data-and-accounting-model.md)
+12. [Open questions](open-questions.md)
+13. [Delegation plan](delegation-plan.md)
+14. [Workstream ownership](workstream-ownership.md)
+15. [Agile planning workspace](../planning/README.md)
 
 ## Architecture gate checklist
 
 - [ ] The feature has a documented use case.
 - [ ] The user story has acceptance criteria.
+- [ ] The change preserves the library-versus-reference-system boundary.
+- [ ] Public Python APIs are distinguished from internal/probing modules when packaging is affected.
 - [ ] The CLI/UX behavior is documented when user-facing.
 - [ ] The command appears in the CLI help catalog when user-facing.
 - [ ] Installer/setup impact is documented when local dependencies change.
 - [ ] Download, extraction, database load, and local storage registration are treated as one auditable pipeline.
+- [ ] Recovery and synthetic import runtime data use PostgreSQL only.
+- [ ] Slow XML ingestion and normalization cross the FastAPI/queue/worker boundary instead of becoming one direct CLI bulk load.
 - [ ] Storage location, growth, and extraction path are documented when evidence files are written.
 - [ ] The data written by the feature has an owner and retention rule.
 - [ ] The failure mode has a user-facing error or operator state.
