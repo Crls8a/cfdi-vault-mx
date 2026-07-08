@@ -20,10 +20,11 @@ This repository is split into the current PostgreSQL-backed CFDI recovery refere
 14. Read [Local installer alpha](installer/local-installer-alpha.md) before changing editable install or bootstrap behavior.
 15. Read [Idempotent local storage](storage-design.md) before writing package, metadata, or XML evidence.
 16. Read [Infrastructure boundary](foundation/infrastructure-boundary.md) before changing PostgreSQL, RabbitMQ, Redis, Docker, workers, or future FastAPI ingestion behavior.
-17. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
-18. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
-19. Read [Offline/local SAT download operations](sat-download/offline-local-operations.md) before validating issue #51.
-20. Read [MANUAL-SAT-001](sat-download/manual-sat-runbook.md) before requesting any human-gated live SAT smoke.
+17. Read [Database, queue, and API contract](foundation/database-queue-api-contract.md) before changing Flyway migrations, queue names, or ingestion event flow.
+18. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
+19. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
+20. Read [Offline/local SAT download operations](sat-download/offline-local-operations.md) before validating issue #51.
+21. Read [MANUAL-SAT-001](sat-download/manual-sat-runbook.md) before requesting any human-gated live SAT smoke.
 
 ## Documentation map
 
@@ -45,6 +46,7 @@ This repository is split into the current PostgreSQL-backed CFDI recovery refere
 | Current repo | [SDD](sdd.md) | Initial implemented requirements. |
 | Foundation | [Foundation-first plan](foundation/README.md) | Gate before more code: scope, stories, CLI/UX, installer, unified recovery pipeline, storage, architecture, data model, ambiguity, ownership, delegation. |
 | Foundation | [Infrastructure boundary](foundation/infrastructure-boundary.md) | PostgreSQL-first recovery runtime, RabbitMQ queue boundary, Redis transient state, Docker services, and future FastAPI ingestion boundary. |
+| Foundation | [Database, queue, and API contract](foundation/database-queue-api-contract.md) | Flyway baseline, PostgreSQL table ownership, queue order/purpose, and planned FastAPI event handoff. |
 | Planning | [Agile planning workspace](planning/README.md) | Sprint roadmap, backlog, team board, delegation model, and agile operating rules. |
 | Planning | [Living system plan](planning/living-system-plan.md) | Source-of-truth hierarchy, security workstream, architecture/doc gaps, and next work units for the case study. |
 | Planning | [Lightweight governance policy](planning/governance.md) | Solo-maintainer issue policy, PR/CI expectations, and mandatory security gates. |

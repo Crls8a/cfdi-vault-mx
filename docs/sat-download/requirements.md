@@ -26,7 +26,7 @@ This document defines what a developer or operator must have before using the SA
 | Matching private key (`.key`) and password | Authentication and request signatures | Can be supplied manually, stored securely, or delegated to a detached signer. |
 | Requester RFC | Request validation | Must match the certificate and requested scope where SAT requires it. |
 | Storage location | Packages and extracted files | Local directory or object storage; must be writable and have enough capacity. |
-| Persistence database | Idempotency and reconciliation | SQLite is acceptable for local-first; production can adapt through repository interfaces. |
+| Persistence database | Idempotency and reconciliation | PostgreSQL is the recovery runtime and test database. |
 | Network access to SAT endpoints | SOAP calls | HTTPS egress to authentication, request, verification, and download endpoints. |
 | Accurate system clock | WS-Security timestamps | Clock skew can break authentication/signature validation. |
 | Query scope | Request planning | Direction, period, request type, RFC scope, and optional filters. |
@@ -39,8 +39,9 @@ This document defines what a developer or operator must have before using the SA
 | XML processing | Deterministic XML building, canonicalization, namespace-safe parsing, and XXE-safe parser defaults. |
 | Crypto/signing | Dedicated signing module or detached signer; never spread private key handling across the app. |
 | HTTP transport | Configurable timeout, retry budget, TLS verification, structured error capture. |
-| Database | SQLite for local use; PostgreSQL-compatible schema for production-scale deployments. |
+| Database | PostgreSQL for recovery runtime, migrations, reconciliation, accounting search, and queue audit. |
 | Storage | Raw ZIP package storage before extraction; checksum every ZIP and XML. |
+| Queue/API | RabbitMQ and the future FastAPI ingestion boundary should move stored XML into PostgreSQL gradually instead of one direct bulk load. |
 | Logs | Structured logs with tokens, passwords, private keys, and raw taxpayer XML redacted. |
 
 ## Setup decisions

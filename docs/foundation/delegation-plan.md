@@ -8,10 +8,12 @@ Work should be delegated by bounded responsibility, not by random file type. Eac
 flowchart TD
     F["Foundation docs reviewed"] --> DB["DB migrations and indexes"]
     F --> Q["Queue retry/DLQ design"]
+    F --> API["FastAPI ingestion contract"]
     F --> SAT["SAT SOAP/signing design"]
     F --> Parser["Parser matrix"]
     DB --> Search["Search implementation"]
     Q --> Workers["Worker implementation"]
+    API --> Workers
     SAT --> Live["Live SAT adapter"]
     Parser --> XML["XML normalization"]
     XML --> Print["Print/export templates"]
@@ -24,7 +26,8 @@ flowchart TD
 
 | Work unit | Scope | Output | Acceptance |
 |---|---|---|---|
-| DB/PostgreSQL | Alembic, JSONB, full-text/trigram indexes. | Migration files and repository tests. | PostgreSQL integration test passes. |
+| DB/PostgreSQL | Flyway, JSONB, full-text/trigram indexes. | Migration files and repository tests. | PostgreSQL integration test passes. |
+| FastAPI ingestion | Stored XML/package reference API and queue handoff. | API contract, endpoint tests, and no-raw-payload validation. | Endpoint publishes idempotent jobs without parsing or bulk-loading inline. |
 | Queue/worker | RabbitMQ exchanges, retry, DLQ, heartbeat. | Worker loop and queue policy docs. | Fake retry and DLQ tests pass. |
 | Redis/cache | Progress schema, locks, rate limits. | Cache key contract and adapter tests. | Lock/rate-limit behavior tested. |
 | SAT SOAP/signing | Auth, signing, request/verify/download clients. | Fake transport plus fixture parsers. | No live SAT in CI; golden tests pass. |

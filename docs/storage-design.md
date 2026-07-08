@@ -1,6 +1,6 @@
 # Idempotent local storage
 
-STOR-001 implements the first local evidence layout for SAT recovery artifacts. Metadata CSV/TXT is the primary index; ZIP packages and extracted XML are stored only after hashing, and database rows point back to those files for audit.
+STOR-001 implements the first local evidence layout for SAT recovery artifacts. Metadata CSV/TXT is the primary index; ZIP packages and extracted XML are stored only after hashing, and PostgreSQL rows point back to those files for audit.
 
 ## Quick path
 
@@ -27,7 +27,6 @@ STOR-001 implements the first local evidence layout for SAT recovery artifacts. 
         MM/
           <uuid>-<sha12>.xml
     logs/
-    db/
     exports/
 ```
 
@@ -44,6 +43,8 @@ STOR-001 implements the first local evidence layout for SAT recovery artifacts. 
 | `cfdi_documents` | Searchable normalized document header. | UUID, issuer/receiver RFC, issue date, document status/type, XML SHA-256, internal download state, timestamps. |
 | `xml_evidence` | Stored XML proof. | UUID, package id, XML SHA-256, size, storage path, parser status, created timestamp. |
 | `queue_job_events` / `reconciliation_events` | Pipeline audit trail. | queue/stage, status transition, actor, reason, correlation data, timestamp. |
+
+Normalized XML/accounting ingestion should run after evidence exists, through the FastAPI/RabbitMQ/worker boundary. Storage writes prove what was downloaded; workers load PostgreSQL gradually from those stored references.
 
 ## Idempotency rules
 

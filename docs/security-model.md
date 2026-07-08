@@ -2,6 +2,8 @@
 
 CFDI Vault MX is safe by design only because phase one is local-first and synthetic-only. The project must not process real taxpayer data, credentials, certificates, or SAT integrations until a new security design is accepted.
 
+This document describes the legacy synthetic lab safety boundary. Recovery v2 infrastructure is PostgreSQL/RabbitMQ/Redis-first even when it still uses fake SAT and synthetic data; see `docs/foundation/infrastructure-boundary.md`.
+
 ## Quick path
 
 1. Keep all examples fake.
@@ -30,7 +32,8 @@ CFDI Vault MX is safe by design only because phase one is local-first and synthe
 | Boundary | Phase-one control |
 |---|---|
 | XML parsing | Extract required fields only; reject `DOCTYPE`. |
-| Persistence | SQLite local file; no network database. |
+| Synthetic import persistence | PostgreSQL through the configured `DATABASE_URL`. |
+| Recovery v2 persistence | PostgreSQL through Docker Compose; still fake/synthetic only until the SAT/security gates are accepted. |
 | Export | CSV written locally by explicit command. |
 | Identity | Local shape validation only; no e.firma upload, no credential persistence, no taxpayer authentication, and no SAT network use. |
 | Network | No SAT or external service calls. |

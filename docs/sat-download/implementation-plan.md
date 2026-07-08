@@ -27,12 +27,15 @@ flowchart TD
     B --> E[Request client]
     B --> F[Verification client]
     B --> G[Download client]
-    B --> H[Persistence repository]
+    B --> H[PostgreSQL persistence repository]
     G --> I[Package storage]
     I --> J[Metadata and CFDI package readers]
-    J --> K[Metadata ledger]
-    K --> L[Reconciliation engine]
-    L --> M[Existing parser/import service]
+    J --> API[FastAPI ingestion boundary]
+    API --> Q[RabbitMQ ingestion queues]
+    Q --> W[Workers]
+    W --> K[Metadata ledger]
+    W --> L[Reconciliation engine]
+    W --> M[Parser/import service]
 ```
 
 ## Proposed modules
@@ -48,10 +51,12 @@ flowchart TD
 | `sat_verify` | Verify request status and package ids. | Pure parser plus transport call. |
 | `sat_download` | Download package by id. | Stores raw package before extraction. |
 | `packages` | Read ZIP, XML, and metadata TXT packages. | Should support streaming metadata. |
-| `ledger` | Store metadata inventory and XML evidence state. | This is the control plane for retries. |
+| `api` | Accept stored XML/package references and expose ingestion operations through FastAPI. | Planned boundary; do not add a Docker service before implementation exists. |
+| `queue` | Publish ingestion, parser, reconciliation, and retry jobs through RabbitMQ. | Messages carry storage keys and IDs, not raw XML/ZIP bytes. |
+| `ledger` | Store metadata inventory and XML evidence state in PostgreSQL. | This is the control plane for retries. |
 | `reconciliation` | Classify UUIDs as downloaded, pending, cancelled, quota-limited, retryable, or manual-review. | Avoids blind redownload loops. |
 | `errors` | Map SAT/transport/domain failures to typed internal codes and user messages. | Keeps support and CLI/API behavior consistent. |
-| `repository` | Idempotent request/package persistence. | SQLite first, but avoid hard-coding storage in domain logic. |
+| `repository` | Idempotent request/package/accounting persistence. | PostgreSQL only for runtime and tests. |
 | `audit` | Structured events and redaction. | Never log secrets or full real XML by default. |
 
 ## Work slices
@@ -63,12 +68,14 @@ flowchart TD
 | 3. XML builders | SOAP and XMLDSig builders produce deterministic XML. | Golden tests with synthetic credentials. |
 | 4. Transport abstraction | SOAP requests can be sent through an injectable client. | Fake transport tests; no live SAT in CI. |
 | 5. Response parsers | Authentication, request, verification, and download responses parse safely. | Fixture tests for success and common errors. |
-| 6. Persistence | Requests/packages are resumable and idempotent. | SQLite tests for duplicate query and package attempts. |
+| 6. Persistence | Requests/packages are resumable and idempotent. | PostgreSQL migration/repository tests for duplicate query and package attempts. |
 | 7. Metadata ledger | Metadata packages become canonical expected-document rows. | Tests for TXT metadata parsing, dedupe, and status updates. |
-| 8. Reconciliation engine | UUIDs are classified before XML retries. | Tests for pending, downloaded, cancelled, expired, quota-limited, and manual-review states. |
-| 9. User-facing error contract | Every failure explains what happened, what is missing, and whether retry is automatic. | Snapshot tests for CLI/API error messages. |
-| 10. Orchestrator | End-to-end job state machine works against fake SAT. | Contract tests with fake async states. |
-| 11. Optional live adapter | Manual integration path for maintainers with lawful credentials. | Explicit opt-in, skipped by default in CI. |
+| 8. FastAPI ingestion boundary | Stored XML/package references can be submitted for gradual processing. | API contract tests prove no raw XML, ZIP, or secrets are accepted in payloads. |
+| 9. Queue-backed XML ingestion | Parser/reconciliation work is published to RabbitMQ and processed by workers. | Retry/DLQ tests, idempotency tests, and PostgreSQL state recovery tests pass. |
+| 10. Reconciliation engine | UUIDs are classified before XML retries. | Tests for pending, downloaded, cancelled, expired, quota-limited, and manual-review states. |
+| 11. User-facing error contract | Every failure explains what happened, what is missing, and whether retry is automatic. | Snapshot tests for CLI/API error messages. |
+| 12. Orchestrator | End-to-end job state machine works against fake SAT. | Contract tests with fake async states. |
+| 13. Optional live adapter | Manual integration path for maintainers with lawful credentials. | Explicit opt-in, skipped by default in CI. |
 
 ## Design decisions
 
@@ -77,6 +84,7 @@ flowchart TD
 | Keep signing isolated from transport. | More interfaces, but easier to test and audit. |
 | Use fake SAT transport in automated tests. | Less production certainty, but no secret exposure in CI. |
 | Persist before parsing. | More disk/storage usage, but preserves scarce package download attempts. |
+| Queue XML ingestion after evidence storage. | More moving parts, but avoids one CLI/SAT process owning package download, parsing, and bulk database load. |
 | Metadata is the control plane. | More tables and reconciliation logic, but fewer blind retries and better auditability. |
 | Use v1.5 as the only operational contract. | Less ambiguity, but requires explicit conflict notes when WSDL/oracles differ. |
 | Keep docs source-linked and source-classified. | More maintenance, but contributors can verify claims. |
@@ -89,6 +97,7 @@ flowchart TD
 - [ ] XML building is deterministic.
 - [ ] All SAT responses preserve raw code/message in typed errors.
 - [ ] Package bytes are stored and hashed before extraction.
+- [ ] Stored XML ingestion crosses the FastAPI/RabbitMQ/worker boundary before normalized PostgreSQL loading.
 - [ ] Metadata ledger can explain what exists, what is missing, and why.
 - [ ] Credential custody mode is explicit during setup.
 - [ ] User-facing errors redact secrets and include next action.

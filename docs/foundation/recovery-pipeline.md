@@ -10,10 +10,11 @@ One recovery job owns the full chain:
 2. register package location on disk;
 3. extract XML/metadata;
 4. register extracted XML location on disk;
-5. parse known fields;
-6. load normalized/searchable data into PostgreSQL;
-7. reconcile UUID state;
-8. expose storage location and status to the user.
+5. submit stored XML/package references to the FastAPI ingestion boundary;
+6. enqueue parser/ingestion work through RabbitMQ;
+7. load normalized/searchable data into PostgreSQL from workers;
+8. reconcile UUID state;
+9. expose storage location and status to the user.
 
 If any stage fails, the job must preserve what was already downloaded and tell the user what is missing.
 
@@ -29,7 +30,9 @@ flowchart TD
     F --> G["Extract XML/metadata"]
     G --> H["Store XML on local disk"]
     H --> I["Register XML path in xml_evidence"]
-    I --> J["Parse known fields"]
+    I --> API["Submit storage reference to FastAPI ingestion boundary"]
+    API --> Q["Publish ingestion job to RabbitMQ"]
+    Q --> J["Worker parses known fields"]
     J --> K["Load normalized data into cfdi_documents and related tables"]
     K --> L["Update metadata ledger and reconciliation state"]
     L --> M["Expose search/show/print/export/storage locate"]
@@ -41,6 +44,7 @@ flowchart TD
 |---|---|---|
 | Download | `sat_requests`, `sat_packages`, raw ZIP file | Package id, request id, local ZIP path |
 | Extraction | XML files, XML hashes, `xml_evidence` rows | UUID-to-file location |
+| Ingestion handoff | RabbitMQ message with storage key, tenant, job id, and idempotency key | Work is visible and retryable instead of hidden inside one CLI process |
 | Data loading | `cfdi_documents`, parties, concepts, taxes, JSON payloads | Searchable accounting data |
 | Reconciliation | metadata ledger and reconciliation events | Pending/downloaded/manual-review state |
 | Access | search/show/print/export/storage commands | User can find the XML and extracted data |
@@ -54,7 +58,8 @@ stateDiagram-v2
     downloading_package --> package_stored
     package_stored --> extracting
     extracting --> xml_stored
-    xml_stored --> loading_database
+    xml_stored --> queued_for_ingestion
+    queued_for_ingestion --> loading_database
     loading_database --> reconciling
     reconciling --> completed
     downloading_package --> failed_retryable
@@ -73,7 +78,8 @@ stateDiagram-v2
 | SAT request fails before package | request/job event | Retry if SAT/transport says retryable. |
 | Package downloaded but extraction fails | raw ZIP + SHA-256 + package row | Retry extraction locally, not SAT download. |
 | XML extracted but parser fails | XML file + SHA-256 + evidence row | Mark parser status partial/manual-review. |
-| DB load fails after XML storage | XML file + evidence row | Retry DB load locally. |
+| Ingestion queue publish fails after XML storage | XML file + evidence row | Retry publish from PostgreSQL state; do not redownload from SAT. |
+| DB load fails after XML storage | XML file + evidence row + queue event | Retry the ingestion job through RabbitMQ/DLQ policy. |
 | Reconciliation conflict | all previous evidence | Manual review with request/package/XML paths. |
 
 ## User promise

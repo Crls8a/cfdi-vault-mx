@@ -1,13 +1,15 @@
 # Architecture blueprint
 
-The system uses Clean Architecture: domain rules do not know about RabbitMQ, Redis, PostgreSQL, Typer, or SAT SOAP. Infrastructure adapters satisfy ports.
+The system uses Clean Architecture: domain rules do not know about RabbitMQ, Redis, PostgreSQL, FastAPI, Typer, or SAT SOAP. Infrastructure adapters satisfy ports.
 
 ## System context
 
 ```mermaid
 flowchart TD
     Operator["Operator / Developer"] --> CLI["CLI: Typer + terminal UI"]
+    Operator --> API["FastAPI ingestion API (planned)"]
     CLI --> App["Application services"]
+    API --> App
     App --> Domain["Domain rules and state machines"]
     App --> Ports["Ports / interfaces"]
     Ports --> PG["PostgreSQL"]
@@ -23,9 +25,13 @@ flowchart TD
 ```mermaid
 flowchart LR
     CLI["app container / local CLI"] --> PG["postgres"]
-    CLI --> MQ["rabbitmq"]
-    CLI --> Redis["redis"]
-    CLI --> Storage["./storage volume"]
+    API["api container / planned FastAPI"] -. planned .-> PG
+    API -. planned .-> MQ["rabbitmq"]
+    API -. planned .-> Redis["redis"]
+    API -. planned .-> Storage["./storage volume"]
+    CLI --> MQ
+    CLI --> Redis
+    CLI --> Storage
     MQ --> Worker["worker container"]
     Worker --> SAT["SAT SOAP or Fake SAT"]
     Worker --> PG
@@ -41,6 +47,7 @@ flowchart LR
 | `application` | Use cases: sync, verify, download, parse, reconcile, search, print/export. | Credential storage details or concrete broker clients. |
 | `ports` | Interfaces for SAT, signer, queue, cache, storage, repository, search, printer. | Business decisions. |
 | `infrastructure` | PostgreSQL, RabbitMQ, Redis, SOAP, filesystem, Docker. | Domain rules. |
+| `api` | FastAPI request/response boundary for ingestion and orchestration. | Long-running parsing loops, raw XML persistence, or secret custody. |
 | `cli` | User commands, progress, formatting, exit codes. | SAT protocol logic or persistence rules. |
 
 ## Dependency rule
@@ -48,6 +55,7 @@ flowchart LR
 ```mermaid
 flowchart BT
     Infra["Infrastructure adapters"] --> Ports["Ports"]
+    API["FastAPI API"] --> App["Application"]
     CLI["CLI"] --> App["Application"]
     App --> Ports
     App --> Domain["Domain"]
@@ -63,6 +71,8 @@ Outer layers depend inward. Inner layers never import outer adapters.
 | Queue | RabbitMQ for durable jobs and workers. |
 | Cache | Redis for progress, locks, rate limits, token cache, and worker heartbeats. |
 | Database | PostgreSQL as source of truth. |
+| API boundary | FastAPI will mediate ingestion requests once API code exists; Docker Compose should only add an API service with that implementation. |
+| XML ingestion | Stored XML/package references move through API/queue/worker before normalized PostgreSQL loading. |
 | Flexible CFDI data | PostgreSQL JSONB-compatible payloads, not MongoDB. |
 | Search | PostgreSQL full-text/trigram first; OpenSearch later only if volume requires it. |
 | Local/dev | Docker Compose. |

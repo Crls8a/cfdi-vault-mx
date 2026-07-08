@@ -30,10 +30,14 @@ flowchart TD
     H --> I["XML need planner"]
     I --> J["XML request/download jobs"]
     J --> K["Raw XML evidence"]
-    K --> L["Reconciliation engine"]
+    K --> API["FastAPI ingestion boundary"]
+    API --> Q["RabbitMQ parser/reconciliation jobs"]
+    Q --> L["Reconciliation engine"]
     H --> L
     L --> M["Reports and operator review"]
 ```
+
+Raw XML evidence is stored before accounting data is loaded. The heavy ingestion path should pass stored references through FastAPI and RabbitMQ so workers can parse, load PostgreSQL, and reconcile gradually.
 
 ## Ledger records
 
@@ -101,5 +105,6 @@ The primary retry controller remains SAT request/package status. Invoice-level s
 - [ ] Metadata ingestion exists before broad XML retry automation.
 - [ ] Every SAT request has a criteria hash.
 - [ ] Every package is stored and hashed before extraction.
+- [ ] Stored XML ingestion crosses the API/queue/worker boundary before normalized PostgreSQL loading.
 - [ ] Reconciliation states explain why a UUID is pending, terminal, or manual-review.
 - [ ] Installer/setup separates storage location from credential custody.

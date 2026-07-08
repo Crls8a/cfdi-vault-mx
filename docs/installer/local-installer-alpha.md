@@ -44,7 +44,7 @@ Use a real operator profile only on the operator machine and never commit local 
 |---|---|---|
 | Setup | `cfdi-vault setup --source-folder <external-folder>` | Create the local AppData profile and import credential file references safely. |
 | Status | `cfdi-vault status --profile-id <profile>` | Show redacted profile readiness. |
-| Doctor | `cfdi-vault doctor --profile-id <profile>` | Check local database, queue/cache fallback, storage, and profile readiness. |
+| Doctor | `cfdi-vault doctor --profile-id <profile>` | Check local recovery dependencies, queue/cache fallback, storage, and profile readiness. Docker recovery uses PostgreSQL/RabbitMQ/Redis. |
 | Plan | `cfdi-vault download plan --profile <profile> --from 2024-01-01 --to 2024-01-31 --kind metadata --direction received` | Validate a fake/offline query without submission. |
 | Request | `cfdi-vault download request --profile <profile> --from 2024-01-01 --to 2024-01-31 --kind metadata --direction received` | Submit a synthetic request to the fake SAT simulator only. |
 | Sync | `cfdi-vault download sync --profile <profile> --from 2024-01-01 --to 2024-01-31 --kind metadata --direction received` | Run the fake/offline pipeline and persist local recovery state. |
