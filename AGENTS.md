@@ -4,6 +4,10 @@ This repository is maintained primarily by a solo maintainer.
 
 The project handles fiscal data workflows for CFDI, SAT metadata, XML/ZIP packages, local storage, RFC profiles, and references to e.firma. Security gates are mandatory.
 
+## Project skills
+
+Before creating or changing reusable `cfdi_vault` library functionality, package metadata, public APIs, SAT download modules, parsers, ports, or release gates, agents must load `skills/cfdi-library-quality/SKILL.md`.
+
 ## Default mode
 
 Agents may operate in solo-maintainer mode for routine changes.

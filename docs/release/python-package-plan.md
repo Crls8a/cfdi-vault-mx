@@ -44,7 +44,7 @@ The package release must say which modules are supported public API and which mo
 | Version | `0.1.0` | First public release should be clearly marked alpha. |
 | PyPI name check | `https://pypi.org/pypi/cfdi-vault-mx/json` returned 404 on 2026-07-08 and was rechecked as 404 during this planning pass | Name appears unused now, but it is not reserved until publication. |
 
-Before promoting any module or command to public package behavior, apply the [Library quality contract](library-quality-contract.md).
+Before promoting any module or command to public package behavior, apply the [Library quality contract](library-quality-contract.md). Also run the [Library compliance audit plan](library-compliance-audit-plan.md) before treating any current implementation as release-ready.
 
 ## Release positioning
 
