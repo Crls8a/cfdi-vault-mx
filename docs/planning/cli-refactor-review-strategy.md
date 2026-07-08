@@ -6,9 +6,10 @@ Use this strategy to merge the CLI family refactor without rebuilding the legacy
 
 1. Merge the base CLI split first.
 2. Merge follow-up branches in dependency order: SAT subfamilies, parity report, then governance docs.
-3. Keep each PR under 400 changed lines unless Carlos explicitly accepts `size:exception`.
-4. Resolve conflicts into `src/cfdi_vault/adapters/cli/` family modules, never into the old monolithic `cli.py`.
-5. Run the final gates before merge and clean the worktree after the branch lands.
+3. Before merging with active SAT/live-gate or other WIP branches, follow the [CLI refactor merge synchronization plan](cli-refactor-merge-synchronization-plan.md).
+4. Keep each PR under 400 changed lines unless Carlos explicitly accepts `size:exception`.
+5. Resolve conflicts into `src/cfdi_vault/adapters/cli/` family modules, never into the old monolithic `cli.py`.
+6. Run the final gates before merge and clean the worktree after the branch lands.
 
 ## Review budget
 
