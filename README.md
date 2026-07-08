@@ -125,7 +125,8 @@ Important boundary: this implementation includes fake SAT only. It does not auth
 | `src/cfdi_vault/parser.py` | Namespace-tolerant CFDI field extraction. |
 | `src/cfdi_vault/db.py` | SQLAlchemy model and SQLite setup. |
 | `src/cfdi_vault/service.py` | Import, dedupe, summary, and CSV export use cases. |
-| `src/cfdi_vault/cli.py` | Typer CLI entrypoint. |
+| `src/cfdi_vault/cli.py` | Compatibility shim for the public Typer entrypoint. |
+| `src/cfdi_vault/adapters/cli/` | Typer CLI app composition and command families. |
 | `src/cfdi_vault/config.py` | Safe local RFC profile configuration schema and validation. |
 | `src/cfdi_vault/setup.py` | AppData profile setup, credential intake guards, redacted status, and dummy smoke boundary. |
 | `src/cfdi_vault/recovery_service.py` | Fake SAT recovery, search, print, export, and reconciliation use cases. |

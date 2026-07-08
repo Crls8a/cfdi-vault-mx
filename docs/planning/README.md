@@ -14,6 +14,7 @@ The planning source of truth is Markdown in this repository. This keeps the plan
 4. Use [Sprint 0 execution plan](sprint-0-execution.md) to start the first sprint safely.
 5. Use [Backlog](backlog.md) to create Sprint Packets, issues, or assign work.
 6. Use [Team board](team-board.md) to track the current sprint.
+7. Use [CLI family refactor plan](cli-family-refactor-plan.md) before changing CLI adapter ownership or resolving CLI merge conflicts.
 
 ## Planning map
 
@@ -26,6 +27,7 @@ The planning source of truth is Markdown in this repository. This keeps the plan
 | [Sprint 0 review findings](sprint-0-review-findings.md) | Agent review results and Sprint 0 acceptance evidence. |
 | [Backlog](backlog.md) | Work item IDs, dependencies, owner roles, acceptance criteria. |
 | [Team board](team-board.md) | Current sprint execution, status, blocked work, handoff notes. |
+| [CLI family refactor plan](cli-family-refactor-plan.md) | Source of truth for CLI family ownership, merge conflict handling, and follow-up task slices. |
 
 ## Editing workflow
 

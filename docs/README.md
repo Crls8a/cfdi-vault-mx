@@ -7,24 +7,26 @@ This repository is split into two documentation areas: the current local-first C
 1. Start with [the main README](../README.md) to run the current CLI.
 2. Read [Developer CLI invocation](devx.md) before documenting local commands or `PYTHONPATH=src` fallbacks.
 3. Read [Architecture](architecture.md) to understand the existing local parser/storage boundaries.
-4. Read [Security model](security-model.md) before touching real CFDI data or certificates.
-5. Read [Foundation-first plan](foundation/README.md) before adding more recovery features.
-6. Read [Agile planning workspace](planning/README.md) and [Lightweight governance policy](planning/governance.md) before assigning sprint work.
-7. Read [Safe RFC profile configuration](config/README.md) before adding local profile settings.
-8. Read [Local RFC setup and credential intake](setup.md) before changing AppData setup or credential import.
-9. Read [First-run onboarding](installer/onboarding.md) before changing installer or profile setup.
-10. Read [Local installer alpha](installer/local-installer-alpha.md) before changing editable install or bootstrap behavior.
-11. Read [Idempotent local storage](storage-design.md) before writing package, metadata, or XML evidence.
-12. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
-13. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
-14. Read [Offline/local SAT download operations](sat-download/offline-local-operations.md) before validating issue #51.
-15. Read [MANUAL-SAT-001](sat-download/manual-sat-runbook.md) before requesting any human-gated live SAT smoke.
+4. Read [CLI family refactor plan](planning/cli-family-refactor-plan.md) before changing CLI adapter ownership or resolving CLI merge conflicts.
+5. Read [Security model](security-model.md) before touching real CFDI data or certificates.
+6. Read [Foundation-first plan](foundation/README.md) before adding more recovery features.
+7. Read [Agile planning workspace](planning/README.md) and [Lightweight governance policy](planning/governance.md) before assigning sprint work.
+8. Read [Safe RFC profile configuration](config/README.md) before adding local profile settings.
+9. Read [Local RFC setup and credential intake](setup.md) before changing AppData setup or credential import.
+10. Read [First-run onboarding](installer/onboarding.md) before changing installer or profile setup.
+11. Read [Local installer alpha](installer/local-installer-alpha.md) before changing editable install or bootstrap behavior.
+12. Read [Idempotent local storage](storage-design.md) before writing package, metadata, or XML evidence.
+13. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
+14. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
+15. Read [Offline/local SAT download operations](sat-download/offline-local-operations.md) before validating issue #51.
+16. Read [MANUAL-SAT-001](sat-download/manual-sat-runbook.md) before requesting any human-gated live SAT smoke.
 
 ## Documentation map
 
 | Area | Document | Purpose |
 |---|---|---|
 | Current repo | [Architecture](architecture.md) | Existing CLI, parser, service, and SQLite model. |
+| Current repo | [CLI family refactor plan](planning/cli-family-refactor-plan.md) | CLI adapter ownership, merge-conflict source of truth, and follow-up slices. |
 | Current repo | [Case study](case-study.md) | Why phase one is local-first and synthetic-only. |
 | Current repo | [Developer CLI invocation](devx.md) | Editable install path, installed CLI usage, and dev-only `PYTHONPATH=src` fallback. |
 | Current repo | [Security model](security-model.md) | Current safety boundaries and forbidden data. |
