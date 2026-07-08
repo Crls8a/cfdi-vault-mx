@@ -28,6 +28,16 @@ Agents must keep adapters thin and protect SOLID boundaries. For CLI work:
 - Prefer small family modules over large catch-all files. If a CLI file starts mixing unrelated command families, split it before adding more behavior.
 - Do not introduce real SAT, e.firma, CFDI, RFC, certificate, token, or local-path data while refactoring adapters.
 
+### CLI merge-conflict policy
+
+When a merge or rebase touches CLI files, the source of truth is the split adapter package, not the legacy monolith:
+
+- Keep `src/cfdi_vault/cli.py` as a thin compatibility shim that exports `app`.
+- Preserve command behavior by resolving conflicts inside `src/cfdi_vault/adapters/cli/` family modules.
+- Do not restore the previous 3,400+ line `cli.py` implementation to make a merge easier.
+- If another branch added command logic to `src/cfdi_vault/cli.py`, move that logic into the correct family module before completing the merge.
+- After any CLI conflict resolution, run CLI tests, the sensitive fixture scanner, and `git diff --check` before committing.
+
 ## Always required
 
 - PR for public changes.
