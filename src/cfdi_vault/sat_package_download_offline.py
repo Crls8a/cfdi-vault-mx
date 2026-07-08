@@ -40,6 +40,15 @@ class OfflinePackageDownloadParseResult:
     pdf_entry_count: int
 
 
+@dataclass(frozen=True)
+class PackageZipInspectionResult:
+    zip_valid: bool
+    entry_count: int
+    txt_entry_count: int
+    xml_entry_count: int
+    pdf_entry_count: int
+
+
 def evaluate_package_download_gate(
     state: SatRequestState | str,
     package_ids: Iterable[str],
@@ -137,6 +146,23 @@ def parse_offline_package_download_response(response: bytes | str, *, package_id
         content_sha256=hashlib.sha256(content).hexdigest(),
         zip_valid=True,
         zip_entry_count=len(names),
+        txt_entry_count=sum(1 for name in lower_names if name.endswith(".txt")),
+        xml_entry_count=sum(1 for name in lower_names if name.endswith(".xml")),
+        pdf_entry_count=sum(1 for name in lower_names if name.endswith(".pdf")),
+    )
+
+
+def inspect_package_zip_bytes(content: bytes) -> PackageZipInspectionResult:
+    """Inspect ZIP shape in memory without extracting or returning entry names."""
+
+    try:
+        names = _zip_names(content)
+    except BadZipFile:
+        return PackageZipInspectionResult(False, 0, 0, 0, 0)
+    lower_names = tuple(name.lower() for name in names)
+    return PackageZipInspectionResult(
+        zip_valid=True,
+        entry_count=len(names),
         txt_entry_count=sum(1 for name in lower_names if name.endswith(".txt")),
         xml_entry_count=sum(1 for name in lower_names if name.endswith(".xml")),
         pdf_entry_count=sum(1 for name in lower_names if name.endswith(".pdf")),

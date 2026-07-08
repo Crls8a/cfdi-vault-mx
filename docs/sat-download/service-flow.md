@@ -75,7 +75,8 @@ Runtime WSDL must be checked before endpoint/operation changes.
 | Request processing | Poll with backoff; do not spin in a tight loop. |
 | Request finished | Persist every `id_paquete` before downloading. |
 | Package download gate | Download only after `EstadoSolicitud=3` and package ids exist. |
-| Package downloaded | Persist raw ZIP bytes or object-storage reference, SHA-256, and attempt count before extraction. |
+| Live download gate | Download at most one package, validate ZIP in memory, discard by default, and never print base64 or full ids. |
+| Package downloaded | Persist raw ZIP bytes or object-storage reference only in a later approved workflow before extraction. |
 | Package expired | Mark terminal state; do not retry forever. |
 | Package downloaded twice | Treat as exhausted; require a new valid request. |
 
