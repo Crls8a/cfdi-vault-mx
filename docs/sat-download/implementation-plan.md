@@ -1,6 +1,21 @@
 # Implementation plan for the SAT download library
 
-This plan turns the research into reviewable implementation slices. The first production-ready library should be boring, explicit, heavily tested, and reconciliation-led.
+Target contract:
+SAT Descarga Masiva CFDI y CFDI de Retenciones v1.5, mayo 2025.
+
+Allowed sources:
+- V1_5_CONTRACT
+- RUNTIME_WSDL
+- COMMUNITY_ORACLE as implementation oracle only
+
+Forbidden as operational contract:
+- v1.2
+- 2023 manuals
+- legacy endpoints
+- forums/blogs/snippets
+- old prompts
+
+This plan turns SAT Download work into reviewable implementation slices. The first production-ready library should be boring, explicit, heavily tested, and reconciliation-led.
 
 ## Target architecture
 
@@ -27,9 +42,9 @@ flowchart TD
 | `credentials` | Load or receive e.firma material through interfaces. | No built-in secret vault in the library core. |
 | `signing` | XMLDSig and WS-Security builders. | Highest-risk module; needs fixture-heavy tests. |
 | `soap` | Transport, headers, SOAPAction, error capture. | Keep independent from business orchestration. |
-| `requests` | Domain query objects and validation. | Must be deterministic and hashable. |
+| `requests` | v1.5 domain query objects and validation. | Must be deterministic and hashable. |
 | `sat_auth` | Authentication operation. | Returns token with metadata. |
-| `sat_request` | Submit download requests. | Supports official baseline and observed v1.5 variants separately. |
+| `sat_request` | Submit v1.5 download requests. | Uses `SolicitaDescargaEmitidos`, `SolicitaDescargaRecibidos`, or `SolicitaDescargaFolio`. |
 | `sat_verify` | Verify request status and package ids. | Pure parser plus transport call. |
 | `sat_download` | Download package by id. | Stores raw package before extraction. |
 | `packages` | Read ZIP, XML, and metadata TXT packages. | Should support streaming metadata. |
@@ -39,24 +54,11 @@ flowchart TD
 | `repository` | Idempotent request/package persistence. | SQLite first, but avoid hard-coding storage in domain logic. |
 | `audit` | Structured events and redaction. | Never log secrets or full real XML by default. |
 
-## Data model for the first integration slice
-
-| Table | Key | Purpose |
-|---|---|---|
-| `sat_requests` | `id_solicitud` plus local `query_hash` | Track submitted queries, SAT status, and criteria. |
-| `sat_packages` | `id_paquete` | Track package download attempts, SHA-256, storage key, and expiry risk. |
-| `sat_events` | `event_id` | Append-only operational audit. |
-| `metadata_ledger` | `uuid`, direction, source package | Expected document inventory from metadata packages. |
-| `xml_evidence` | `uuid`, source package | Stored XML evidence and checksums. |
-| `reconciliation_events` | `event_id` | Why a UUID changed reconciliation state. |
-| `cfdi_documents` | `uuid` | Reuse or evolve the current normalized CFDI store. |
-| `cfdi_metadata_rows` | `uuid`, `source_package` | Store parsed metadata rows when requested. |
-
 ## Work slices
 
 | Slice | Outcome | Acceptance checks |
 |---|---|---|
-| 1. Documentation and source matrix | Contributors understand official vs observed behavior. | Docs reviewed, no network code. |
+| 1. Documentation and source policy | Contributors understand v1.5 contract, WSDL role, oracles, legacy references, and rejected sources. | Docs reviewed, context scanner passes, no network code. |
 | 2. Domain request model | Queries can be built, validated, and hashed. | Unit tests for valid/invalid combinations. |
 | 3. XML builders | SOAP and XMLDSig builders produce deterministic XML. | Golden tests with synthetic credentials. |
 | 4. Transport abstraction | SOAP requests can be sent through an injectable client. | Fake transport tests; no live SAT in CI. |
@@ -76,8 +78,8 @@ flowchart TD
 | Use fake SAT transport in automated tests. | Less production certainty, but no secret exposure in CI. |
 | Persist before parsing. | More disk/storage usage, but preserves scarce package download attempts. |
 | Metadata is the control plane. | More tables and reconciliation logic, but fewer blind retries and better auditability. |
-| Support observed v1.5 as compatibility behavior. | More version branching, but honest source attribution. |
-| Keep docs source-linked. | More maintenance, but contributors can verify claims. |
+| Use v1.5 as the only operational contract. | Less ambiguity, but requires explicit conflict notes when WSDL/oracles differ. |
+| Keep docs source-linked and source-classified. | More maintenance, but contributors can verify claims. |
 
 ## Minimum definition of done
 
@@ -90,4 +92,4 @@ flowchart TD
 - [ ] Metadata ledger can explain what exists, what is missing, and why.
 - [ ] Credential custody mode is explicit during setup.
 - [ ] User-facing errors redact secrets and include next action.
-- [ ] README states clearly whether SAT integration is implemented, experimental, or planned.
+- [ ] Source classification follows [Source Policy](source-policy.md).

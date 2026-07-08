@@ -1,6 +1,21 @@
 # SAT Web Service flow
 
-The SAT download service is not a REST JSON API. It is an asynchronous SOAP workflow: authenticate, request, verify, and download.
+Target contract:
+SAT Descarga Masiva CFDI y CFDI de Retenciones v1.5, mayo 2025.
+
+Allowed sources:
+- V1_5_CONTRACT
+- RUNTIME_WSDL
+- COMMUNITY_ORACLE as implementation oracle only
+
+Forbidden as operational contract:
+- v1.2
+- 2023 manuals
+- legacy endpoints
+- forums/blogs/snippets
+- old prompts
+
+The SAT download service is not a REST JSON API. It is an asynchronous SOAP/WCF workflow: authenticate, request, verify, and download.
 
 ## Quick path
 
@@ -8,7 +23,7 @@ The SAT download service is not a REST JSON API. It is an asynchronous SOAP work
 flowchart TD
     A[Load e.firma certificate and private key] --> B[Authenticate with WS-Security]
     B --> C[Receive SAT token]
-    C --> D[Submit download request]
+    C --> D[Submit v1.5 download request]
     D --> E[Persist request id and query hash]
     E --> F[Verify request status]
     F -->|Accepted or in process| G[Wait with backoff]
@@ -22,10 +37,12 @@ flowchart TD
 
 ## Productive CFDI endpoints
 
+Runtime WSDL must be checked before endpoint/operation changes.
+
 | Service | Endpoint | Operation family |
 |---|---|---|
 | Authentication | `https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/Autenticacion/Autenticacion.svc` | `Autentica` |
-| Request | `https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/SolicitaDescargaService.svc` | Official classic `SolicitaDescarga`; observed v1.5 variants for issued, received, and folio requests. |
+| Request | `https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/SolicitaDescargaService.svc` | `SolicitaDescargaEmitidos`, `SolicitaDescargaRecibidos`, `SolicitaDescargaFolio` |
 | Verification | `https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/VerificaSolicitudDescargaService.svc` | `VerificaSolicitudDescarga` |
 | Download | `https://cfdidescargamasiva.clouda.sat.gob.mx/DescargaMasivaService.svc` | `Descargar` |
 
@@ -43,11 +60,11 @@ flowchart TD
 | Area | Expected behavior |
 |---|---|
 | Protocol | SOAP over HTTP POST. |
-| Content type | `text/xml` or `text/xml; charset=utf-8`. |
+| Content type | `text/xml` or `text/xml; charset=utf-8`, confirmed per WSDL/operation. |
 | Authorization after authentication | Header format: `Authorization: WRAP access_token="..."`. |
-| Request signing | XMLDSig over the request payload, using the e.firma certificate/private key. |
+| Request signing | XMLDSig over the v1.5 request payload, using the e.firma certificate/private key. |
 | Download response | SOAP XML containing a base64-encoded ZIP package. |
-| Metadata package | TXT rows delimited by `~`. |
+| Metadata package | TXT rows inside ZIP; CSV is local export. |
 
 ## Package lifecycle
 
@@ -62,7 +79,7 @@ flowchart TD
 
 ## Implementation boundary
 
-The future client should expose small operations, not one magic method:
+The client should expose small operations, not one magic method:
 
 ```text
 Authenticator.authenticate(credentials) -> Token

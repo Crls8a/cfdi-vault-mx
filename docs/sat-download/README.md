@@ -1,24 +1,39 @@
 # SAT CFDI download library documentation
 
-This folder turns the research note about SAT massive CFDI downloads into small, reviewable documents. The goal is to prepare the repository for an open-source library without mixing legal context, SOAP mechanics, security decisions, and implementation work in one long document.
+Target contract:
+SAT Descarga Masiva CFDI y CFDI de Retenciones v1.5, mayo 2025.
 
-> Status: design documentation only. The current code still imports and analyzes synthetic/local CFDI-like XML files; it does not call SAT services.
+Allowed sources:
+- V1_5_CONTRACT
+- RUNTIME_WSDL
+- COMMUNITY_ORACLE as implementation oracle only
+
+Forbidden as operational contract:
+- v1.2
+- 2023 manuals
+- legacy endpoints
+- forums/blogs/snippets
+- old prompts
+
+This folder turns SAT Descarga Masiva work into small, reviewable documents. The goal is to keep source policy, SOAP mechanics, security decisions, and implementation work separated so agents do not mix old manuals with the current v1.5 contract.
+
+> Status: guarded SAT integration documentation. Default tests remain offline and must not call live SAT.
 
 ## Quick path
 
-1. Understand the service shape in [Service flow](service-flow.md).
-2. Check source confidence in [Official vs observed behavior](official-vs-observed.md).
-3. Confirm initial setup in [Initial requirements](requirements.md).
-4. Review e.firma and secret-handling rules in [Authentication and security](auth-security.md).
-5. Model valid queries with [Request model](request-model.md).
-6. Design the recovery product with [Metadata-led reconciliation architecture](reconciliation-architecture.md).
-7. Review the Sprint 2 behavior in [Metadata-first reconciliation slice](metadata-first-reconciliation.md).
-8. Implement around [Statuses, limits, and errors](statuses-limits-errors.md).
-9. Define user communication with [User-facing errors and edge cases](user-facing-errors.md).
+1. Start with [Source Policy](source-policy.md).
+2. Use [SAT Download v1.5 Checklist](v1_5_checklist.md) before changing SAT Download behavior.
+3. Understand the service shape in [Service flow](service-flow.md).
+4. Check source confidence in [Contract, runtime, and oracle behavior](official-vs-observed.md).
+5. Confirm initial setup in [Initial requirements](requirements.md).
+6. Review e.firma and secret-handling rules in [Authentication and security](auth-security.md).
+7. Model valid queries with [Request model](request-model.md).
+8. Design the recovery product with [Metadata-led reconciliation architecture](reconciliation-architecture.md).
+9. Implement around [Statuses, limits, and errors](statuses-limits-errors.md).
 10. Run the fake/offline local path with [Offline/local SAT download operations](offline-local-operations.md).
 11. Use [SAT async verify scheduler](async-verify-scheduler.md) for one-shot persisted verification work.
 12. Review [MANUAL-SAT-001](manual-sat-runbook.md) before requesting any human-gated live smoke.
-13. Use [Implementation plan](implementation-plan.md) to split the future library into reviewable work units.
+13. Use [Implementation plan](implementation-plan.md) to split future work into reviewable units.
 
 ## What the library is expected to do
 
@@ -33,21 +48,25 @@ This folder turns the research note about SAT massive CFDI downloads into small,
 | Reconcile | Compare metadata inventory against XML evidence and explain pending, terminal, and retryable UUIDs. |
 | Explain | Return actionable user-facing messages for missing requirements, SAT errors, and edge cases. |
 
-## Non-goals for the first SAT integration slice
+## Non-goals for the first SAT integration slices
 
 - No web dashboard.
 - No credential upload endpoint.
 - No multi-tenant SaaS custody of e.firma files.
 - No legal delegation model beyond the documented emitter/receiver/representative use case.
-- No claim that community-observed behavior is official SAT documentation.
+- No use of legacy references as current contract.
+- No use of forums, blogs, snippets, or old prompts as contract.
+- No conversion of community repositories into runtime dependencies.
 - No blind XML retry loop that ignores metadata, cancellation state, request status, or package limits.
 
 ## Reader promise
 
-Each document separates three things deliberately:
+Each document separates five source levels deliberately:
 
-1. **Official SAT documentation**: the strongest source for public, auditable behavior.
-2. **Observed community behavior**: practical compatibility notes from maintained libraries and providers.
-3. **Repository decision**: how this project should model that information in code.
+1. `V1_5_CONTRACT`.
+2. `RUNTIME_WSDL`.
+3. `COMMUNITY_ORACLE`.
+4. `LEGACY_REFERENCE`.
+5. `REJECTED_AS_CONTRACT`.
 
-That separation matters. Without it, contributors will confuse production behavior with official specification and then debug the wrong problem.
+That separation matters. Without it, contributors debug the wrong problem and agents turn evidence into sopa instantánea.

@@ -1,86 +1,63 @@
-# Sources
+# SAT Download sources
 
-This project keeps official SAT documentation separate from community-observed implementation notes.
+Target contract:
+SAT Descarga Masiva CFDI y CFDI de Retenciones v1.5, mayo 2025.
 
-Last verified: 2026-07-01.
+Allowed sources:
+- V1_5_CONTRACT
+- RUNTIME_WSDL
+- COMMUNITY_ORACLE as implementation oracle only
 
-## Source tiers
+Forbidden as operational contract:
+- v1.2
+- 2023 manuals
+- legacy endpoints
+- forums/blogs/snippets
+- old prompts
 
-| Tier | Use for | Examples |
+Last verified: 2026-07-08.
+
+This page lists source categories. The normative selection rules live in [SAT Download Source Policy](source-policy.md).
+
+## Source matrix
+
+| Source level | Examples | Repository use |
 |---|---|---|
-| Tier 1: Official SAT | Public claims about service scope, endpoints, limits, authentication, states, and official error codes. | SAT portal, SAT URL PDF, SAT Solicitud/Verificación/Descarga PDFs. |
-| Tier 2: Maintained community implementations | Practical compatibility behavior, package readers, API design, and v1.5 field observations. | phpcfdi, nodecfdi, SAT-CFDI. |
-| Tier 3: Provider/community guides | Cross-checking v1.5 changes and operational notes. | SW Developers and similar provider notes. |
-| Tier 4: Repository inference | Product architecture decisions derived from Tier 1-3 evidence. | Metadata-led reconciliation, criteria hashes, custody modes. |
+| `V1_5_CONTRACT` | SAT-branded Solicitud, Verificación, and Descarga Masiva v1.5 documents from mayo 2025 when available; validated v1.5 investigation. | Current operational contract for request, verify, download, states, limits, and security behavior. |
+| `RUNTIME_WSDL` | Current `.svc` and `singleWSDL` service descriptions for authentication, request, verification, and download. | Confirm exposed endpoints, operations, bindings, and SOAPActions. Conflicts with PDFs must be marked, not guessed through. |
+| `COMMUNITY_ORACLE` | `phpcfdi/sat-ws-descarga-masiva`, `nodecfdi/sat-ws-descarga-masiva`, `python-cfdiclient`. | Redacted structural comparison for request shape, signature shape, headers, and flow. These are not runtime dependencies. |
+| `LEGACY_REFERENCE` | Older v1.2 or 2023 documents and legacy examples. | Historical comparison only. They are non-normative and must not drive implementation. |
+| `REJECTED_AS_CONTRACT` | Forums, blogs, snippets, loose answers, unmaintained code, and old prompts. | At most weak leads that require verification against higher source levels. Never contract. |
 
-## Python ownership of auth diagnostics
+## Current v1.5 contract claims
 
-`phpcfdi/sat-ws-descarga-masiva` was used as an external structural oracle during development. `cfdi-vault-mx` does not depend on PHP or Composer at runtime. The accepted structure is represented by Python builders and tests.
+| Claim used by this repo | Source level | Verification rule |
+|---|---|---|
+| Flow is auth, solicitud, verify, download, package decode. | `V1_5_CONTRACT` | Cross-check with runtime WSDL before endpoint or SOAPAction changes. |
+| Request operations are `SolicitaDescargaEmitidos`, `SolicitaDescargaRecibidos`, and `SolicitaDescargaFolio`. | `V1_5_CONTRACT` + `RUNTIME_WSDL` | Keep v1.5-only behavior isolated and tested. |
+| Verify operation is `VerificaSolicitudDescarga`. | `V1_5_CONTRACT` + `RUNTIME_WSDL` + `COMMUNITY_ORACLE` | Download is enabled only after finished state with package IDs. |
+| Download operation is `Descargar`. | `V1_5_CONTRACT` + `RUNTIME_WSDL` | Decode response package as base64 ZIP. |
+| Metadata is TXT inside downloaded ZIP packages; CSV is local export. | `V1_5_CONTRACT` | Do not document SAT as returning ready-made CSV. |
+| Community libraries help compare implementation shape. | `COMMUNITY_ORACLE` | Never vendor or require them in normal runtime/CI. |
 
-The optional phpcfdi oracle diagnostics are local/developer-only. Normal `cfdi-vault` usage, tests, and CI do not install PHP, Composer, `vendor/`, or generated PHP fixtures. External oracle source input is disabled in CI, and diagnostics must remain redacted: no raw SOAP, real credentials, certificates, SAT metadata, CFDI XML, or ZIP payloads are saved in this repository.
+## Maintained community oracles
 
-## Claim verification matrix
+| Oracle | Use permitted | Use prohibited |
+|---|---|---|
+| `phpcfdi/sat-ws-descarga-masiva` | Compare XML signature target, canonicalization, headers, and flow from an external local checkout. | Runtime dependency, vendored fixture, raw SOAP evidence, or SAT authority. |
+| `nodecfdi/sat-ws-descarga-masiva` | Compare TypeScript behavior and package readers. | Runtime dependency or replacement for contract documentation. |
+| `python-cfdiclient` | Compare Python ecosystem behavior. | Runtime dependency or authority over SAT-published v1.5 contract. |
 
-| Claim used by this repo | Status | Primary source | Secondary source |
-|---|---|---|---|
-| The service recovers issued/received CFDI and metadata. | Official | SAT portal and manual. | Community libraries. |
-| Web Service access requires e.firma/token flow. | Official | SAT portal and service PDFs. | SW authentication guide. |
-| Productive endpoints are authentication, request, verification, and download. | Official | SAT URL PDF. | SAT-CFDI and community clients. |
-| Requests are asynchronous: submit, verify, then download packages. | Official | SAT manual and service PDFs. | phpcfdi/nodecfdi docs. |
-| Metadata is returned as TXT inside ZIP packages. | Official | SAT portal/manual. | nodecfdi metadata reader. |
-| Metadata includes cancelled status/data. | Official | SAT portal/manual. | Provider/community v1.5 notes. |
-| Package availability is limited to 72 hours. | Official | SAT Verificación/Descarga docs and manual. | Community docs. |
-| A package can only be downloaded twice. | Official | SAT Descarga doc and portal information. | Community docs. |
-| Request states are accepted, in process, finished, error, rejected, expired. | Official | SAT Verificación doc. | nodecfdi status handling. |
-| `5003`, `5007`, `5008`, `5011` require state-specific handling. | Official | SAT Verificación/Descarga docs. | Community retry guidance. |
-| v1.5 request operations split into issued, received, and folio. | Observed, not yet treated as official in this repo | Maintained community/provider references. | phpcfdi release, SW guide, SAT-CFDI code. |
-| Metadata should be the control plane and XML the evidence plane. | Repository inference | SAT metadata/XML distinction and package lifecycle. | nodecfdi package readers and implementation proposal. |
+## Legacy and rejected sources
 
-## Official SAT sources
+- v1.2 and 2023 documents are `LEGACY_REFERENCE`: useful to understand historical differences, not to build current requests.
+- Legacy endpoint examples, including retired `cloudapp.net` examples, are not production endpoint authority.
+- Forums, blogs, snippets, StackOverflow answers, Validacfd threads, and La Web del Programador discussions are `REJECTED_AS_CONTRACT` unless a future note explicitly reclassifies a verified fact through higher-level evidence.
 
-| Source | Use in this repo |
-|---|---|
-| [Consulta y recuperación de comprobantes](https://wwwmat.sat.gob.mx/consultas/42968/consulta-y-recuperacion-de-comprobantes-%28nuevo%29) | Portal scope, who can use the service, portal limits, Web Service availability, metadata description. |
-| [URL's del Web Service](https://wwwmat.sat.gob.mx/cs/Satellite?blobcol=urldata&blobkey=id&blobtable=MungoBlobs&blobwhere=1461174995058&ssbinary=true) | Productive CFDI and retenciones endpoints. |
-| [Servicio de Solicitud de Descarga Masiva v1.2](https://www.sat.gob.mx/cs/Satellite?blobcol=urldata&blobkey=id&blobtable=MungoBlobs&blobwhere=1461175195160&ssbinary=true) | Official request operation, request parameters, authentication requirement, XML signature requirement, request examples. |
-| [Servicio de Verificación de Descarga Masiva v1.2](https://www.sat.gob.mx/cs/Satellite?blobcol=urldata&blobkey=id&blobtable=MungoBlobs&blobwhere=1461175779527) | Verification operation, request states, package identifiers, verification codes. |
-| [Servicio de Descarga de Solicitudes Exitosas v1.1](https://www.sat.gob.mx/cs/Satellite?blobcol=urldata&blobkey=id&blobtable=MungoBlobs&blobwhere=1461174995026&ssbinary=true) | Download operation, package response, package lifetime, max package downloads, download error codes. |
-| [Manual de usuario: descarga masiva de CFDI y retenciones](https://www.sat.gob.mx/cs/Satellite?blobcol=urldata&blobkey=id&blobtable=MungoBlobs&blobwhere=1461174995051) | Portal-oriented process context and manual workflow. |
-| [e.firma portal](https://www.sat.gob.mx/portal/public/tramites/firma-electronica-avanzada-efirma) | General e.firma context and taxpayer identity boundary. |
+## Maintainer workflow
 
-## Community and implementation references
-
-| Source | Use in this repo |
-|---|---|
-| [phpcfdi/sat-ws-descarga-masiva](https://github.com/phpcfdi/sat-ws-descarga-masiva) | Mature PHP implementation and API design reference. |
-| [phpcfdi v1.1.0 release notes](https://github.com/phpcfdi/sat-ws-descarga-masiva/releases/tag/v1.1.0) | Maintainer evidence of compatibility work for the 2025-05-30 service change. |
-| [phpCfdi guide: Consumo del Servicio Web del SAT](https://www.phpcfdi.com/librerias/sat-ws-descarga-masiva/) | Community statement that the library handles request, verification, download, ZIP reading, and signs messages without sharing the private key. |
-| [nodecfdi/sat-ws-descarga-masiva](https://github.com/nodecfdi/sat-ws-descarga-masiva) | TypeScript implementation reference for service creation, query parameters, verification, download, and package reading. |
-| [NodeCfdi project site](https://nodecfdi.com/) | Ecosystem context for Node.js CFDI libraries. |
-| [SAT-CFDI documentation](https://satcfdi.readthedocs.io/) | Python ecosystem reference, including SAT-related modules. |
-| [SW Developers: Descarga Masiva v1.5 Autenticación](https://developers.sw.com.mx/knowledge-base/descarga-masiva-sat-autenticacion/) | Provider guide for observed v1.5 authentication shape and e.firma requirements. |
-| [SW Developers: Descarga Masiva v1.5 Solicitud](https://developers.sw.com.mx/knowledge-base/descarga-masiva-sat-solicitud/) | Provider guide describing observed v1.5 request operations. |
-| [SW Developers: 2025-05-30 changes](https://developers.sw.com.mx/knowledge-base/30-mayo-2025-conoce-los-cambios-para-la-nueva-version-1-5-descarga-masiva-sat/) | Secondary context for reported 1.5 changes. |
-
-## Repository-inferred design sources
-
-| Design | Evidence basis |
-|---|---|
-| Metadata as control plane | SAT treats metadata and XML as separate downloadable package types; the SAT manual says metadata includes cancelled status and community libraries expose metadata package readers. |
-| XML as evidence plane | SAT package lifecycle and download limits make raw ZIP persistence necessary before extraction. |
-| Reconciliation engine | Request ids, package ids, metadata rows, UUIDs, and status codes need durable correlation to avoid duplicate and blind retry behavior. |
-
-## Verification workflow for maintainers
-
-1. Re-open every Tier 1 link before changing public claims.
-2. If SAT publishes a new official v1.5 document, update [Official vs observed behavior](official-vs-observed.md) first.
-3. For Tier 2 and Tier 3 sources, record the exact library/project version or page date when possible.
-4. Do not copy provider examples with real-looking taxpayer data into tests.
-5. If a source disappears, keep the claim only if another source in the same or higher tier supports it.
-6. Label every new architecture rule as `official`, `observed`, or `inferred`.
-
-## Citation policy
-
-- Use SAT links for official claims.
-- Use community links only for observed behavior, compatibility notes, and implementation patterns.
-- If an official SAT document later appears for v1.5, update [Official vs observed behavior](official-vs-observed.md) and move the relevant claims to official status.
+1. Classify every new source with a source level from [Source Policy](source-policy.md).
+2. Re-open v1.5 SAT-branded PDFs or validated local copies before changing public claims.
+3. Use WSDL only through redacted summaries; never commit raw WSDL.
+4. Use community repositories only as structural oracles and record their version, commit, or release when possible.
+5. If evidence conflicts, write the conflict down and stop before implementation.

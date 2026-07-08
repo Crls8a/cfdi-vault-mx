@@ -1,5 +1,21 @@
 # MANUAL-SAT-001: human-gated live SAT smoke runbook
 
+Target contract:
+SAT Descarga Masiva CFDI y CFDI de Retenciones v1.5, mayo 2025.
+
+Allowed sources:
+- V1_5_CONTRACT
+- RUNTIME_WSDL
+- COMMUNITY_ORACLE as implementation oracle only
+
+Forbidden as operational contract:
+- v1.2
+- 2023 manuals
+- legacy endpoints
+- forums/blogs/snippets
+- old prompts
+
+
 This runbook defines the approval and evidence rules for any future real SAT smoke. It does not authorize live SAT execution by itself, and it must never run in CI.
 
 ## Current status

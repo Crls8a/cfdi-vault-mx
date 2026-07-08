@@ -1,6 +1,21 @@
 # Initial requirements
 
-This document defines what a developer or operator must have before using the future SAT CFDI download library.
+Target contract:
+SAT Descarga Masiva CFDI y CFDI de Retenciones v1.5, mayo 2025.
+
+Allowed sources:
+- V1_5_CONTRACT
+- RUNTIME_WSDL
+- COMMUNITY_ORACLE as implementation oracle only
+
+Forbidden as operational contract:
+- v1.2
+- 2023 manuals
+- legacy endpoints
+- forums/blogs/snippets
+- old prompts
+
+This document defines what a developer or operator must have before using the SAT CFDI download library.
 
 ## Minimum requirements
 
@@ -51,6 +66,7 @@ The installer or application setup must collect these decisions explicitly:
 - [ ] The system clock is synchronized.
 - [ ] Default tests do not require live SAT credentials.
 - [ ] A credential custody mode is selected before unattended jobs are enabled.
+- [ ] Source classification follows [Source Policy](source-policy.md).
 
 ## Not supported in the first implementation slice
 
@@ -58,7 +74,8 @@ The installer or application setup must collect these decisions explicitly:
 - Storing raw e.firma secrets by default.
 - Multi-tenant SaaS custody without a dedicated secure-custody design.
 - Live SAT calls in default CI.
-- Treating community-observed v1.5 behavior as official SAT documentation.
+- Treating community repositories as SAT authority or runtime dependencies.
+- Treating legacy references, forums, blogs, snippets, or old prompts as contract.
 
 ## Next step
 
