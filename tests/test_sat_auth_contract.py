@@ -2,7 +2,7 @@ from urllib.parse import urlparse
 
 from typer.testing import CliRunner
 
-from cfdi_vault import cli as cli_module
+from cfdi_vault.adapters.cli import sat as cli_module
 from cfdi_vault.cli import app
 from cfdi_vault.sat_auth_constants import (
     AUTH_ACCEPT,

@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import pytest
 from typer.testing import CliRunner
 
-from cfdi_vault import cli as cli_module
 from cfdi_vault import setup as setup_flow
+from cfdi_vault.adapters.cli import sat as cli_module
 from cfdi_vault.cli import app
 from cfdi_vault.domain import DownloadDirection, DownloadQuery, RequestType
 from cfdi_vault.sat_backfill import build_backfill_plan, generate_backfill_periods

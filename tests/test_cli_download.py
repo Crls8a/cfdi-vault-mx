@@ -11,8 +11,10 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 from typer.testing import CliRunner
 
-from cfdi_vault import cli as cli_module
 from cfdi_vault import setup as setup_flow
+from cfdi_vault.adapters.cli import common as common_cli
+from cfdi_vault.adapters.cli import download as download_cli
+from cfdi_vault.adapters.cli import sat as cli_module
 from cfdi_vault.cli import app
 from cfdi_vault.domain import SatRequestState
 from cfdi_vault.live_permit import LivePermitRequest, create_live_execution_permit, load_live_execution_permit
@@ -461,7 +463,7 @@ def test_download_live_smoke_aborts_before_adapter_for_guard_failures(
     _write_ready_setup_profile(appdata_root)
     _patch_live_smoke_dependencies(monkeypatch, checkout=checkout, interactive=interactive, doctor_ok=doctor_ok)
     calls: list[str] = []
-    monkeypatch.setattr(cli_module, "_run_live_metadata_smoke", lambda profile_id, query: calls.append(profile_id))
+    monkeypatch.setattr(download_cli, "_run_live_metadata_smoke", lambda profile_id, query: calls.append(profile_id))
 
     result = CliRunner().invoke(
         app,
@@ -485,7 +487,7 @@ def test_download_live_smoke_fake_adapter_happy_path_is_redacted(
     _write_ready_setup_profile(appdata_root)
     _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=True, doctor_ok=True)
     monkeypatch.setattr(
-        cli_module,
+        download_cli,
         "_run_live_metadata_smoke",
         lambda profile_id, query: cli_module.LiveSmokeCliResult(
             result="synthetic-ok",
@@ -549,7 +551,7 @@ def test_download_live_smoke_permit_replaces_interactive_prompt_once(
             verification="skipped",
         )
 
-    monkeypatch.setattr(cli_module, "_run_live_metadata_smoke", fake_live_smoke)
+    monkeypatch.setattr(download_cli, "_run_live_metadata_smoke", fake_live_smoke)
 
     result = CliRunner().invoke(
         app,
@@ -1399,7 +1401,7 @@ def test_download_live_smoke_adapter_failure_prints_redacted_diagnostic(
             security_must_understand=True,
         )
 
-    monkeypatch.setattr(cli_module, "_run_live_metadata_smoke", fail_live_smoke)
+    monkeypatch.setattr(download_cli, "_run_live_metadata_smoke", fail_live_smoke)
 
     result = CliRunner().invoke(
         app,
@@ -1706,11 +1708,11 @@ def _patch_live_smoke_dependencies(
     interactive: bool,
     doctor_ok: bool,
 ) -> None:
-    monkeypatch.setattr(cli_module, "_checkout_guard_status", lambda: checkout)
-    monkeypatch.setattr(cli_module, "_terminal_is_interactive", lambda: interactive)
-    monkeypatch.setattr(cli_module, "_live_smoke_doctor_ok", lambda profile: doctor_ok)
+    monkeypatch.setattr(common_cli, "_checkout_guard_status", lambda: checkout)
+    monkeypatch.setattr(common_cli, "_terminal_is_interactive", lambda: interactive)
+    monkeypatch.setattr(common_cli, "_live_smoke_doctor_ok", lambda profile: doctor_ok)
     monkeypatch.setattr(
-        cli_module,
+        common_cli,
         "_setup_provider",
         lambda profile_id: DummySecretProvider({_dummy_phrase_ref(profile_id): "synthetic phrase"}),
     )

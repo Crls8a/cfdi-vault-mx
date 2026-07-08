@@ -5,7 +5,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from cfdi_vault import cli
+from cfdi_vault.adapters.cli import setup as setup_cli
 from cfdi_vault.cli import app
 from cfdi_vault.windows_secrets import InMemoryWindowsCredentialBackend, WindowsCredentialManagerSecretProvider
 
@@ -14,7 +14,7 @@ def test_setup_cli_imports_credentials_with_hidden_phrase(monkeypatch, tmp_path:
     source_folder = _write_synthetic_credentials(tmp_path / "external")
     appdata_root = tmp_path / "appdata"
     provider = WindowsCredentialManagerSecretProvider(InMemoryWindowsCredentialBackend())
-    monkeypatch.setattr(cli, "_provider_for_reference", lambda _reference: provider)
+    monkeypatch.setattr(setup_cli, "_setup_provider", lambda _profile_id: provider)
     monkeypatch.delenv("CI", raising=False)
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     monkeypatch.delenv("TF_BUILD", raising=False)
@@ -52,7 +52,7 @@ def test_setup_cli_accepts_no_smoke_without_dual_flag_type_errors(monkeypatch, t
     source_folder = _write_synthetic_credentials(tmp_path / "external")
     appdata_root = tmp_path / "appdata"
     provider = WindowsCredentialManagerSecretProvider(InMemoryWindowsCredentialBackend())
-    monkeypatch.setattr(cli, "_provider_for_reference", lambda _reference: provider)
+    monkeypatch.setattr(setup_cli, "_setup_provider", lambda _profile_id: provider)
     monkeypatch.delenv("CI", raising=False)
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     monkeypatch.delenv("TF_BUILD", raising=False)
@@ -84,7 +84,7 @@ def test_setup_masked_phrase_reader_shows_feedback_without_secret() -> None:
     chars = iter(["p", "a", "s", "x", "\b", "s", "\r"])
     writes: list[str] = []
 
-    value = cli._read_masked_line("Private-key phrase: ", read_char=lambda: next(chars), write_text=writes.append)
+    value = setup_cli._read_masked_line("Private-key phrase: ", read_char=lambda: next(chars), write_text=writes.append)
 
     output = "".join(writes)
     assert value == "pass"
@@ -96,9 +96,9 @@ def test_setup_masked_phrase_reader_shows_feedback_without_secret() -> None:
 def test_setup_masked_phrase_confirmation_retries_without_printing_value(monkeypatch, capsys) -> None:
     phrase_value = "SYNTHETIC-CLI-PHRASE"
     responses = iter([phrase_value, "mismatch", phrase_value, phrase_value])
-    monkeypatch.setattr(cli, "_read_masked_line", lambda _prompt: next(responses))
+    monkeypatch.setattr(setup_cli, "_read_masked_line", lambda _prompt: next(responses))
 
-    value = cli._prompt_masked_with_confirmation("Private-key phrase")
+    value = setup_cli._prompt_masked_with_confirmation("Private-key phrase")
 
     captured = capsys.readouterr()
     assert value == phrase_value

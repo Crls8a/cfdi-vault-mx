@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from cfdi_vault import cli
+from cfdi_vault.adapters.cli import secrets as secrets_cli
 from cfdi_vault.cli import app
 from cfdi_vault.secrets import CredentialAccessAction
 from cfdi_vault.windows_secrets import InMemoryWindowsCredentialBackend, WindowsCredentialManagerSecretProvider
@@ -12,7 +12,7 @@ def test_secret_cli_register_verify_and_delete_do_not_print_value(monkeypatch) -
     entered_value = "SYNTHETIC_CLI_CREDENTIAL_VALUE"
     reference_uri = "windows-credential-manager://cfdi-vault/tests/cli/private-key"
     provider = WindowsCredentialManagerSecretProvider(InMemoryWindowsCredentialBackend())
-    monkeypatch.setattr(cli, "_provider_for_reference", lambda _reference: provider)
+    monkeypatch.setattr(secrets_cli, "_provider_for_reference", lambda _reference: provider)
     runner = CliRunner()
 
     register = runner.invoke(
@@ -42,7 +42,7 @@ def test_secret_cli_verify_reports_missing_reference_without_value(monkeypatch) 
     entered_value = "SYNTHETIC_MISSING_CLI_VALUE"
     reference_uri = "windows-credential-manager://cfdi-vault/tests/cli/missing"
     provider = WindowsCredentialManagerSecretProvider(InMemoryWindowsCredentialBackend())
-    monkeypatch.setattr(cli, "_provider_for_reference", lambda _reference: provider)
+    monkeypatch.setattr(secrets_cli, "_provider_for_reference", lambda _reference: provider)
 
     result = CliRunner().invoke(app, ["secret", "verify", reference_uri, "--kind", "generic"])
 
