@@ -1707,14 +1707,13 @@ def _patch_live_smoke_dependencies(
     interactive: bool,
     doctor_ok: bool,
 ) -> None:
+    provider_factory = lambda profile_id: DummySecretProvider({_dummy_phrase_ref(profile_id): "synthetic phrase"})
     monkeypatch.setattr(common_cli, "_checkout_guard_status", lambda: checkout)
     monkeypatch.setattr(common_cli, "_terminal_is_interactive", lambda: interactive)
     monkeypatch.setattr(common_cli, "_live_smoke_doctor_ok", lambda profile: doctor_ok)
-    monkeypatch.setattr(
-        common_cli,
-        "_setup_provider",
-        lambda profile_id: DummySecretProvider({_dummy_phrase_ref(profile_id): "synthetic phrase"}),
-    )
+    monkeypatch.setattr(common_cli, "_setup_provider", provider_factory)
+    for module in (download_cli, sat_auth_cli, sat_common_cli, sat_metadata_cli, sat_verify_cli):
+        monkeypatch.setattr(module, "_setup_provider", provider_factory, raising=False)
 
 
 def _live_smoke_args(overrides: list[str]) -> list[str]:

@@ -108,7 +108,7 @@ class SatDownloadResult:
     def __repr__(self) -> str:
         return (
             "SatDownloadResult("
-            f"package_id={self.package_id!r}, "
+            f"package_id={_redact_identifier(self.package_id)!r}, "
             f"sat_code={self.sat_code!r}, "
             f"message={self.message!r}, "
             f"action={self.action!r}, "
@@ -237,3 +237,11 @@ def _classify_state(state: SatRequestState) -> SatOutcomeClassification | None:
 
 def _normalize_status_text(status: str | None) -> str:
     return "" if status is None else "_".join(str(status).strip().lower().split())
+
+
+def _redact_identifier(value: str) -> str:
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "<redacted>"
+    return f"{value[:4]}...{value[-4:]}"

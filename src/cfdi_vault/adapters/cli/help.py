@@ -133,6 +133,12 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "example": "cfdi-vault sat verify-live-gate --profile default --request-ref <request-ref> --manual-real-sat --permit PERMIT_ID --connect-timeout-seconds 15 --read-timeout-seconds 60",
     },
     {
+        "command": "sat download-live-gate",
+        "purpose": "Run the controlled v1.5 package download gate for one package after EstadoSolicitud=3 and IdsPaquetes.",
+        "when": "Use only after explicit approval; it validates ZIP bytes in memory and does not parse XML/PDF.",
+        "example": "cfdi-vault sat download-live-gate --profile default --request-ref <request-ref> --manual-real-sat --permit PERMIT_ID --connect-timeout-seconds 15 --read-timeout-seconds 180",
+    },
+    {
         "command": "sat inspect-auth-contract",
         "purpose": "Fetch the public SAT auth WSDL and print only a redacted contract summary.",
         "when": "Run before auth envelope compatibility work; never stores or prints raw WSDL.",

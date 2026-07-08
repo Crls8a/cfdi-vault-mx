@@ -4,6 +4,21 @@ from __future__ import annotations
 
 from time import perf_counter
 
+from cfdi_vault.sat_contract import SatDownloadResult, SatVerificationResult
+from cfdi_vault.sat_download_live_gate import (
+    DEFAULT_DOWNLOAD_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_DOWNLOAD_READ_TIMEOUT_SECONDS,
+    MAX_DOWNLOAD_CONNECT_TIMEOUT_SECONDS,
+    MAX_DOWNLOAD_READ_TIMEOUT_SECONDS,
+    DownloadLiveGatePreflight,
+    DownloadOracleParityResult,
+    DownloadWsdlCheckResult,
+    build_download_live_gate_preflight,
+    check_download_wsdl_endpoint,
+    resolve_download_gate_timeout_config,
+    run_download_oracle_parity,
+)
+from cfdi_vault.sat_package_download_offline import evaluate_package_download_gate, inspect_package_zip_bytes
 from cfdi_vault.sat_verify_live_gate import (
     DEFAULT_VERIFY_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_VERIFY_READ_TIMEOUT_SECONDS,
@@ -64,6 +79,91 @@ def _live_package_downloader(profile_id: str, *, live_permit_verified: bool = Fa
         provider=_setup_provider(profile_id),
         transport=_live_smoke_transport(live_permit_verified=live_permit_verified),
     )
+
+def _live_download_gate_adapter(
+    profile_id: str,
+    *,
+    live_permit_verified: bool = False,
+    connect_timeout_seconds: float | None = None,
+    read_timeout_seconds: float | None = None,
+) -> SatLiveMetadataSmokeAdapter:
+    profile = _load_download_profile(profile_id)
+    timeout_seconds = read_timeout_seconds or DEFAULT_DOWNLOAD_READ_TIMEOUT_SECONDS
+    return SatLiveMetadataSmokeAdapter(
+        profile=profile,
+        provider=_setup_provider(profile_id),
+        transport=_live_smoke_transport(live_permit_verified=live_permit_verified),
+        timeout_seconds=timeout_seconds,
+        connect_timeout_seconds=connect_timeout_seconds,
+        read_timeout_seconds=read_timeout_seconds if connect_timeout_seconds is not None else None,
+    )
+
+def _run_live_download_gate_verify(
+    profile_id: str,
+    request_id: str,
+    *,
+    live_permit_verified: bool = False,
+    connect_timeout_seconds: float | None = None,
+    read_timeout_seconds: float | None = None,
+) -> tuple[SatVerificationResult, int]:
+    started = perf_counter()
+    result = _live_download_gate_adapter(
+        profile_id,
+        live_permit_verified=live_permit_verified,
+        connect_timeout_seconds=connect_timeout_seconds,
+        read_timeout_seconds=read_timeout_seconds,
+    ).verify_request(request_id)
+    return result, max(0, int((perf_counter() - started) * 1000))
+
+def _run_live_download_gate_download(
+    profile_id: str,
+    package_id: str,
+    *,
+    live_permit_verified: bool = False,
+    connect_timeout_seconds: float | None = None,
+    read_timeout_seconds: float | None = None,
+) -> tuple[SatDownloadResult, int]:
+    started = perf_counter()
+    result = _live_download_gate_adapter(
+        profile_id,
+        live_permit_verified=live_permit_verified,
+        connect_timeout_seconds=connect_timeout_seconds,
+        read_timeout_seconds=read_timeout_seconds,
+    ).download_package(package_id)
+    return result, max(0, int((perf_counter() - started) * 1000))
+
+def _load_package_record_or_none(
+    profile: setup_flow.LocalProfile | None,
+    package_ref: str | None,
+) -> LiveMetadataRequestRecord | None:
+    if profile is None or not package_ref:
+        return None
+    requested = str(package_ref).strip()
+    try:
+        records = list_live_metadata_requests(profile.storage_root)
+    except LiveRequestStateError:
+        return None
+    for record in records:
+        if record.profile_id == profile.profile_id and requested in record.package_refs_redacted:
+            return record
+    return None
+
+def _resolve_package_id_or_none(record: LiveMetadataRequestRecord | None, package_ref: str | None) -> str | None:
+    if record is None or not package_ref:
+        return None
+    requested = str(package_ref).strip()
+    for package_id in record.package_ids:
+        if redact_package_ref(package_id) == requested:
+            return package_id
+    return None
+
+def _select_verified_package_id(verification: SatVerificationResult, package_ref: str | None) -> str | None:
+    if not verification.package_ids:
+        return None
+    if not package_ref:
+        return verification.package_ids[0]
+    requested = str(package_ref).strip()
+    return next((package_id for package_id in verification.package_ids if redact_package_ref(package_id) == requested), None)
 
 def _resolve_package_id(record: LiveMetadataRequestRecord, package_ref: str) -> str:
     requested = str(package_ref or "").strip()
@@ -475,6 +575,192 @@ def sat_verify_live_gate(
     if not preflight.ready or oracle.status != "passed" or result is None:
         raise typer.Exit(code=1)
 
+def sat_download_live_gate(
+    profile: str = typer.Option("default", "--profile", help="Local setup profile id."),
+    request_ref: str | None = typer.Option(None, "--request-ref", help="Local request reference to verify before download."),
+    package_ref: str | None = typer.Option(None, "--package-ref", help="Redacted package reference from local finished verify state."),
+    manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Required human gate for real SAT download."),
+    permit: str | None = typer.Option(None, "--permit", help="One-time local package download permit id."),
+    connect_timeout_seconds: float | None = typer.Option(
+        None,
+        "--connect-timeout-seconds",
+        min=1.0,
+        max=MAX_DOWNLOAD_CONNECT_TIMEOUT_SECONDS,
+        help=f"Gate-only connect timeout in seconds. Defaults to {DEFAULT_DOWNLOAD_CONNECT_TIMEOUT_SECONDS:g}.",
+    ),
+    read_timeout_seconds: float | None = typer.Option(
+        None,
+        "--read-timeout-seconds",
+        min=1.0,
+        max=MAX_DOWNLOAD_READ_TIMEOUT_SECONDS,
+        help=f"Gate-only download read timeout in seconds. Defaults to {DEFAULT_DOWNLOAD_READ_TIMEOUT_SECONDS:g}.",
+    ),
+) -> None:
+    """Run the controlled v1.5 package download live gate for one package only."""
+
+    local_profile = _load_download_profile_or_none(profile)
+    provider = _setup_provider(profile) if local_profile is not None else None
+    request_record = _load_request_record_or_none(local_profile, request_ref) if local_profile is not None and request_ref else None
+    package_record = (
+        _load_package_record_or_none(local_profile, package_ref)
+        if local_profile is not None and package_ref and request_record is None
+        else None
+    )
+    record = request_record or package_record
+    local_package_id = _resolve_package_id_or_none(record, package_ref) if record is not None and package_ref else None
+    timeout_config = resolve_download_gate_timeout_config(
+        connect_timeout_seconds=connect_timeout_seconds,
+        read_timeout_seconds=read_timeout_seconds,
+        env=os.environ,
+    )
+    preflight = build_download_live_gate_preflight(
+        profile=local_profile,
+        record=record,
+        provider=provider,
+        env=os.environ,
+        manual_real_sat=manual_real_sat,
+        permit_ref=permit,
+        request_ref=request_ref,
+        package_ref=package_ref,
+        package_id=local_package_id,
+        connect_timeout_seconds=timeout_config.connect_timeout_seconds,
+        read_timeout_seconds=timeout_config.read_timeout_seconds,
+        timeout_invalid=timeout_config.invalid,
+        repo_root=_find_checkout_root(Path.cwd()),
+    )
+    wsdl_check = DownloadWsdlCheckResult(status="not-run", reachable=False)
+    oracle = DownloadOracleParityResult(status="not-run", reason="preflight-not-ready")
+    result = DownloadLiveGateCliResult(
+        request_ref=record.request_ref if record is not None else "",
+        package_ref=package_ref or "",
+        verify_executed=False,
+        download_executed=False,
+        estado_solicitud="not-run",
+        codigo_estado="not_reported",
+        numero_cfdis=None,
+        ids_paquetes_count=0,
+        package_received=False,
+        decoded_bytes=0,
+        zip_valid=False,
+        zip_entries_count=0,
+    )
+    live_executed = False
+    error_kind = ""
+    if preflight.ready and local_profile is not None and provider is not None and record is not None:
+        wsdl_check = check_download_wsdl_endpoint(connect_timeout_seconds=preflight.connect_timeout_seconds)
+        error_kind = wsdl_check.error_kind
+        if wsdl_check.status == "passed":
+            query = _query_from_live_request_record(local_profile.rfc, record)
+            permit_verified = _validate_live_smoke_guard(
+                profile_id=profile,
+                manual_real_sat=manual_real_sat,
+                query=query,
+                metadata_only=True,
+                range_within_limit=_is_backfill_submit_range(query),
+                mode="download-live-gate",
+                permit_ref=permit,
+                permit_scope=PACKAGE_DOWNLOAD_SCOPE,
+            )
+            package_id = local_package_id
+            if request_ref:
+                try:
+                    verification, _verify_elapsed_ms = _run_live_download_gate_verify(
+                        profile,
+                        record.id_solicitud,
+                        live_permit_verified=permit_verified,
+                        connect_timeout_seconds=preflight.connect_timeout_seconds,
+                        read_timeout_seconds=preflight.read_timeout_seconds,
+                    )
+                    live_executed = True
+                    package_id = _select_verified_package_id(verification, package_ref)
+                    gate = evaluate_package_download_gate(verification.state, verification.package_ids)
+                    result = replace(
+                        result,
+                        verify_executed=True,
+                        estado_solicitud=verification.state.value,
+                        codigo_estado=verification.sat_code,
+                        numero_cfdis=len(verification.package_ids),
+                        ids_paquetes_count=len(verification.package_ids),
+                        package_ref=redact_package_ref(package_id or "") if package_id else (package_ref or ""),
+                    )
+                    if not gate.allowed:
+                        error_kind = gate.reason
+                        package_id = None
+                    elif package_id is None:
+                        error_kind = "package-ref-not-in-live-verify"
+                except SatLiveSmokeError as exc:
+                    live_executed = exc.failed_stage in {
+                        "auth_transport",
+                        "auth_response_parse",
+                        "token_extract",
+                        "verify_transport",
+                        "verify_response_parse",
+                    }
+                    error_kind = exc.error_kind
+            elif package_id is not None:
+                gate = evaluate_package_download_gate(record.sat_estado_solicitud or "3", record.package_ids)
+                result = replace(
+                    result,
+                    estado_solicitud=record.sat_estado_solicitud or "finished",
+                    codigo_estado=record.sat_codigo_estado or record.sat_code,
+                    numero_cfdis=record.numero_cfdis,
+                    ids_paquetes_count=len(record.package_ids),
+                )
+                if not gate.allowed:
+                    error_kind = gate.reason
+                    package_id = None
+            if package_id:
+                try:
+                    oracle = run_download_oracle_parity(profile=local_profile, package_id=package_id, provider=provider)
+                except SatLiveSmokeError as exc:
+                    oracle = DownloadOracleParityResult(status="failed", reason=exc.error_kind)
+                if oracle.status == "passed":
+                    try:
+                        download, _download_elapsed_ms = _run_live_download_gate_download(
+                            profile,
+                            package_id,
+                            live_permit_verified=permit_verified,
+                            connect_timeout_seconds=preflight.connect_timeout_seconds,
+                            read_timeout_seconds=preflight.read_timeout_seconds,
+                        )
+                        live_executed = True
+                        content = download.content if download.action == SatOutcomeAction.FINISHED else None
+                        inspection = inspect_package_zip_bytes(content or b"")
+                        result = replace(
+                            result,
+                            download_executed=True,
+                            package_received=content is not None,
+                            decoded_bytes=len(content or b""),
+                            zip_valid=inspection.zip_valid,
+                            zip_entries_count=inspection.entry_count,
+                            package_ref=redact_package_ref(package_id),
+                        )
+                        if download.action != SatOutcomeAction.FINISHED:
+                            error_kind = download.action.value
+                        elif not inspection.zip_valid:
+                            error_kind = "zip-invalid"
+                    except SatLiveSmokeError as exc:
+                        live_executed = exc.failed_stage in {
+                            "auth_transport",
+                            "auth_response_parse",
+                            "token_extract",
+                            "package_download",
+                        }
+                        error_kind = exc.error_kind
+                else:
+                    error_kind = oracle.reason
+    _print_download_live_gate_result(
+        profile_id=profile,
+        preflight=preflight,
+        oracle=oracle,
+        wsdl_check=wsdl_check,
+        result=result,
+        live_executed=live_executed,
+        error_kind=error_kind or oracle.reason,
+    )
+    if not result.download_executed or not result.zip_valid:
+        raise typer.Exit(code=1)
+
 def _print_verify_live_gate_result(
     *,
     profile_id: str,
@@ -546,6 +832,81 @@ def _print_verify_live_gate_result(
     typer.echo("full_id_paquete_visible=no")
     typer.echo(f"verify_elapsed_ms={verify_elapsed_ms if verify_elapsed_ms is not None else 'not_reported'}")
     typer.echo(f"error_kind={error_kind or oracle.reason or 'none'}")
+
+def _print_download_live_gate_result(
+    *,
+    profile_id: str,
+    preflight: DownloadLiveGatePreflight,
+    oracle: DownloadOracleParityResult,
+    wsdl_check: DownloadWsdlCheckResult,
+    result: DownloadLiveGateCliResult,
+    live_executed: bool,
+    error_kind: str,
+) -> None:
+    completed = result.download_executed and result.zip_valid and oracle.status == "passed"
+    typer.echo("mode=download-live-gate")
+    typer.echo(f"profile={profile_id}")
+    typer.echo(f"completed={_yes_no(completed)}")
+    typer.echo(f"live_sat_executed={_yes_no(live_executed)}")
+    typer.echo(f"verify_executed={_yes_no(result.verify_executed)}")
+    typer.echo(f"download_live_executed={_yes_no(result.download_executed)}")
+    typer.echo(f"production_signed={_yes_no(preflight.opt_in_production_signed and oracle.status == 'passed')}")
+    typer.echo(f"oracle_parity={oracle.status}")
+    typer.echo(f"wsdl_check={wsdl_check.status}")
+    typer.echo(f"connect_timeout_seconds={preflight.connect_timeout_seconds:g}")
+    typer.echo(f"read_timeout_seconds={preflight.read_timeout_seconds:g}")
+    typer.echo(f"preflight_ready={_yes_no(preflight.ready)}")
+    typer.echo(f"preflight_missing={','.join(preflight.missing) if preflight.missing else 'none'}")
+    typer.echo(f"opt_in_live={_yes_no(preflight.opt_in_live)}")
+    typer.echo(f"opt_in_production_signed={_yes_no(preflight.opt_in_production_signed)}")
+    typer.echo(f"manual_real_sat={_yes_no(preflight.manual_real_sat)}")
+    typer.echo(f"permit_present={_yes_no(preflight.permit_present)}")
+    typer.echo(f"request_ref_present={_yes_no(preflight.request_ref_present)}")
+    typer.echo(f"package_ref_present={_yes_no(preflight.package_ref_present)}")
+    typer.echo(f"profile_ready={_yes_no(preflight.profile_ready)}")
+    typer.echo(f"certificate_local_detected={_yes_no(preflight.certificate_local_detected)}")
+    typer.echo(f"private_key_local_detected={_yes_no(preflight.private_key_local_detected)}")
+    typer.echo(f"phrase_available={_yes_no(preflight.phrase_available)}")
+    typer.echo(f"rfc_redacted={preflight.rfc_redacted}")
+    typer.echo(f"id_solicitud_redacted={preflight.id_solicitud_redacted}")
+    typer.echo(f"id_paquete_redacted={result.package_ref or preflight.id_paquete_redacted}")
+    typer.echo(f"endpoint_download={preflight.endpoint_download}")
+    typer.echo(f"soap_action={preflight.soap_action}")
+    typer.echo(f"wsdl_reachable={_yes_no(wsdl_check.reachable)}")
+    typer.echo(f"wsdl_http_status={wsdl_check.status_code if wsdl_check.status_code is not None else 'not_reported'}")
+    typer.echo(f"wsdl_elapsed_ms={wsdl_check.elapsed_ms if wsdl_check.elapsed_ms is not None else 'not_reported'}")
+    typer.echo(f"wsdl_error_kind={wsdl_check.error_kind or 'none'}")
+    typer.echo("raw_wsdl_persisted=no")
+    typer.echo(f"oracle_operation={oracle.operation or 'not-run'}")
+    typer.echo(f"oracle_namespace={oracle.namespace or 'not-run'}")
+    typer.echo(f"oracle_signature_placement={oracle.signature_placement or 'not-run'}")
+    typer.echo(f"oracle_signed_target={oracle.signed_target or 'not-run'}")
+    typer.echo(f"oracle_canonicalization={oracle.canonicalization or 'not-run'}")
+    typer.echo(f"oracle_x509_issuer_serial={_yes_no(oracle.x509_issuer_serial)}")
+    typer.echo(f"oracle_x509_certificate={_yes_no(oracle.x509_certificate)}")
+    typer.echo(f"oracle_expected_response={oracle.expected_response}")
+    typer.echo(f"request_ref={result.request_ref or 'not_reported'}")
+    typer.echo(f"package_ref={result.package_ref or 'not_reported'}")
+    typer.echo(f"estado_solicitud={result.estado_solicitud}")
+    typer.echo(f"codigo_estado={result.codigo_estado}")
+    typer.echo(f"numero_cfdis={result.numero_cfdis if result.numero_cfdis is not None else 'not_reported'}")
+    typer.echo(f"ids_paquetes_count={result.ids_paquetes_count}")
+    typer.echo("ids_paquetes_full_visible=no")
+    typer.echo(f"paquete_recibido={_yes_no(result.package_received)}")
+    typer.echo("base64_printed=no")
+    typer.echo(f"bytes_decoded={result.decoded_bytes}")
+    typer.echo(f"zip_valid={_yes_no(result.zip_valid)}")
+    typer.echo(f"zip_entries_count={result.zip_entries_count}")
+    typer.echo("xml_parsed=no")
+    typer.echo("pdf_generated=no")
+    typer.echo(f"zip_persisted={_yes_no(result.zip_persisted)}")
+    typer.echo("raw_soap_persisted=no")
+    typer.echo("raw_response_persisted=no")
+    typer.echo("authorization_value_visible=no")
+    typer.echo("full_rfc_visible=no")
+    typer.echo("full_id_solicitud_visible=no")
+    typer.echo("full_id_paquete_visible=no")
+    typer.echo(f"error_kind={error_kind or 'none'}")
 
 def _load_download_profile_or_none(profile_id: str) -> setup_flow.LocalProfile | None:
     try:

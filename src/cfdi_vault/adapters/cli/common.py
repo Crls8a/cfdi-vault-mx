@@ -141,6 +141,26 @@ class PackageDownloadCliResult:
     metadata_rejected_count: int
     status_after: str
 
+
+@dataclass(frozen=True)
+class DownloadLiveGateCliResult:
+    """Redacted live package download gate result for CLI output."""
+
+    request_ref: str
+    package_ref: str
+    verify_executed: bool
+    download_executed: bool
+    estado_solicitud: str
+    codigo_estado: str
+    numero_cfdis: int | None
+    ids_paquetes_count: int
+    package_received: bool
+    decoded_bytes: int
+    zip_valid: bool
+    zip_entries_count: int
+    zip_persisted: bool = False
+
+
 class LiveSmokeAdapterUnavailable(RuntimeError):
     """Raised after guards pass when the real live adapter is not wired yet."""
 

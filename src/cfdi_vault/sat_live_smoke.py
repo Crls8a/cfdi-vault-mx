@@ -887,8 +887,18 @@ def _build_verify_envelope(request_id: str, requester_rfc: str, material: SatEfi
 
 
 def _build_package_download_envelope(package_id: str, requester_rfc: str, material: SatEfirmMaterial) -> bytes:
-    payload = _signed_payload("peticionDescarga", {"IdPaquete": package_id, "RfcSolicitante": requester_rfc.upper()}, material)
-    return _operation_envelope("Descargar", payload)
+    operation = etree.Element(f"{{{SAT_REQUEST_NS}}}Descargar", nsmap={"des": SAT_REQUEST_NS})
+    peticion = etree.SubElement(
+        operation,
+        f"{{{SAT_REQUEST_NS}}}peticionDescarga",
+        {"IdPaquete": package_id, "RfcSolicitante": requester_rfc.upper()},
+    )
+    peticion.append(_build_v15_package_download_signature(operation, material))
+    envelope = _envelope(SAT_REQUEST_NS)
+    body = envelope.find(f"{{{SOAP11_NS}}}Body")
+    assert body is not None
+    body.append(operation)
+    return etree.tostring(envelope, encoding="UTF-8", xml_declaration=True)
 
 
 def _signed_payload(name: str, attrs: dict[str, str], material: SatEfirmMaterial) -> etree._Element:
@@ -902,6 +912,14 @@ def _signed_payload(name: str, attrs: dict[str, str], material: SatEfirmMaterial
 
 
 def _build_v15_verify_signature(operation: etree._Element, material: SatEfirmMaterial) -> etree._Element:
+    return _build_v15_signed_operation_signature(operation, material)
+
+
+def _build_v15_package_download_signature(operation: etree._Element, material: SatEfirmMaterial) -> etree._Element:
+    return _build_v15_signed_operation_signature(operation, material)
+
+
+def _build_v15_signed_operation_signature(operation: etree._Element, material: SatEfirmMaterial) -> etree._Element:
     digest_value = base64.b64encode(hashlib.sha1(_exclusive_c14n(operation)).digest()).decode("ascii")
     signature = etree.Element(f"{{{DS_NS}}}Signature", nsmap={None: DS_NS})
     signed_info = etree.SubElement(signature, f"{{{DS_NS}}}SignedInfo")

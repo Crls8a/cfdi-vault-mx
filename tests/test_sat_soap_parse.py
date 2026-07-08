@@ -106,6 +106,8 @@ def test_parse_package_download_response_decodes_content_and_classifies_errors()
     assert downloaded.action == SatOutcomeAction.FINISHED
     assert downloaded.content == b"SYNTHETIC-PACKAGE::SYN-PKG-001\n"
     assert downloaded.raw_response["content_length"] == len(downloaded.content)
+    assert "SYN-PKG-001" not in repr(downloaded)
+    assert "SYN-...-001" in repr(downloaded)
     assert "SYNTHETIC-PACKAGE" not in repr(downloaded)
     assert payload not in repr(downloaded)
     assert "content=<redacted>" in repr(downloaded)

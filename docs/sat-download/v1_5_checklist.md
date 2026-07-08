@@ -68,10 +68,17 @@ Use this checklist before changing SAT Download behavior or approving a live gat
 ## Download
 
 - `Descargar`.
+- Endpoint: `https://cfdidescargamasiva.clouda.sat.gob.mx/DescargaMasivaService.svc`.
+- SOAPAction: `http://DescargaMasivaTerceros.sat.gob.mx/IDescargaMasivaTercerosService/Descargar`.
 - Authorization WRAP header.
 - `IdPaquete`.
 - `RfcSolicitante`.
 - `Signature`.
+- Signature shape must follow the v1.5 verify-safe profile unless a future validated contract proves otherwise:
+  - `signed_target=operation_wrapper`.
+  - `signature_placement=inside_peticion_descarga`.
+  - exclusive c14n.
+  - `X509IssuerSerial` + `X509Certificate`.
 - Response contains `Paquete` / base64 / ZIP according to validated contract.
 - Decode the package and treat it as ZIP.
 - Do not execute until `EstadoSolicitud=3` plus `IdsPaquetes` exists.

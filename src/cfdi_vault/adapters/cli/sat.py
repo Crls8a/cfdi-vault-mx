@@ -14,7 +14,13 @@ from .sat_auth import (
 from .sat_backfill import sat_backfill_plan, sat_backfill_submit
 from .sat_metadata import sat_diagnose_live, sat_metadata_request_smoke, sat_metadata_request_state
 from .sat_probes import sat_probe_auth_matrix, sat_probe_auth_post, sat_probe_transport, sat_probe_verify_post
-from .sat_verify import sat_metadata_verify_smoke, sat_package_download_smoke, sat_verify_due, sat_verify_live_gate
+from .sat_verify import (
+    sat_download_live_gate,
+    sat_metadata_verify_smoke,
+    sat_package_download_smoke,
+    sat_verify_due,
+    sat_verify_live_gate,
+)
 
 
 def register(sat_app: typer.Typer, backfill_app: typer.Typer) -> None:
@@ -29,6 +35,7 @@ def register(sat_app: typer.Typer, backfill_app: typer.Typer) -> None:
     sat_app.command("package-download-smoke")(sat_package_download_smoke)
     sat_app.command("metadata-verify-smoke")(sat_metadata_verify_smoke)
     sat_app.command("verify-live-gate")(sat_verify_live_gate)
+    sat_app.command("download-live-gate")(sat_download_live_gate)
     sat_app.command("inspect-auth-contract")(sat_inspect_auth_contract)
     sat_app.command("lint-auth-envelope")(sat_lint_auth_envelope)
     sat_app.command("oracle-auth-fingerprint")(sat_oracle_auth_fingerprint)

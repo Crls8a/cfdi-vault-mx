@@ -83,6 +83,14 @@ cfdi-vault sat verify-live-gate `
   --permit <PERMIT_ID> `
   --connect-timeout-seconds 15 `
   --read-timeout-seconds 60
+
+cfdi-vault sat download-live-gate `
+  --profile <PROFILE_ID> `
+  --request-ref <REQUEST_REF> `
+  --manual-real-sat `
+  --permit <PERMIT_ID> `
+  --connect-timeout-seconds 15 `
+  --read-timeout-seconds 180
 ```
 
 Use `--direction issued` only when that exact direction is approved for the manual run.
@@ -238,6 +246,73 @@ Controlled timeout-diagnostics rerun after adding gate-only connect/read timeout
 - raw SOAP persisted: no;
 - raw SAT response persisted: no;
 - result: completed; the verify response was received without packages and no download was attempted.
+
+## Package/download offline gate
+
+The package/download contract is prepared offline only. It does not authorize or execute a real package download.
+
+Current offline scope:
+
+1. Build the `Descargar` SOAP envelope with `peticionDescarga`.
+2. Keep the WRAP token in the HTTP `Authorization` header, never in XML.
+3. Sign the v1.5 operation wrapper with exclusive c14n and `X509IssuerSerial` + `X509Certificate`.
+4. Parse a synthetic `Paquete` base64 response as ZIP bytes.
+5. Block download unless verify has `EstadoSolicitud=3` and at least one package id.
+
+Next live step is allowed only after a future verify result returns packages:
+
+- `EstadoSolicitud=3`;
+- `IdsPaquetes` present;
+- Carlos approves that exact live package/download gate;
+- no XML/PDF parsing is enabled in the same run;
+- copied evidence remains redacted and contains no package id, raw SOAP, raw SAT response, token, RFC, or ZIP bytes.
+
+## Download v1.5 live gate
+
+Use `sat download-live-gate` only after a package id is available from `EstadoSolicitud=3`.
+
+Safe command shapes:
+
+```powershell
+cfdi-vault sat download-live-gate `
+  --profile <PROFILE_ID> `
+  --request-ref <REQUEST_REF> `
+  --manual-real-sat `
+  --permit <PERMIT_ID> `
+  --connect-timeout-seconds 15 `
+  --read-timeout-seconds 180
+
+cfdi-vault sat download-live-gate `
+  --profile <PROFILE_ID> `
+  --package-ref <PACKAGE_REF> `
+  --manual-real-sat `
+  --permit <PERMIT_ID> `
+  --connect-timeout-seconds 15 `
+  --read-timeout-seconds 180
+```
+
+Gate behavior:
+
+- `--request-ref` may run at most one live verify first to confirm `EstadoSolicitud=3` and `IdsPaquetes`.
+- `--package-ref` must resolve to local sanitized state that already proves package readiness.
+- exactly one package is selected;
+- the download WSDL/endpoint check runs read-only and does not read or persist raw WSDL;
+- oracle parity must pass before download;
+- one live download call is allowed, with no automatic retry;
+- the `Paquete` base64 is never printed;
+- ZIP bytes are decoded and inspected in memory, then discarded by default;
+- XML/PDF parsing remains out of scope;
+- raw SOAP and raw SAT responses are never persisted.
+
+Allowed result evidence:
+
+- preflight status and missing gates;
+- WSDL reachable/status/elapsed only;
+- oracle structural fields;
+- `EstadoSolicitud`, `CodigoEstado`, `NumeroCFDIs`, and package count;
+- whether a package arrived, decoded byte count, ZIP validity, and ZIP entry count.
+
+Forbidden result evidence remains unchanged: no token, full RFC, full `IdSolicitud`, full `IdPaquete`, raw SOAP, raw SAT response, base64 package, ZIP artifact, XML, or PDF.
 
 ## Required confirmation
 
