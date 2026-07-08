@@ -62,7 +62,7 @@ flowchart TD
 | 2. Domain request model | Queries can be built, validated, and hashed. | Unit tests for valid/invalid combinations. |
 | 3. XML builders | SOAP and XMLDSig builders produce deterministic XML. | Golden tests with synthetic credentials. |
 | 4. Transport abstraction | SOAP requests can be sent through an injectable client. | Fake transport tests; no live SAT in CI. |
-| 5. Response parsers | Authentication, request, verification, and download responses parse safely. | Fixture tests for success and common errors. |
+| 5. Response parsers | Authentication, request, verification, and download responses parse safely. | Fixture tests for success and common errors; package/download offline decodes synthetic `Paquete` as ZIP only after the verify gate is ready. |
 | 6. Persistence | Requests/packages are resumable and idempotent. | SQLite tests for duplicate query and package attempts. |
 | 7. Metadata ledger | Metadata packages become canonical expected-document rows. | Tests for TXT metadata parsing, dedupe, and status updates. |
 | 8. Reconciliation engine | UUIDs are classified before XML retries. | Tests for pending, downloaded, cancelled, expired, quota-limited, and manual-review states. |
@@ -89,6 +89,7 @@ flowchart TD
 - [ ] XML building is deterministic.
 - [ ] All SAT responses preserve raw code/message in typed errors.
 - [ ] Package bytes are stored and hashed before extraction.
+- [ ] Package/download is gated by `EstadoSolicitud=3` plus package ids before any live download attempt.
 - [ ] Metadata ledger can explain what exists, what is missing, and why.
 - [ ] Credential custody mode is explicit during setup.
 - [ ] User-facing errors redact secrets and include next action.

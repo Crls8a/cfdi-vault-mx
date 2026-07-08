@@ -63,6 +63,7 @@ Runtime WSDL must be checked before endpoint/operation changes.
 | Content type | `text/xml` or `text/xml; charset=utf-8`, confirmed per WSDL/operation. |
 | Authorization after authentication | Header format: `Authorization: WRAP access_token="..."`. |
 | Request signing | XMLDSig over the v1.5 request payload, using the e.firma certificate/private key. |
+| Verify/package signature profile | Signature remains inside the operation payload, but the digest target is the operation wrapper with exclusive c14n and `X509IssuerSerial` + `X509Certificate`. |
 | Download response | SOAP XML containing a base64-encoded ZIP package. |
 | Metadata package | TXT rows inside ZIP; CSV is local export. |
 
@@ -73,7 +74,8 @@ Runtime WSDL must be checked before endpoint/operation changes.
 | Request accepted | Persist `id_solicitud`, query criteria, and query hash before polling. |
 | Request processing | Poll with backoff; do not spin in a tight loop. |
 | Request finished | Persist every `id_paquete` before downloading. |
-| Package downloaded | Persist raw ZIP bytes or object-storage reference, SHA-256, and attempt count. |
+| Package download gate | Download only after `EstadoSolicitud=3` and package ids exist. |
+| Package downloaded | Persist raw ZIP bytes or object-storage reference, SHA-256, and attempt count before extraction. |
 | Package expired | Mark terminal state; do not retry forever. |
 | Package downloaded twice | Treat as exhausted; require a new valid request. |
 

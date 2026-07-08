@@ -239,6 +239,26 @@ Controlled timeout-diagnostics rerun after adding gate-only connect/read timeout
 - raw SAT response persisted: no;
 - result: completed; the verify response was received without packages and no download was attempted.
 
+## Package/download offline gate
+
+The package/download contract is prepared offline only. It does not authorize or execute a real package download.
+
+Current offline scope:
+
+1. Build the `Descargar` SOAP envelope with `peticionDescarga`.
+2. Keep the WRAP token in the HTTP `Authorization` header, never in XML.
+3. Sign the v1.5 operation wrapper with exclusive c14n and `X509IssuerSerial` + `X509Certificate`.
+4. Parse a synthetic `Paquete` base64 response as ZIP bytes.
+5. Block download unless verify has `EstadoSolicitud=3` and at least one package id.
+
+Next live step is allowed only after a future verify result returns packages:
+
+- `EstadoSolicitud=3`;
+- `IdsPaquetes` present;
+- Carlos approves that exact live package/download gate;
+- no XML/PDF parsing is enabled in the same run;
+- copied evidence remains redacted and contains no package id, raw SOAP, raw SAT response, token, RFC, or ZIP bytes.
+
 ## Required confirmation
 
 Before any future command performs network I/O, the operator must see a visible warning and confirm the exact run interactively by typing:
