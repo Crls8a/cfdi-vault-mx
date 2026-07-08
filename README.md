@@ -27,7 +27,7 @@ CFDI Vault MX is a development-stage case study and reference implementation. It
 | Intended use today | Learning, architecture review, local development, and contribution discussion. |
 | Contact | Open a GitHub issue for questions, collaboration, or responsible disclosure before depending on unsupported behavior. |
 
-The current code uses one durable data direction: PostgreSQL. RabbitMQ handles jobs, Redis handles transient state, and Docker Compose scaffolds the local runtime.
+The current code uses one durable data direction: PostgreSQL. Flyway owns schema bootstrap, RabbitMQ handles jobs, Redis handles transient state, and Docker Compose scaffolds the local runtime.
 
 Important database boundary: synthetic import checks, recovery jobs, package/XML evidence, reconciliation, accounting search, and queue audit all belong in PostgreSQL.
 
@@ -57,6 +57,7 @@ Live SAT SOAP access is still intentionally disabled until signing, credential c
 4. Import sample XML into PostgreSQL:
 
    ```bash
+   export DATABASE_URL=postgresql+psycopg://cfdi_vault:cfdi_vault@localhost:5432/cfdi_vault
    cfdi-vault help
    cfdi-vault import-xml examples/synthetic-cfdi/invoice-income.xml
    ```
@@ -73,6 +74,7 @@ Live SAT SOAP access is still intentionally disabled until signing, credential c
    ```powershell
    Copy-Item .env.example .env
    docker compose up -d --build postgres rabbitmq redis
+   docker compose run --rm flyway
    docker compose run --rm app doctor
    docker compose run --rm app sync metadata --rfc XAXX010101000 --start 2024-01-01 --end 2024-01-31
    docker compose run --rm app search fake
@@ -117,8 +119,12 @@ Windows local setup can also use:
 For the no-Docker local installer alpha, run:
 
 ```powershell
-.\scripts\bootstrap_local.ps1
+.\scripts\bootstrap_local.ps1 `
+  -DatabaseUrl "postgresql+psycopg://cfdi_vault:cfdi_vault@localhost:5432/cfdi_vault" `
+  -TestDatabaseUrl "postgresql+psycopg://cfdi_vault:cfdi_vault@localhost:5432/cfdi_vault_test"
 ```
+
+`-TestDatabaseUrl` must point to a disposable PostgreSQL database because tests reset the schema from the Flyway baseline.
 
 See `docs/installer/local-installer-alpha.md` for the editable install and fake/offline first-use flow.
 
@@ -151,6 +157,7 @@ Do not treat the package as published until the release gates in `docs/release/p
 | Setup | Creates a local AppData RFC profile, imports credential files outside the repo, and stores the private-key phrase through a secret provider. |
 | Onboarding | Creates a safe local profile config with storage, RFC, schedule, certificate fingerprint, and credential references only. |
 | Fake SAT sync | Creates deterministic metadata/package rows without network access. |
+| Schema bootstrap | Uses Flyway migrations under `db/migration/` for PostgreSQL startup. |
 | Queue events | Records RabbitMQ-style queue events; RabbitMQ adapter is available through `.[infra]`. |
 | Cache/progress | Uses a cache port; Redis adapter is available through `.[infra]`. |
 | Recovery database | Uses PostgreSQL as the durable target for jobs, evidence, reconciliation, and accounting search. |
@@ -183,7 +190,8 @@ Do not treat the package as published until the release gates in `docs/release/p
 | `src/cfdi_vault/recovery_db.py` | PostgreSQL-targeted recovery/accounting schema. |
 | `src/cfdi_vault/queueing.py` | In-memory and RabbitMQ queue adapters. |
 | `src/cfdi_vault/cache.py` | In-memory and Redis cache adapters. |
-| `docker-compose.yml` | Local PostgreSQL/RabbitMQ/Redis stack. |
+| `db/migration/` | Flyway PostgreSQL migrations. |
+| `docker-compose.yml` | Local PostgreSQL/Flyway/RabbitMQ/Redis stack. |
 | `examples/config/` | Dummy safe profile config examples. |
 | `examples/synthetic-cfdi/` | Fake XML examples only. |
 | `tests/` | Parser, import, dedupe, summary, and export tests. |
@@ -192,4 +200,4 @@ Do not treat the package as published until the release gates in `docs/release/p
 
 ## Next step
 
-Read `docs/foundation/infrastructure-boundary.md` before changing database, queue, worker, Redis, Docker, or API behavior.
+Read `docs/foundation/database-queue-api-contract.md` before changing database migrations, queue names, worker flow, Docker, or API behavior.

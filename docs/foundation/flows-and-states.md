@@ -43,7 +43,9 @@ flowchart TD
     E --> F["Store raw ZIP with SHA-256"]
     F --> G["Extract XML files"]
     G --> H["Store XML evidence with SHA-256"]
-    H --> I["Detect CFDI version"]
+    H --> API["Submit storage reference to FastAPI ingestion boundary"]
+    API --> Q["Publish cfdi.parse.xml job"]
+    Q --> I["Worker detects CFDI version"]
     I --> J["Parse known common fields"]
     J --> K{"Known complement?"}
     K -->|Yes| L["Normalize complement"]
@@ -59,6 +61,8 @@ flowchart TD
 sequenceDiagram
     participant User
     participant CLI
+    participant API as FastAPI ingestion API
+    participant MQ as RabbitMQ
     participant Worker
     participant Storage
     participant DB as PostgreSQL
@@ -69,6 +73,9 @@ sequenceDiagram
     Worker->>DB: register package path
     Worker->>Storage: store extracted XML
     Worker->>DB: register XML path and hash
+    Worker->>API: submit storage key for ingestion
+    API->>MQ: enqueue cfdi.parse.xml
+    MQ-->>Worker: deliver ingestion work
     Worker->>DB: load normalized accounting data
     Worker->>DB: update reconciliation state
     User->>CLI: storage locate UUID / search / show
@@ -90,8 +97,14 @@ stateDiagram-v2
     failed --> [*]
     succeeded --> [*]
     manual_review --> [*]
-    dead_letter --> [*]
+dead_letter --> [*]
 ```
+
+## Queue purpose
+
+Queues are the pressure valve after evidence exists. They should be used for stored XML ingestion, parser/enrichment work, reconciliation follow-up, retryable SAT verification/download steps, and backfill batches. They should not carry raw XML, SAT ZIP bytes, e.firma material, or secrets.
+
+The current worker shell processes `sat.request`; the target worker family also needs post-XML ingestion queues such as `cfdi.parse.xml` and `cfdi.reconcile`.
 
 ## Reconciliation states
 

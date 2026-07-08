@@ -14,6 +14,23 @@ jobs:
   test:
     name: Scanner and tests
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: cfdi_vault_test
+          POSTGRES_USER: cfdi_vault
+          POSTGRES_PASSWORD: cfdi_vault
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cfdi_vault -d cfdi_vault_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      CFDI_VAULT_TEST_DATABASE_URL: postgresql+psycopg://cfdi_vault:cfdi_vault@localhost:5432/cfdi_vault_test
+      DATABASE_URL: postgresql+psycopg://cfdi_vault:cfdi_vault@localhost:5432/cfdi_vault_test
 
     steps:
       - name: Checkout
@@ -32,6 +49,18 @@ jobs:
       - name: Run sensitive fixture scanner
         run: |
           python scripts/scan_sensitive_fixtures.py
+
+      - name: Run Flyway migrations
+        run: |
+          docker run --rm --network host \
+            -v "$PWD/db/migration:/flyway/sql:ro" \
+            redgate/flyway \
+            -url=jdbc:postgresql://localhost:5432/cfdi_vault_test \
+            -user=cfdi_vault \
+            -password=cfdi_vault \
+            -locations=filesystem:/flyway/sql \
+            -cleanDisabled=true \
+            migrate
 
       - name: Run tests
         run: |

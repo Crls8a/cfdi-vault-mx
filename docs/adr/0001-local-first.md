@@ -1,8 +1,8 @@
-# ADR 0001: Use a local-first architecture
+# ADR 0001: Start with a local synthetic architecture
 
 Accepted: 2026-07-01
 
-CFDI Vault MX will start as a local-first CLI and SQLite application using synthetic data only. This keeps the architecture reviewable while avoiding premature trust-boundary and compliance risks.
+CFDI Vault MX started as a local CLI using synthetic data only. This kept the architecture reviewable while avoiding premature trust-boundary and compliance risks.
 
 ## Context
 
@@ -14,7 +14,7 @@ Build phase one as:
 
 - Python 3.12-compatible package.
 - Typer CLI named `cfdi-vault`.
-- SQLite default storage through SQLAlchemy.
+- SQLAlchemy persistence behind an explicit database boundary.
 - Synthetic XML fixtures only.
 - No SAT integration, no e.firma upload, no dashboard.
 

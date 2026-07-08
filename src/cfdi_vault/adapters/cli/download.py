@@ -55,12 +55,11 @@ def _print_download_status(*, profile_id: str, status: DownloadStatus) -> None:
 
 def queue_status(
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Show durable queue/job event counts."""
 
-    rows = _service(database_url, recovery_db, storage).queue_status()
+    rows = _service(database_url, storage).queue_status()
     typer.echo("queue,status,count")
     if not rows:
         typer.echo("(no queue events)")
@@ -72,12 +71,11 @@ def worker_run(
     loop: bool = typer.Option(False, "--loop", help="Keep polling the configured queue instead of running once."),
     poll_seconds: float = typer.Option(5.0, "--poll-seconds", min=0.5, help="Polling interval when --loop is used."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Run the recovery worker shell."""
 
-    worker = RecoveryWorker(_service(database_url, recovery_db, storage))
+    worker = RecoveryWorker(_service(database_url, storage))
     if loop:
         worker.run_forever(poll_seconds=poll_seconds)
         return
@@ -93,7 +91,6 @@ def sync_metadata(
     live: bool = typer.Option(False, "--live", help="Use live SAT SOAP. Not implemented in this slice."),
     enqueue: bool = typer.Option(False, "--enqueue", help="Publish the job for a worker instead of processing synchronously."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Submit a metadata sync. Fake SAT is used unless --live is passed."""
@@ -107,7 +104,7 @@ def sync_metadata(
         end=_parse_cli_datetime(end, end_of_day=True),
     )
     _require_queue_for_enqueue(enqueue)
-    result = _service(database_url, recovery_db, storage).sync_metadata(query, live=live, enqueue=enqueue)
+    result = _service(database_url, storage).sync_metadata(query, live=live, enqueue=enqueue)
     typer.echo(f"job_id={result.job_id}")
     typer.echo(f"request_id={result.request_id}")
     typer.echo(f"status={result.status}")
@@ -123,7 +120,6 @@ def sync_xml(
     live: bool = typer.Option(False, "--live", help="Use live SAT SOAP. Not implemented in this slice."),
     enqueue: bool = typer.Option(False, "--enqueue", help="Publish the job for a worker instead of processing synchronously."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Submit an XML/package sync. Fake mode stores packages and extracted XML evidence."""
@@ -137,7 +133,7 @@ def sync_xml(
         end=_parse_cli_datetime(end, end_of_day=True),
     )
     _require_queue_for_enqueue(enqueue)
-    result = _service(database_url, recovery_db, storage).sync_metadata(query, live=live, enqueue=enqueue)
+    result = _service(database_url, storage).sync_metadata(query, live=live, enqueue=enqueue)
     typer.echo(f"job_id={result.job_id}")
     typer.echo(f"request_id={result.request_id}")
     typer.echo(f"status={result.status}")
@@ -192,6 +188,7 @@ def download_sync(
     to_date: str = typer.Option(..., "--to", help="End date: YYYY-MM-DD."),
     kind: str = typer.Option(..., "--kind", help="metadata or cfdi."),
     direction: str = typer.Option(..., "--direction", help="received or issued."),
+    database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
 ) -> None:
     """Run one fake/offline SAT download sync using the setup profile storage root."""
 
@@ -202,7 +199,7 @@ def download_sync(
         kind=kind,
         direction=direction,
     )
-    service = _download_profile_service(loaded_profile)
+    service = _download_profile_service(loaded_profile, database_url)
     try:
         result = service.sync_metadata(query, live=False, enqueue=False)
     finally:
@@ -256,6 +253,7 @@ def download_live_smoke(
 def download_status(
     profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
     job_id: str | None = typer.Option(None, "--job-id", help="Local download job id from download sync."),
+    database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
 ) -> None:
     """Read safe fake download status or async verify scheduler aggregates."""
 
@@ -274,7 +272,7 @@ def download_status(
         return
 
     status = read_download_status(
-        loaded_profile.storage_root / "db" / "recovery.sqlite3",
+        _require_database_url(database_url),
         tenant_id=loaded_profile.profile_id,
         job_id=job_id,
     )

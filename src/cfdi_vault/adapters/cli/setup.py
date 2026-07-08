@@ -244,13 +244,12 @@ def setup_status(
 
 def doctor(
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
     profile_id: str = typer.Option("default", "--profile-id", help="Local setup profile id to inspect."),
 ) -> None:
     """Check database, queue, cache, storage, and setup profile readiness."""
 
-    checks = _service(database_url, recovery_db, storage).doctor()
+    checks = _service(database_url, storage).doctor()
     for check in checks:
         status = "OK" if check.ok else "FAIL"
         typer.echo(f"{status} {check.name}: {check.detail}")

@@ -6,7 +6,7 @@ CFDI Vault MX demonstrates how to build a backend/data product around sensitive 
 
 1. Start with fake CFDI-like XML.
 2. Normalize only the required fields.
-3. Store locally in SQLite.
+3. Store and query the data in PostgreSQL.
 4. Prove behavior with tests.
 5. Expand only after security boundaries are explicit.
 
@@ -33,4 +33,4 @@ Phase one treats CFDI/XML as a data-ingestion problem, not as a tax authority in
 
 ## Next step
 
-Use this repository to discuss phase-two tradeoffs: richer validation, schema migrations, encrypted storage, or a UI. Do not mix those concerns into phase one.
+Use this repository to discuss phase-two tradeoffs: richer validation, schema migrations, encrypted storage, or a UI. Do not mix those concerns into phase one. The system uses PostgreSQL/RabbitMQ/Redis for its runtime infrastructure; see `foundation/infrastructure-boundary.md`.

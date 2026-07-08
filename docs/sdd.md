@@ -2,10 +2,12 @@
 
 The initial slice establishes a safe, local-first backend/data foundation for synthetic CFDI/XML import and analysis. The scope is intentionally narrow so the architecture can be reviewed before real integrations or UI work exist.
 
+This SDD covers the initial synthetic import slice only. The database direction is PostgreSQL across import and recovery paths.
+
 ## Quick path
 
 1. Import synthetic XML or ZIP files through `cfdi-vault`.
-2. Persist normalized records in SQLite.
+2. Persist normalized records in PostgreSQL.
 3. Query summaries and export CSV.
 4. Keep phase-one data synthetic only.
 
@@ -37,7 +39,7 @@ The initial slice establishes a safe, local-first backend/data foundation for sy
 
 - [x] Python package structure exists.
 - [x] Typer CLI entrypoint exists.
-- [x] SQLite persistence exists.
+- [x] PostgreSQL persistence exists.
 - [x] XML and ZIP import paths exist.
 - [x] UUID deduplication exists.
 - [x] SHA-256 hash is stored.

@@ -3,6 +3,8 @@
 This runbook is the docs-only FASE 12 path for issue #51. It proves the current fake/offline download workflow without real SAT access, real e.firma use, fiscal data, secrets, certificates, SAT ZIPs, or live smoke execution.
 
 > Scope boundary: issue #50 remains the human-gated live SAT smoke. This document does not authorize, execute, or close that gate.
+>
+> Infrastructure boundary: the recovery runtime target is PostgreSQL through Docker Compose and local `DATABASE_URL`.
 
 ## Quick offline demo
 
@@ -44,7 +46,7 @@ Expected safe shape:
 | `download plan` | `mode=fake`, criteria hash, range, kind, direction, `will_submit=false`. | Real RFCs or personal storage roots. |
 | `download request` | Synthetic request accepted proof; this is not the persisted job. | Raw SOAP, real SAT ids, credentials. |
 | `download sync` | `mode=fake`, `job_id`, synthetic `request_id`, `status=succeeded`, metadata count. | Package ids, storage keys, XML/ZIP content. |
-| Internal package/XML behavior | For `--kind cfdi`, the sync stores metadata, package ZIP bytes, extracted XML evidence, hashes, and SQLite rows under the profile storage root. | Treat this as internal behavior; there is no separate package extraction CLI command yet. |
+| Internal package/XML behavior | For `--kind cfdi`, the sync stores metadata, package ZIP bytes, extracted XML evidence, hashes, and recovery rows in PostgreSQL. | Treat database dumps, package ids, storage keys, and XML/ZIP content as sensitive runtime evidence. |
 | `download status` | Safe aggregate readback: job/request ids, status, SAT state, kind, direction, criteria hash, metadata/package/XML counts. | Queue payloads or event messages, because they may include package ids and storage keys. |
 
 ## Active and cancelled fake evidence
@@ -82,8 +84,8 @@ Back up only local runtime state outside the repository. Use encrypted local bac
 | Item | Default shape | Guidance |
 |---|---|---|
 | App profile root | `%LOCALAPPDATA%\cfdi-vault-mx\profiles\<profile>\` | Contains profile configuration and local references. Do not commit it. |
-| Profile storage root | `%LOCALAPPDATA%\cfdi-vault-mx\storage\<profile>\` or configured `storage_root` | Contains metadata, packages, XML, logs, exports, and DB folders. Treat as sensitive runtime data. |
-| Recovery SQLite DB | `<storage_root>\db\recovery.sqlite3` | Back up with the storage root while the CLI/workers are stopped. |
+| Profile storage root | `%LOCALAPPDATA%\cfdi-vault-mx\storage\<profile>\` or configured `storage_root` | Contains metadata, packages, XML, logs, and exports. Treat as sensitive runtime data. |
+| PostgreSQL recovery database | Docker `postgres_data` volume or operator-managed PostgreSQL backup | Back up with normal PostgreSQL tooling while app/workers are stopped or quiesced. |
 
 Restore checklist:
 
@@ -93,7 +95,7 @@ Restore checklist:
 4. Run `cfdi-vault status --profile-id <profile>` and `cfdi-vault doctor`.
 5. Run `cfdi-vault download status --profile <profile> --job-id <job-id>` for known synthetic jobs.
 
-Never place backups, SQLite files, profile JSON, logs, ZIPs, XML, certificates, keys, or passwords inside the repo.
+Never place backups, PostgreSQL dumps, profile JSON, logs, ZIPs, XML, certificates, keys, or passwords inside the repo.
 
 ## Local observability
 

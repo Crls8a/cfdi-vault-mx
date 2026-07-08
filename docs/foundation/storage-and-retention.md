@@ -12,7 +12,7 @@ CFDI Vault MX stores raw SAT packages and extracted XML under a configurable sto
 - Docker Compose host path: `./storage`
 - local fallback: `storage/`
 
-The database stores searchable accounting data and storage references. The filesystem stores raw evidence.
+PostgreSQL stores searchable accounting data and storage references. The filesystem stores raw evidence.
 
 Storage is not a separate user workflow. It is a mandatory stage of the recovery pipeline: every downloaded package and extracted XML must be registered before normalized data is considered loaded.
 
@@ -38,7 +38,6 @@ STOR-001 implements the RFC/period partitioned layout. A profile-specific storag
     packages/YYYY/MM/<id_paquete>-<sha12>.zip
     xml/YYYY/MM/<uuid>-<sha12>.xml
     logs/
-    db/
     exports/
 ```
 
@@ -61,6 +60,7 @@ Metadata, package, and XML filenames include a SHA-256 prefix so replaying the s
 - Compute SHA-256 for package and XML.
 - Keep a database pointer from `sat_packages.storage_key` and `xml_evidence.storage_key`.
 - Treat package/XML storage registration as part of the same recovery job that loads database records.
+- Queue stored XML references for ingestion after evidence is registered; do not make the downloader perform one direct bulk database load.
 - Unknown parser/complement support must not delete or rewrite evidence.
 - Reprocessing should read stored XML, not ask SAT again when evidence already exists.
 

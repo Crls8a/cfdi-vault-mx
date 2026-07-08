@@ -230,27 +230,27 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
     },
     {
         "command": "import-xml",
-        "purpose": "Import one local synthetic CFDI XML into the legacy local-first SQLite vault.",
-        "when": "Use for old lab/demo fixtures, not for SAT recovery.",
-        "example": "cfdi-vault import-xml examples/synthetic-cfdi/invoice-income.xml",
+        "purpose": "Import one local synthetic CFDI XML into the PostgreSQL-backed vault.",
+        "when": "Use for synthetic lab/demo fixtures through the same DATABASE_URL boundary.",
+        "example": "cfdi-vault import-xml examples/synthetic-cfdi/invoice-income.xml --database-url postgresql+psycopg://...",
     },
     {
         "command": "import-zip",
-        "purpose": "Import local synthetic XML files from a ZIP into the legacy SQLite vault.",
-        "when": "Use for old lab/demo fixtures, not for SAT recovery.",
-        "example": "cfdi-vault import-zip examples/synthetic-cfdi/invoices.zip",
+        "purpose": "Import local synthetic XML files from a ZIP into the PostgreSQL-backed vault.",
+        "when": "Use for synthetic lab/demo fixtures through the same DATABASE_URL boundary.",
+        "example": "cfdi-vault import-zip examples/synthetic-cfdi/invoices.zip --database-url postgresql+psycopg://...",
     },
     {
         "command": "summary",
-        "purpose": "Show legacy SQLite totals grouped by month, issuer, and comprobante type.",
+        "purpose": "Show PostgreSQL totals grouped by month, issuer, and comprobante type.",
         "when": "Use with the local synthetic import path.",
-        "example": "cfdi-vault summary",
+        "example": "cfdi-vault summary --database-url postgresql+psycopg://...",
     },
     {
         "command": "export-csv",
-        "purpose": "Export legacy SQLite imported CFDI records to CSV.",
+        "purpose": "Export PostgreSQL imported CFDI records to CSV.",
         "when": "Use with the local synthetic import path.",
-        "example": "cfdi-vault export-csv export.csv",
+        "example": "cfdi-vault export-csv export.csv --database-url postgresql+psycopg://...",
     },
 )
 

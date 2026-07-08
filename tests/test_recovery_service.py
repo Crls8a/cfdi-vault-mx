@@ -19,8 +19,8 @@ def _synthetic_metadata_bytes(*rows: tuple[str, str, str, str]) -> bytes:
     return "\n".join(lines).encode("utf-8")
 
 
-def test_fake_metadata_sync_creates_searchable_documents(tmp_path) -> None:
-    service = RecoveryService(sqlite_path=tmp_path / "recovery.sqlite3", storage_root=tmp_path / "storage")
+def test_fake_metadata_sync_creates_searchable_documents(tmp_path, reset_postgres_database: str) -> None:
+    service = RecoveryService(database_url=reset_postgres_database, storage_root=tmp_path / "storage")
     try:
         query = build_default_query(
             tenant_id="default",
@@ -44,8 +44,8 @@ def test_fake_metadata_sync_creates_searchable_documents(tmp_path) -> None:
         service.close()
 
 
-def test_ingest_metadata_file_stores_inventory_and_invalid_rows(tmp_path) -> None:
-    service = RecoveryService(sqlite_path=tmp_path / "recovery.sqlite3", storage_root=tmp_path / "storage")
+def test_ingest_metadata_file_stores_inventory_and_invalid_rows(tmp_path, reset_postgres_database: str) -> None:
+    service = RecoveryService(database_url=reset_postgres_database, storage_root=tmp_path / "storage")
     try:
         query = build_default_query(
             tenant_id="default",
@@ -87,8 +87,8 @@ def test_ingest_metadata_file_stores_inventory_and_invalid_rows(tmp_path) -> Non
         service.close()
 
 
-def test_reconcile_metadata_moves_existing_without_xml_to_pending(tmp_path) -> None:
-    service = RecoveryService(sqlite_path=tmp_path / "recovery.sqlite3", storage_root=tmp_path / "storage")
+def test_reconcile_metadata_moves_existing_without_xml_to_pending(tmp_path, reset_postgres_database: str) -> None:
+    service = RecoveryService(database_url=reset_postgres_database, storage_root=tmp_path / "storage")
     try:
         query = build_default_query(
             tenant_id="default",
@@ -115,8 +115,8 @@ def test_reconcile_metadata_moves_existing_without_xml_to_pending(tmp_path) -> N
         service.close()
 
 
-def test_reconcile_metadata_identifies_existing_xml_evidence(tmp_path) -> None:
-    service = RecoveryService(sqlite_path=tmp_path / "recovery.sqlite3", storage_root=tmp_path / "storage")
+def test_reconcile_metadata_identifies_existing_xml_evidence(tmp_path, reset_postgres_database: str) -> None:
+    service = RecoveryService(database_url=reset_postgres_database, storage_root=tmp_path / "storage")
     try:
         query = build_default_query(
             tenant_id="default",
@@ -161,8 +161,8 @@ def test_reconcile_metadata_identifies_existing_xml_evidence(tmp_path) -> None:
         service.close()
 
 
-def test_repeated_metadata_ingest_marks_status_change_for_consultation(tmp_path) -> None:
-    service = RecoveryService(sqlite_path=tmp_path / "recovery.sqlite3", storage_root=tmp_path / "storage")
+def test_repeated_metadata_ingest_marks_status_change_for_consultation(tmp_path, reset_postgres_database: str) -> None:
+    service = RecoveryService(database_url=reset_postgres_database, storage_root=tmp_path / "storage")
     try:
         query = build_default_query(
             tenant_id="default",
@@ -187,8 +187,8 @@ def test_repeated_metadata_ingest_marks_status_change_for_consultation(tmp_path)
         service.close()
 
 
-def test_print_and_export_use_normalized_recovery_data(tmp_path) -> None:
-    service = RecoveryService(sqlite_path=tmp_path / "recovery.sqlite3", storage_root=tmp_path / "storage")
+def test_print_and_export_use_normalized_recovery_data(tmp_path, reset_postgres_database: str) -> None:
+    service = RecoveryService(database_url=reset_postgres_database, storage_root=tmp_path / "storage")
     try:
         query = build_default_query(
             tenant_id="default",
@@ -215,8 +215,8 @@ def test_print_and_export_use_normalized_recovery_data(tmp_path) -> None:
         service.close()
 
 
-def test_duplicate_sync_result_is_scoped_to_original_job(tmp_path) -> None:
-    service = RecoveryService(sqlite_path=tmp_path / "recovery.sqlite3", storage_root=tmp_path / "storage")
+def test_duplicate_sync_result_is_scoped_to_original_job(tmp_path, reset_postgres_database: str) -> None:
+    service = RecoveryService(database_url=reset_postgres_database, storage_root=tmp_path / "storage")
     try:
         january = build_default_query(
             tenant_id="default",
@@ -246,8 +246,8 @@ def test_duplicate_sync_result_is_scoped_to_original_job(tmp_path) -> None:
         service.close()
 
 
-def test_xml_sync_stores_extracted_xml_evidence(tmp_path) -> None:
-    service = RecoveryService(sqlite_path=tmp_path / "recovery.sqlite3", storage_root=tmp_path / "storage")
+def test_xml_sync_stores_extracted_xml_evidence(tmp_path, reset_postgres_database: str) -> None:
+    service = RecoveryService(database_url=reset_postgres_database, storage_root=tmp_path / "storage")
     try:
         query = build_default_query(
             tenant_id="default",
@@ -272,8 +272,8 @@ def test_xml_sync_stores_extracted_xml_evidence(tmp_path) -> None:
         service.close()
 
 
-def test_xml_sync_registers_idempotent_storage_metadata_and_pipeline_state(tmp_path) -> None:
-    service = RecoveryService(sqlite_path=tmp_path / "recovery.sqlite3", storage_root=tmp_path / "storage")
+def test_xml_sync_registers_idempotent_storage_metadata_and_pipeline_state(tmp_path, reset_postgres_database: str) -> None:
+    service = RecoveryService(database_url=reset_postgres_database, storage_root=tmp_path / "storage")
     try:
         query = build_default_query(
             tenant_id="default",
@@ -316,7 +316,7 @@ def test_xml_sync_registers_idempotent_storage_metadata_and_pipeline_state(tmp_p
         service.close()
 
 
-def test_fake_sat_packages_are_deterministic_across_fresh_clients(tmp_path) -> None:
+def test_fake_sat_packages_are_deterministic_across_fresh_clients(tmp_path, reset_postgres_database: str) -> None:
     query = build_default_query(
         tenant_id="default",
         rfc="XAXX010101000",
@@ -340,8 +340,8 @@ def test_fake_sat_packages_are_deterministic_across_fresh_clients(tmp_path) -> N
     assert first_content == second_content
 
 
-def test_enqueued_sync_is_processed_by_worker(tmp_path) -> None:
-    service = RecoveryService(sqlite_path=tmp_path / "recovery.sqlite3", storage_root=tmp_path / "storage")
+def test_enqueued_sync_is_processed_by_worker(tmp_path, reset_postgres_database: str) -> None:
+    service = RecoveryService(database_url=reset_postgres_database, storage_root=tmp_path / "storage")
     try:
         query = build_default_query(
             tenant_id="default",

@@ -4,10 +4,6 @@ from __future__ import annotations
 
 from .common import *
 
-
-def _db_option() -> Path:
-    return Path("cfdi-vault.sqlite3")
-
 def _print_record(record: ImportRecord) -> None:
     if record.error:
         typer.echo(f"ERROR {record.source_name}: {record.error}", err=True)
@@ -40,24 +36,22 @@ def init(
     rfc: str = typer.Option(..., "--rfc", help="Requester RFC."),
     name: str | None = typer.Option(None, "--name", help="Tenant display name."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Initialize the recovery schema, storage folders, and tenant row."""
 
-    service = _service(database_url, recovery_db, storage)
+    service = _service(database_url, storage)
     service.init_tenant(tenant_id, rfc, name)
     typer.echo(f"Initialized tenant {tenant_id} for RFC {rfc.upper()}")
 
 def reconcile(
     tenant_id: str | None = typer.Option(None, "--tenant-id", help="Tenant identifier."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Recompute metadata/XML reconciliation states."""
 
-    count = _service(database_url, recovery_db, storage).reconcile(tenant_id=tenant_id)
+    count = _service(database_url, storage).reconcile(tenant_id=tenant_id)
     typer.echo(f"Updated {count} reconciliation row(s)")
 
 def search(
@@ -65,12 +59,11 @@ def search(
     tenant_id: str | None = typer.Option(None, "--tenant-id", help="Tenant identifier."),
     limit: int = typer.Option(20, "--limit", min=1, max=200, help="Maximum rows."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Search normalized CFDI data."""
 
-    rows = _service(database_url, recovery_db, storage).search(text, tenant_id=tenant_id, limit=limit)
+    rows = _service(database_url, storage).search(text, tenant_id=tenant_id, limit=limit)
     typer.echo("uuid,issuer_rfc,receiver_rfc,issue_date,total,status,parser_status")
     if not rows:
         typer.echo("(no matches)")
@@ -85,12 +78,11 @@ def show(
     uuid: str = typer.Argument(..., help="CFDI UUID."),
     tenant_id: str | None = typer.Option(None, "--tenant-id", help="Tenant identifier."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Show one CFDI in terminal-friendly form."""
 
-    service = _service(database_url, recovery_db, storage)
+    service = _service(database_url, storage)
     try:
         typer.echo(service.render_text(uuid, tenant_id=tenant_id))
     except LookupError as exc:
@@ -103,12 +95,11 @@ def print_invoice(
     format: str = typer.Option("text", "--format", help="text, html, or pdf."),
     tenant_id: str | None = typer.Option(None, "--tenant-id", help="Tenant identifier."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Render a CFDI as text, HTML, or a basic PDF."""
 
-    service = _service(database_url, recovery_db, storage)
+    service = _service(database_url, storage)
     try:
         if format == "text":
             text = service.render_text(uuid, tenant_id=tenant_id)
@@ -137,7 +128,6 @@ def export(
     format: str = typer.Option("csv", "--format", help="Only csv is supported in this slice."),
     tenant_id: str | None = typer.Option(None, "--tenant-id", help="Tenant identifier."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Export normalized CFDI data."""
@@ -147,48 +137,48 @@ def export(
         raise typer.Exit(code=1)
     if output_path is None:
         output_path = _resolve_storage_root(storage) / "exports" / "cfdi.csv"
-    count = _service(database_url, recovery_db, storage).export_csv(output_path, tenant_id=tenant_id)
+    count = _service(database_url, storage).export_csv(output_path, tenant_id=tenant_id)
     typer.echo(f"Exported {count} CFDI row(s) to {output_path}")
 
 def import_xml(
     xml_path: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
-    db: Path = typer.Option(_db_option(), "--db", help="SQLite database path."),
+    database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
 ) -> None:
     """Import one synthetic CFDI XML file."""
 
-    record = VaultService(db).import_xml_file(xml_path)
+    record = VaultService(database_url).import_xml_file(xml_path)
     _print_record(record)
     if record.error:
         raise typer.Exit(code=1)
 
 def import_zip(
     zip_path: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
-    db: Path = typer.Option(_db_option(), "--db", help="SQLite database path."),
+    database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
 ) -> None:
     """Import all XML files from a ZIP archive."""
 
-    result = VaultService(db).import_zip_file(zip_path)
+    result = VaultService(database_url).import_zip_file(zip_path)
     _print_batch(result)
     if result.failed:
         raise typer.Exit(code=1)
 
 def summary(
-    db: Path = typer.Option(_db_option(), "--db", help="SQLite database path."),
+    database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
 ) -> None:
     """Print totals grouped by month, issuer, and CFDI comprobante type."""
 
-    vault_summary = VaultService(db).summary()
+    vault_summary = VaultService(database_url).summary()
     _print_section("Totals by month", vault_summary.by_month)
     _print_section("Totals by issuer", vault_summary.by_issuer)
     _print_section("Totals by comprobante type", vault_summary.by_comprobante_type)
 
 def export_csv(
     output_path: Path = typer.Argument(..., dir_okay=False, writable=True),
-    db: Path = typer.Option(_db_option(), "--db", help="SQLite database path."),
+    database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
 ) -> None:
     """Export imported CFDI records to CSV."""
 
-    count = VaultService(db).export_csv(output_path)
+    count = VaultService(database_url).export_csv(output_path)
     typer.echo(f"Exported {count} invoice(s) to {output_path}")
 
 

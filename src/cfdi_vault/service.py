@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -10,9 +11,9 @@ import hashlib
 from pathlib import Path
 from zipfile import ZipFile
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
-from cfdi_vault.db import Invoice, create_session_factory, create_sqlite_engine, init_db
+from cfdi_vault.db import Invoice, create_engine_from_url, create_session_factory, init_db
 from cfdi_vault.parser import CfdiParseError, ParsedCfdi, parse_cfdi_xml
 
 
@@ -71,10 +72,10 @@ class VaultSummary:
 
 
 class VaultService:
-    """Use-case boundary for the local-first CFDI vault."""
+    """Use-case boundary for PostgreSQL-backed CFDI import/export workflows."""
 
-    def __init__(self, db_path: str | Path) -> None:
-        self.engine = create_sqlite_engine(db_path)
+    def __init__(self, database_url: str | None = None) -> None:
+        self.engine = create_engine_from_url(database_url)
         init_db(self.engine)
         self.session_factory = create_session_factory(self.engine)
 
@@ -134,43 +135,12 @@ class VaultService:
 
     def summary(self) -> VaultSummary:
         with self.session_factory() as session:
-            monthly_rows = session.execute(
-                select(
-                    func.strftime("%Y-%m", Invoice.issue_date).label("label"),
-                    func.count(Invoice.id),
-                    func.coalesce(func.sum(Invoice.subtotal), 0),
-                    func.coalesce(func.sum(Invoice.total), 0),
-                )
-                .group_by("label")
-                .order_by("label")
-            ).all()
-
-            issuer_rows = session.execute(
-                select(
-                    (Invoice.issuer_name + " (" + Invoice.issuer_rfc + ")").label("label"),
-                    func.count(Invoice.id),
-                    func.coalesce(func.sum(Invoice.subtotal), 0),
-                    func.coalesce(func.sum(Invoice.total), 0),
-                )
-                .group_by(Invoice.issuer_rfc, Invoice.issuer_name)
-                .order_by(Invoice.issuer_name, Invoice.issuer_rfc)
-            ).all()
-
-            type_rows = session.execute(
-                select(
-                    Invoice.comprobante_type.label("label"),
-                    func.count(Invoice.id),
-                    func.coalesce(func.sum(Invoice.subtotal), 0),
-                    func.coalesce(func.sum(Invoice.total), 0),
-                )
-                .group_by(Invoice.comprobante_type)
-                .order_by(Invoice.comprobante_type)
-            ).all()
+            invoices = tuple(session.scalars(select(Invoice).order_by(Invoice.issue_date, Invoice.uuid)).all())
 
         return VaultSummary(
-            by_month=tuple(_summary_row(row) for row in monthly_rows),
-            by_issuer=tuple(_summary_row(row) for row in issuer_rows),
-            by_comprobante_type=tuple(_summary_row(row) for row in type_rows),
+            by_month=_group_summary(invoices, lambda invoice: invoice.issue_date.strftime("%Y-%m")),
+            by_issuer=_group_summary(invoices, lambda invoice: f"{invoice.issuer_name} ({invoice.issuer_rfc})"),
+            by_comprobante_type=_group_summary(invoices, lambda invoice: invoice.comprobante_type),
         )
 
     def export_csv(self, output_path: str | Path) -> int:
@@ -241,13 +211,15 @@ def _invoice_from_parsed(parsed: ParsedCfdi, xml_sha256: str, source_name: str) 
     )
 
 
-def _summary_row(row: tuple[object, ...]) -> SummaryRow:
-    label, count, subtotal, total = row
-    return SummaryRow(
-        label=str(label or ""),
-        count=int(count or 0),
-        subtotal=_to_decimal(subtotal),
-        total=_to_decimal(total),
+def _group_summary(invoices: tuple[Invoice, ...], label_for: Callable[[Invoice], str]) -> tuple[SummaryRow, ...]:
+    grouped: dict[str, tuple[int, Decimal, Decimal]] = {}
+    for invoice in invoices:
+        label = str(label_for(invoice))
+        count, subtotal, total = grouped.get(label, (0, Decimal("0"), Decimal("0")))
+        grouped[label] = (count + 1, subtotal + _to_decimal(invoice.subtotal), total + _to_decimal(invoice.total))
+    return tuple(
+        SummaryRow(label=label, count=count, subtotal=subtotal, total=total)
+        for label, (count, subtotal, total) in sorted(grouped.items())
     )
 
 

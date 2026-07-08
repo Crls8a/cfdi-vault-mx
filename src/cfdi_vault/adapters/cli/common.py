@@ -144,23 +144,26 @@ class PackageDownloadCliResult:
 class LiveSmokeAdapterUnavailable(RuntimeError):
     """Raised after guards pass when the real live adapter is not wired yet."""
 
-def _recovery_db_option() -> Path:
-    return Path("cfdi-vault-recovery.sqlite3")
-
 def _service(
     database_url: str | None = None,
-    recovery_db: Path | None = None,
     storage: Path | None = None,
 ) -> RecoveryService:
     queue = RabbitMqQueue(os.environ["RABBITMQ_URL"]) if os.getenv("RABBITMQ_URL") else None
     cache = RedisCache(os.environ["REDIS_URL"]) if os.getenv("REDIS_URL") else None
     return RecoveryService(
-        database_url=database_url or os.getenv("DATABASE_URL"),
-        sqlite_path=recovery_db or _recovery_db_option(),
+        database_url=_require_database_url(database_url),
         storage_root=_resolve_storage_root(storage),
         queue=queue,
         cache=cache,
     )
+
+def _require_database_url(database_url: str | None = None) -> str:
+    resolved_url = database_url or os.getenv("DATABASE_URL")
+    if not resolved_url:
+        typer.echo("error=database_url_required", err=True)
+        typer.echo("detail=Set DATABASE_URL or pass --database-url.", err=True)
+        raise typer.Exit(code=1)
+    return resolved_url
 
 def _resolve_storage_root(storage: Path | None = None) -> Path:
     return storage or Path(os.getenv("CFDI_STORAGE_ROOT", "storage"))
@@ -201,10 +204,8 @@ def _build_profile_download_query_with_profile(
         raise typer.Exit(code=1)
     return query, profile
 
-def _download_profile_service(profile: setup_flow.LocalProfile) -> RecoveryService:
-    recovery_db = profile.storage_root / "db" / "recovery.sqlite3"
-    recovery_db.parent.mkdir(parents=True, exist_ok=True)
-    return RecoveryService(sqlite_path=recovery_db, storage_root=profile.storage_root)
+def _download_profile_service(profile: setup_flow.LocalProfile, database_url: str | None = None) -> RecoveryService:
+    return RecoveryService(database_url=_require_database_url(database_url), storage_root=profile.storage_root)
 
 def _validate_live_smoke_guard(
     *,

@@ -1,20 +1,16 @@
-"""PostgreSQL-ready recovery and accounting schema.
-
-The models use SQLAlchemy portable types so the same schema can be exercised
-with SQLite in tests while remaining compatible with PostgreSQL JSONB-oriented
-deployments.
-"""
+"""PostgreSQL recovery and accounting schema."""
 
 from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from cfdi_vault.db import Base
+from cfdi_vault.db import Base, ensure_tables_exist
 
 
 class Tenant(Base):
@@ -56,7 +52,7 @@ class DownloadJob(Base):
     request_type: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
     criteria_hash: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
-    payload: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    payload: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -82,7 +78,7 @@ class SatRequestRecord(Base):
     last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     metadata_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     metadata_storage_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    raw_response: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    raw_response: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, nullable=False)
 
 
 class SatPackageRecord(Base):
@@ -101,7 +97,7 @@ class SatPackageRecord(Base):
     storage_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     downloaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_error: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    last_error: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -118,7 +114,7 @@ class QueueJobEvent(Base):
     correlation_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     attempt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     message: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    payload: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    payload: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -178,7 +174,7 @@ class CfdiDocument(Base):
     xml_sha256: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     parser_status: Mapped[str] = mapped_column(String(32), default="complete", nullable=False)
     search_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
-    raw_payload: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    raw_payload: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -218,7 +214,7 @@ class CfdiConcept(Base):
     amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     discount: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     tax_object: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    raw_payload: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    raw_payload: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, nullable=False)
 
     document: Mapped[CfdiDocument] = relationship(back_populates="concepts")
 
@@ -250,7 +246,7 @@ class CfdiPayment(Base):
     payment_form: Mapped[str | None] = mapped_column(String(16), nullable=True)
     currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
     amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
-    raw_payload: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    raw_payload: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, nullable=False)
 
 
 class CfdiPayroll(Base):
@@ -265,7 +261,7 @@ class CfdiPayroll(Base):
     payroll_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
     payment_start_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     payment_end_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    raw_payload: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    raw_payload: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, nullable=False)
 
 
 class CfdiRelatedDocument(Base):
@@ -301,7 +297,7 @@ class CfdiMetadataLedger(Base):
     source_metadata_sha256: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    raw_payload: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    raw_payload: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, nullable=False)
 
     __table_args__ = (UniqueConstraint("tenant_id", "uuid", "direction", name="uq_metadata_ledger_uuid_direction"),)
 
@@ -326,6 +322,6 @@ class XmlEvidence(Base):
 
 
 def init_recovery_schema(engine: Engine) -> None:
-    """Create all recovery tables."""
+    """Validate that Flyway has created all recovery tables."""
 
-    Base.metadata.create_all(engine)
+    ensure_tables_exist(engine, Base.metadata.tables)

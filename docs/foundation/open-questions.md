@@ -13,6 +13,7 @@ This file records what is not safe to assume yet. Each item should be resolved b
 | Q7 | How are tenants isolated? | Critical for multi-RFC/multi-client safety. | Every durable row must include tenant scope. | Architecture |
 | Q8 | How are real XMLs redacted in logs/tests? | Protects taxpayer data. | No real XML in repo or CI. | QA/security |
 | Q9 | What storage partition policy is final for production? | Prevents one huge XML folder and makes backups/extraction predictable. | Target tenant/year/month partitioning; prototype still uses simpler paths. | Storage/evidence |
+| Q10 | What exact FastAPI ingestion contract accepts stored XML/package references? | Prevents direct bulk DB loads from the SAT/CLI process and keeps queue backpressure explicit. | Define API payloads before moving normalized XML loading behind workers. | API / Queue / Data |
 
 ## Decision workflow
 
@@ -31,6 +32,7 @@ flowchart TD
 |---|---|
 | v2 code exists before full architecture gate. | Treat current code as first prototype slice, not final architecture. |
 | RabbitMQ retry/DLQ is not fully designed. | Do not expand worker until retry/DLQ doc is accepted. |
-| PostgreSQL indexes are documented but not migrated. | Add Alembic/index design before production use. |
+| PostgreSQL search indexes are documented but not fully migrated. | Add Flyway index migrations before production search scale-up. |
+| FastAPI ingestion boundary is planned but not implemented. | Do not add an `api` Docker service or route XML loading through API docs until the contract and code exist. |
 | Parser only extracts common fields. | Keep parser status explicit and preserve raw XML/JSON payloads. |
 | XML storage prototype is not period-partitioned yet. | Add storage key builder, manifests, and `storage locate/status` before high-volume use. |

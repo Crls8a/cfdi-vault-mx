@@ -1,6 +1,6 @@
 # Data and accounting model
 
-The database must preserve accounting-friendly columns and raw evidence. The system should never depend only on parsed data because parser support will always lag behind SAT/CFDI variation.
+The database must preserve accounting-friendly columns and raw evidence. PostgreSQL is the single runtime and test database target.
 
 ## Storage strategy
 
@@ -10,7 +10,8 @@ The database must preserve accounting-friendly columns and raw evidence. The sys
 | SAT raw packages | Filesystem/object storage + PostgreSQL reference | Preserve evidence before parsing. |
 | XML evidence | Filesystem/object storage + SHA-256 | Auditable source of truth. |
 | Common accounting fields | PostgreSQL columns | Fast search/reporting. |
-| Version/complement payloads | PostgreSQL JSONB-compatible columns | Retroactive support without schema churn. |
+| Version/complement payloads | PostgreSQL JSONB columns | Retroactive support without schema churn. |
+| Queue audit | PostgreSQL append-only events | Durable retry, DLQ, and operator visibility. |
 | CLI progress/locks | Redis | Fast transient state, not durable truth. |
 
 See [XML storage and retention design](storage-and-retention.md) for the filesystem layout, growth model, manifests, and extraction UX.
@@ -63,6 +64,8 @@ flowchart TD
     Partial --> Future["Future parser can reprocess XML evidence"]
 ```
 
+Parser retroactivity should run through the API/queue/worker boundary. Stored XML is read from the evidence store, work is queued with an idempotency key, and PostgreSQL receives normalized updates in short transactions.
+
 ## Index plan for PostgreSQL
 
 | Need | Index |
@@ -75,4 +78,14 @@ flowchart TD
 | Concept/name search | full-text and trigram indexes |
 | Complement queries | JSONB path/GiN indexes for selected complements |
 
-SQLite can remain as a test fallback, but production semantics should be designed for PostgreSQL.
+## Database boundary
+
+| Context | Database rule |
+|---|---|
+| Recovery runtime | PostgreSQL only. |
+| Docker Compose | `DATABASE_URL` points to the `postgres` service. |
+| Synthetic `import-xml` demo | Uses the same PostgreSQL `DATABASE_URL` path as the rest of the app. |
+| Tests | Use a dedicated PostgreSQL test database through `CFDI_VAULT_TEST_DATABASE_URL`; pytest resets that schema from the Flyway baseline. |
+| Migrations/indexes | Flyway migrations + PostgreSQL-specific JSONB/full-text/trigram indexes. |
+
+Do not introduce another database runtime. A second persistence path creates the exact mixed architecture this foundation is trying to avoid.
