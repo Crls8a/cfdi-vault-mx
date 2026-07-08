@@ -1,7 +1,7 @@
 from lxml import etree
 from typer.testing import CliRunner
 
-from cfdi_vault import cli as cli_module
+from cfdi_vault.adapters.cli import sat_auth as cli_module
 from cfdi_vault.cli import app
 from cfdi_vault.sat_auth_envelope_lint import (
     EXPECTED_C14N_METHOD,

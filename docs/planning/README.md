@@ -15,6 +15,8 @@ The planning source of truth is Markdown in this repository. This keeps the plan
 5. Use [Sprint 0 execution plan](sprint-0-execution.md) to start the first sprint safely.
 6. Use [Backlog](backlog.md) to create Sprint Packets, issues, or assign work.
 7. Use [Team board](team-board.md) to track the current sprint.
+8. Use [CLI family refactor plan](cli-family-refactor-plan.md) before changing CLI adapter ownership or resolving CLI merge conflicts.
+9. Use [CLI refactor merge synchronization plan](cli-refactor-merge-synchronization-plan.md) before merging the CLI refactor with SAT/live-gate or other branches that still touch `src/cfdi_vault/cli.py`.
 
 ## Planning map
 
@@ -28,6 +30,8 @@ The planning source of truth is Markdown in this repository. This keeps the plan
 | [Sprint 0 review findings](sprint-0-review-findings.md) | Agent review results and Sprint 0 acceptance evidence. |
 | [Backlog](backlog.md) | Work item IDs, dependencies, owner roles, acceptance criteria. |
 | [Team board](team-board.md) | Current sprint execution, status, blocked work, handoff notes. |
+| [CLI family refactor plan](cli-family-refactor-plan.md) | Source of truth for CLI family ownership, merge conflict handling, and follow-up task slices. |
+| [CLI refactor merge synchronization plan](cli-refactor-merge-synchronization-plan.md) | Branch inventory, merge topology, conflict-routing rules, and validation gates for synchronizing the CLI split with active WIP branches. |
 
 ## Editing workflow
 

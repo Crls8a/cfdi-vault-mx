@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from cfdi_vault import cli as cli_module
+from cfdi_vault.adapters.cli import sat_probes as cli_module
 from cfdi_vault.cli import app
 from cfdi_vault.sat_auth_matrix_probe import SatAuthMatrixProbeResult
 from cfdi_vault.sat_auth_post_probe import SatAuthPostProbeResult

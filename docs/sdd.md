@@ -13,7 +13,7 @@ The initial slice establishes a safe, local-first backend/data foundation for sy
 
 | Requirement | Implemented by |
 |---|---|
-| CLI command `cfdi-vault` | `src/cfdi_vault/cli.py` and `pyproject.toml` script entry. |
+| CLI command `cfdi-vault` | `src/cfdi_vault/cli.py` shim, `src/cfdi_vault/adapters/cli/` family modules, and `pyproject.toml` script entry. |
 | Import individual XML | `VaultService.import_xml_file`. |
 | Import ZIP with multiple XML files | `VaultService.import_zip_file`. |
 | Parse CFDI fields | `parse_cfdi_xml`. |

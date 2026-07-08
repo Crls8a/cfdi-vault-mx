@@ -10,7 +10,9 @@ from cryptography.x509.oid import NameOID
 from typer.testing import CliRunner
 
 from cfdi_vault import setup as setup_flow
-from cfdi_vault.cli import LiveSmokeCliResult, _print_verify_live_gate_result, app
+from cfdi_vault.adapters.cli.common import LiveSmokeCliResult
+from cfdi_vault.adapters.cli.sat_verify import _print_verify_live_gate_result
+from cfdi_vault.cli import app
 from cfdi_vault.sat_live_request_state import LiveMetadataRequestRecord
 from cfdi_vault.sat_verify_live_gate import (
     DEFAULT_VERIFY_CONNECT_TIMEOUT_SECONDS,
@@ -240,19 +242,19 @@ def test_cli_verify_live_gate_blocks_signed_live_when_wsdl_check_fails(monkeypat
     record = _record()
     provider = DummySecretProvider({profile.phrase_ref: SYNTHETIC_PHRASE})
 
-    monkeypatch.setattr("cfdi_vault.cli._load_download_profile_or_none", lambda profile_id: profile)
-    monkeypatch.setattr("cfdi_vault.cli._setup_provider", lambda profile_id: provider)
-    monkeypatch.setattr("cfdi_vault.cli._load_request_record_or_none", lambda loaded_profile, request_ref: record)
+    monkeypatch.setattr("cfdi_vault.adapters.cli.sat_verify._load_download_profile_or_none", lambda profile_id: profile)
+    monkeypatch.setattr("cfdi_vault.adapters.cli.sat_verify._setup_provider", lambda profile_id: provider)
+    monkeypatch.setattr("cfdi_vault.adapters.cli.sat_verify._load_request_record_or_none", lambda loaded_profile, request_ref: record)
     monkeypatch.setattr(
-        "cfdi_vault.cli.run_verify_oracle_parity",
+        "cfdi_vault.adapters.cli.sat_verify.run_verify_oracle_parity",
         lambda **kwargs: VerifyOracleParityResult(status="passed", operation="VerificaSolicitudDescarga"),
     )
     monkeypatch.setattr(
-        "cfdi_vault.cli.check_verify_wsdl_endpoint",
+        "cfdi_vault.adapters.cli.sat_verify.check_verify_wsdl_endpoint",
         lambda **kwargs: VerifyWsdlCheckResult(status="failed", reachable=False, error_kind="wsdl_unreachable"),
     )
     monkeypatch.setattr(
-        "cfdi_vault.cli._run_live_metadata_verify_smoke",
+        "cfdi_vault.adapters.cli.sat_verify._run_live_metadata_verify_smoke",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("signed live verify must not run")),
     )
 
@@ -290,19 +292,19 @@ def test_cli_verify_live_gate_requires_oracle_before_any_network(monkeypatch, tm
     record = _record()
     provider = DummySecretProvider({profile.phrase_ref: SYNTHETIC_PHRASE})
 
-    monkeypatch.setattr("cfdi_vault.cli._load_download_profile_or_none", lambda profile_id: profile)
-    monkeypatch.setattr("cfdi_vault.cli._setup_provider", lambda profile_id: provider)
-    monkeypatch.setattr("cfdi_vault.cli._load_request_record_or_none", lambda loaded_profile, request_ref: record)
+    monkeypatch.setattr("cfdi_vault.adapters.cli.sat_verify._load_download_profile_or_none", lambda profile_id: profile)
+    monkeypatch.setattr("cfdi_vault.adapters.cli.sat_verify._setup_provider", lambda profile_id: provider)
+    monkeypatch.setattr("cfdi_vault.adapters.cli.sat_verify._load_request_record_or_none", lambda loaded_profile, request_ref: record)
     monkeypatch.setattr(
-        "cfdi_vault.cli.run_verify_oracle_parity",
+        "cfdi_vault.adapters.cli.sat_verify.run_verify_oracle_parity",
         lambda **kwargs: VerifyOracleParityResult(status="failed", reason="synthetic-oracle-failure"),
     )
     monkeypatch.setattr(
-        "cfdi_vault.cli.check_verify_wsdl_endpoint",
+        "cfdi_vault.adapters.cli.sat_verify.check_verify_wsdl_endpoint",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("wsdl check must not run after oracle failure")),
     )
     monkeypatch.setattr(
-        "cfdi_vault.cli._run_live_metadata_verify_smoke",
+        "cfdi_vault.adapters.cli.sat_verify._run_live_metadata_verify_smoke",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("signed live verify must not run")),
     )
 
