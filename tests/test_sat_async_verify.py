@@ -15,6 +15,7 @@ from cfdi_vault.sat_live_request_state import (
     VERIFY_FAILED_PERMANENT,
     VERIFY_FAILED_RETRYABLE,
     VERIFY_IN_PROGRESS_SAT,
+    VERIFY_MANUAL_REVIEW,
     VERIFY_NO_DATA,
     VERIFY_REJECTED,
     list_live_metadata_requests,
@@ -37,8 +38,12 @@ def test_accepted_verification_schedules_next_check(tmp_path: Path) -> None:
     assert report.processed_count == 1
     assert verifier.calls == [REQUEST_ID]
     assert record.status == VERIFY_IN_PROGRESS_SAT
+    assert record.terminal_state is False
     assert record.attempt_count == 1
+    assert record.last_error_kind == ""
     assert record.next_check_at == "2026-07-06T00:20:00Z"
+    assert record.package_ids == ()
+    assert verifier.download_calls == []
 
 
 def test_in_progress_verification_schedules_next_check(tmp_path: Path) -> None:
@@ -49,8 +54,12 @@ def test_in_progress_verification_schedules_next_check(tmp_path: Path) -> None:
 
     record = _only_record(tmp_path)
     assert record.status == VERIFY_IN_PROGRESS_SAT
+    assert record.terminal_state is False
     assert record.sat_estado_solicitud == "in_process"
+    assert record.last_error_kind == ""
     assert record.next_check_at == "2026-07-06T00:20:00Z"
+    assert record.package_ids == ()
+    assert verifier.download_calls == []
 
 
 def test_finished_marks_package_ready_without_download(tmp_path: Path) -> None:
@@ -67,11 +76,28 @@ def test_finished_marks_package_ready_without_download(tmp_path: Path) -> None:
 
     record = _only_record(tmp_path)
     assert record.status == PACKAGE_READY
+    assert record.terminal_state is True
+    assert record.last_error_kind == ""
     assert record.next_check_at == ""
     assert record.numero_cfdis == 2
     assert record.package_ids == ("SYN-PKG-001", "SYN-PKG-002")
     assert len(record.package_refs_redacted) == 2
     assert all(item.startswith("pkg-") for item in record.package_refs_redacted)
+    assert verifier.download_calls == []
+
+
+def test_finished_without_package_ids_requires_manual_review_and_blocks_download(tmp_path: Path) -> None:
+    _persist_due(tmp_path)
+    verifier = _Verifier(_verification(SatRequestState.FINISHED, SatOutcomeAction.FINISHED))
+
+    run_verify_due(storage_root=tmp_path, profile_id="default", verifier=verifier, now=DUE_AT)
+
+    record = _only_record(tmp_path)
+    assert record.status == VERIFY_MANUAL_REVIEW
+    assert record.terminal_state is True
+    assert record.last_error_kind == "finished_without_package_ids"
+    assert record.next_check_at == ""
+    assert record.package_ids == ()
     assert verifier.download_calls == []
 
 
@@ -90,7 +116,101 @@ def test_no_data_is_terminal(tmp_path: Path) -> None:
 
     record = _only_record(tmp_path)
     assert record.status == VERIFY_NO_DATA
+    assert record.terminal_state is True
+    assert record.last_error_kind == "no_data"
     assert record.next_check_at == ""
+    assert record.package_ids == ()
+    assert verifier.download_calls == []
+
+
+def test_verify_301_is_permanent_failure_not_no_data(tmp_path: Path) -> None:
+    _persist_due(tmp_path)
+    verifier = _Verifier(
+        _verification(
+            SatRequestState.ERROR,
+            SatOutcomeAction.PERMANENT_FAILURE,
+            sat_code="301",
+            message="Synthetic malformed XML",
+        )
+    )
+
+    run_verify_due(storage_root=tmp_path, profile_id="default", verifier=verifier, now=DUE_AT)
+
+    record = _only_record(tmp_path)
+    assert record.status == VERIFY_FAILED_PERMANENT
+    assert record.terminal_state is True
+    assert record.last_error_kind == "sat_xml_malformed"
+    assert record.next_check_at == ""
+    assert record.package_ids == ()
+    assert verifier.download_calls == []
+
+
+def test_verify_302_is_permanent_failure_not_no_data(tmp_path: Path) -> None:
+    _persist_due(tmp_path)
+    verifier = _Verifier(
+        _verification(
+            SatRequestState.ERROR,
+            SatOutcomeAction.PERMANENT_FAILURE,
+            sat_code="302",
+            message="Synthetic malformed seal",
+        )
+    )
+
+    run_verify_due(storage_root=tmp_path, profile_id="default", verifier=verifier, now=DUE_AT)
+
+    record = _only_record(tmp_path)
+    assert record.status == VERIFY_FAILED_PERMANENT
+    assert record.terminal_state is True
+    assert record.last_error_kind == "sat_signature_malformed"
+    assert record.next_check_at == ""
+    assert record.package_ids == ()
+    assert verifier.download_calls == []
+
+
+def test_verify_5003_requires_manual_review_not_no_data(tmp_path: Path) -> None:
+    _persist_due(tmp_path)
+    verifier = _Verifier(
+        _verification(
+            SatRequestState.ERROR,
+            SatOutcomeAction.PERMANENT_FAILURE,
+            sat_code="5003",
+            message="Synthetic too many results",
+        )
+    )
+
+    report = run_verify_due(storage_root=tmp_path, profile_id="default", verifier=verifier, now=DUE_AT)
+
+    record = _only_record(tmp_path)
+    assert report.failed_requests == 1
+    assert record.status == VERIFY_MANUAL_REVIEW
+    assert record.terminal_state is True
+    assert record.last_error_kind == "sat_too_many_results"
+    assert record.next_check_at == ""
+    assert record.package_ids == ()
+    assert verifier.download_calls == []
+
+
+def test_duplicate_request_requires_manual_review_without_retry(tmp_path: Path) -> None:
+    _persist_due(tmp_path)
+    verifier = _Verifier(
+        _verification(
+            SatRequestState.ERROR,
+            SatOutcomeAction.DUPLICATE,
+            sat_code="5005",
+            message="Synthetic duplicate request",
+        )
+    )
+
+    report = run_verify_due(storage_root=tmp_path, profile_id="default", verifier=verifier, now=DUE_AT)
+
+    record = _only_record(tmp_path)
+    assert report.failed_requests == 1
+    assert record.status == VERIFY_MANUAL_REVIEW
+    assert record.terminal_state is True
+    assert record.last_error_kind == "sat_duplicate_request"
+    assert record.next_check_at == ""
+    assert record.package_ids == ()
+    assert verifier.download_calls == []
 
 
 def test_rejected_is_terminal(tmp_path: Path) -> None:
@@ -101,8 +221,10 @@ def test_rejected_is_terminal(tmp_path: Path) -> None:
 
     record = _only_record(tmp_path)
     assert record.status == VERIFY_REJECTED
+    assert record.terminal_state is True
     assert record.last_error_kind == "rejected"
     assert record.next_check_at == ""
+    assert verifier.download_calls == []
 
 
 def test_expired_sat_state_is_terminal(tmp_path: Path) -> None:
@@ -113,7 +235,10 @@ def test_expired_sat_state_is_terminal(tmp_path: Path) -> None:
 
     record = _only_record(tmp_path)
     assert record.status == VERIFY_EXPIRED
+    assert record.terminal_state is True
+    assert record.last_error_kind == "expired_request"
     assert record.next_check_at == ""
+    assert verifier.download_calls == []
 
 
 def test_transport_timeout_is_retryable_with_backoff(tmp_path: Path) -> None:

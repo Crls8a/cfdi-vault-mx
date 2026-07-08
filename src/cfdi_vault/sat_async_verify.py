@@ -18,6 +18,7 @@ from cfdi_vault.sat_live_request_state import (
     VERIFY_FAILED_RETRYABLE,
     VERIFY_IN_PROGRESS,
     VERIFY_IN_PROGRESS_SAT,
+    VERIFY_MANUAL_REVIEW,
     VERIFY_NO_DATA,
     VERIFY_REJECTED,
     LiveMetadataRequestRecord,
@@ -30,7 +31,18 @@ from cfdi_vault.sat_live_request_state import (
 )
 
 
-_NO_DATA_CODES = frozenset({"301", "302", "5003", "5004", "no_data"})
+_NO_DATA_CODES = frozenset({"5004", "no_data"})
+_MANUAL_REVIEW_CODES = {
+    "5002": "sat_duplicate_or_exhausted_request",
+    "5003": "sat_too_many_results",
+    "5005": "sat_duplicate_request",
+    "5008": "sat_downloads_exhausted",
+    "5011": "sat_daily_download_limit",
+}
+_PERMANENT_FAILURE_CODES = {
+    "301": "sat_xml_malformed",
+    "302": "sat_signature_malformed",
+}
 _RETRYABLE_HTTP_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 
 
@@ -237,7 +249,22 @@ def _record_result(
         updated_at=format_state_datetime(now),
     )
 
+    if _is_no_data(result):
+        return _store(
+            storage_root,
+            replace(common, status=VERIFY_NO_DATA, next_check_at="", last_error_kind="no_data"),
+        )
     if result.action == SatOutcomeAction.FINISHED:
+        if not result.package_ids:
+            return _store(
+                storage_root,
+                replace(
+                    common,
+                    status=VERIFY_MANUAL_REVIEW,
+                    next_check_at="",
+                    last_error_kind="finished_without_package_ids",
+                ),
+            )
         return _store(
             storage_root,
             replace(
@@ -248,17 +275,33 @@ def _record_result(
                 package_refs_redacted=tuple(redact_package_ref(package_id) for package_id in result.package_ids),
             ),
         )
-    if _is_no_data(result):
-        return _store(storage_root, replace(common, status=VERIFY_NO_DATA, next_check_at=""))
     if result.action == SatOutcomeAction.EXPIRED or result.state == SatRequestState.EXPIRED:
-        return _store(storage_root, replace(common, status=VERIFY_EXPIRED, next_check_at="", last_error_kind="expired_request"))
+        return _store(
+            storage_root,
+            replace(common, status=VERIFY_EXPIRED, next_check_at="", last_error_kind="expired_request"),
+        )
     if result.state == SatRequestState.REJECTED:
         return _store(storage_root, replace(common, status=VERIFY_REJECTED, next_check_at="", last_error_kind="rejected"))
     if result.action == SatOutcomeAction.UNAUTHORIZED:
-        return _store(storage_root, replace(common, status=VERIFY_FAILED_PERMANENT, next_check_at="", last_error_kind="unauthorized"))
+        return _store(
+            storage_root,
+            replace(common, status=VERIFY_FAILED_PERMANENT, next_check_at="", last_error_kind="unauthorized"),
+        )
+    manual_review_kind = _manual_review_kind(result)
+    if manual_review_kind:
+        return _store(
+            storage_root,
+            replace(common, status=VERIFY_MANUAL_REVIEW, next_check_at="", last_error_kind=manual_review_kind),
+        )
+    permanent_failure_kind = _permanent_failure_kind(result)
+    if permanent_failure_kind:
+        return _store(
+            storage_root,
+            replace(common, status=VERIFY_FAILED_PERMANENT, next_check_at="", last_error_kind=permanent_failure_kind),
+        )
     if result.action == SatOutcomeAction.PERMANENT_FAILURE:
         return _store(storage_root, replace(common, status=VERIFY_FAILED_PERMANENT, next_check_at="", last_error_kind="permanent_failure"))
-    if result.action in {SatOutcomeAction.ACCEPTED, SatOutcomeAction.IN_PROGRESS, SatOutcomeAction.RETRY, SatOutcomeAction.DUPLICATE}:
+    if result.action in {SatOutcomeAction.ACCEPTED, SatOutcomeAction.IN_PROGRESS, SatOutcomeAction.RETRY}:
         if attempt_count >= policy.max_attempts:
             return _store(
                 storage_root,
@@ -328,6 +371,21 @@ def _is_expired(record: LiveMetadataRequestRecord, now: datetime, policy: Verify
 
 def _is_no_data(result: SatVerificationResult) -> bool:
     return str(result.sat_code).strip().lower() in _NO_DATA_CODES
+
+
+def _manual_review_kind(result: SatVerificationResult) -> str:
+    normalized_code = str(result.sat_code).strip()
+    if normalized_code in _MANUAL_REVIEW_CODES:
+        return _MANUAL_REVIEW_CODES[normalized_code]
+    if result.action == SatOutcomeAction.DUPLICATE:
+        return "sat_duplicate_request"
+    if result.action == SatOutcomeAction.DOWNLOADS_EXHAUSTED:
+        return "sat_downloads_exhausted"
+    return ""
+
+
+def _permanent_failure_kind(result: SatVerificationResult) -> str:
+    return _PERMANENT_FAILURE_CODES.get(str(result.sat_code).strip(), "")
 
 
 def _store(storage_root: str, record: LiveMetadataRequestRecord) -> LiveMetadataRequestRecord:

@@ -52,10 +52,14 @@ The scheduler stops retrying on:
 - `VERIFY_NO_DATA`
 - `VERIFY_REJECTED`
 - `VERIFY_EXPIRED`
+- `VERIFY_MANUAL_REVIEW`
 - `VERIFY_FAILED_PERMANENT`
 - `PACKAGE_READY`
 
-`PACKAGE_READY` only records redacted package references and counts. Package download remains a separate gated step.
+`VERIFY_MANUAL_REVIEW` is for terminal outcomes that must not be collapsed into `no_data` or retried blindly, such as duplicate/quota-like SAT
+responses or a finished response without package ids.
+
+`PACKAGE_READY` only records redacted package references and counts when SAT returns package ids. Package download remains a separate gated step.
 
 ## What not to do
 
