@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
+import base64
 import hashlib
 from pathlib import Path
 import re
@@ -13,14 +15,11 @@ from signxml.algorithms import CanonicalizationMethod, DigestAlgorithm, Signatur
 from cfdi_vault.sat_live_smoke import DS_NS, SAT_REQUEST_NS, SOAP11_NS
 
 EXPECTED_VERIFY_OPERATION = "VerificaSolicitudDescarga"
-EXPECTED_VERIFY_XMLSIG_PROFILE = "sat_verify_signed_solicitud"
-EXPECTED_VERIFY_C14N_METHOD = CanonicalizationMethod.CANONICAL_XML_1_0.value
+EXPECTED_VERIFY_XMLSIG_PROFILE = "sat_verify_signed_operation_wrapper"
+EXPECTED_VERIFY_C14N_METHOD = CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0.value
 EXPECTED_VERIFY_SIGNATURE_METHOD = SignatureMethod.RSA_SHA1.value
 EXPECTED_VERIFY_DIGEST_METHOD = DigestAlgorithm.SHA1.value
-EXPECTED_VERIFY_TRANSFORMS = (
-    "http://www.w3.org/2000/09/xmldsig#enveloped-signature",
-    CanonicalizationMethod.CANONICAL_XML_1_0.value,
-)
+EXPECTED_VERIFY_TRANSFORMS = (CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0.value,)
 
 
 @dataclass(frozen=True)
@@ -32,6 +31,8 @@ class VerifyEnvelopeLintResult:
     solicitud_attribute_names: tuple[str, ...]
     solicitud_attribute_order: str
     signature_location: str
+    signature_placement: str
+    signed_target: str
     key_info_shape: str
     reference_uri_shape: str
     reference_transform_algorithms: tuple[str, ...]
@@ -58,6 +59,8 @@ class VerifyEnvelopeLintResult:
     signature_value: bool
     key_info: bool
     x509_data: bool
+    x509_issuer_serial: bool
+    x509_certificate: bool
     no_ws_security: bool
     no_authorization_in_xml: bool
     no_placeholders: bool
@@ -89,6 +92,7 @@ def lint_verify_envelope(envelope: bytes) -> VerifyEnvelopeLintResult:
     reference_nodes = tuple(signed_info.findall(f".//{{{DS_NS}}}Reference")) if signed_info is not None else ()
     reference = reference_nodes[0] if reference_nodes else None
     paths = _element_paths(root)
+    signed_target = _signed_target(operation, solicitud, signature, reference)
     result = VerifyEnvelopeLintResult(
         envelope_sha256=hashlib.sha256(envelope).hexdigest(),
         envelope_size=len(envelope),
@@ -97,13 +101,15 @@ def lint_verify_envelope(envelope: bytes) -> VerifyEnvelopeLintResult:
         solicitud_attribute_names=tuple(solicitud.attrib) if solicitud is not None else (),
         solicitud_attribute_order=",".join(solicitud.attrib) if solicitud is not None else "missing",
         signature_location=_first_path(paths, "/des:solicitud/ds:Signature"),
+        signature_placement="inside_solicitud" if signature is not None else "missing",
+        signed_target=signed_target,
         key_info_shape=_key_info_shape(key_info),
         reference_uri_shape=_reference_uri_shape(reference),
         reference_transform_algorithms=_transform_algorithms(reference),
         c14n_algorithm=_method_algorithm(signed_info, "CanonicalizationMethod"),
         signature_algorithm=_method_algorithm(signed_info, "SignatureMethod"),
         digest_algorithms=tuple(_reference_method_algorithm(node, "DigestMethod") for node in reference_nodes),
-        signed_node_path=_reference_target_path(paths, reference),
+        signed_node_path=_reference_target_path(paths, reference, signed_target),
         soap_envelope=root.tag == f"{{{SOAP11_NS}}}Envelope",
         soap_header=header is not None,
         soap_body=body is not None,
@@ -124,13 +130,23 @@ def lint_verify_envelope(envelope: bytes) -> VerifyEnvelopeLintResult:
         signature_value=signature.find(f".//{{{DS_NS}}}SignatureValue") is not None if signature is not None else False,
         key_info=key_info is not None,
         x509_data=key_info.find(f".//{{{DS_NS}}}X509Data") is not None if key_info is not None else False,
+        x509_issuer_serial=_has_key_info_child(key_info, "X509IssuerSerial"),
+        x509_certificate=_has_key_info_child(key_info, "X509Certificate"),
         no_ws_security=root.find(f".//{{http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd}}Security") is None,
         no_authorization_in_xml=b"WRAP access_" + b"token" not in envelope,
         no_placeholders=not any(marker in envelope for marker in (b"None", b"null", b"undefined", b"TODO", b"MISSING")),
         all_checks_passed=False,
     )
     checks = [value for key, value in result.__dict__.items() if isinstance(value, bool) and key != "all_checks_passed"]
-    return VerifyEnvelopeLintResult(**{**result.__dict__, "all_checks_passed": all(checks) and result.reference_count == 1})
+    return VerifyEnvelopeLintResult(
+        **{
+            **result.__dict__,
+            "all_checks_passed": all(checks)
+            and result.reference_count == 1
+            and result.signature_placement == "inside_solicitud"
+            and result.signed_target == "operation_wrapper",
+        }
+    )
 
 
 def fingerprint_phpcfdi_verify_oracle(source_path: Path | None) -> PhpCfdiVerifyOracle:
@@ -200,17 +216,56 @@ def _reference_uri_shape(reference: etree._Element | None) -> str:
 def _key_info_shape(key_info: etree._Element | None) -> str:
     if key_info is None:
         return "missing_key_info"
+    if _has_key_info_child(key_info, "X509IssuerSerial") and _has_key_info_child(key_info, "X509Certificate"):
+        return "ds-x509issuer-serial+x509certificate"
     if key_info.find(f".//{{{DS_NS}}}X509Data") is not None:
         return "ds-x509data"
     return "unknown"
 
 
-def _reference_target_path(paths: tuple[str, ...], reference: etree._Element | None) -> str:
+def _has_key_info_child(key_info: etree._Element | None, local_name: str) -> bool:
+    return key_info.find(f".//{{{DS_NS}}}{local_name}") is not None if key_info is not None else False
+
+
+def _signed_target(
+    operation: etree._Element | None,
+    solicitud: etree._Element | None,
+    signature: etree._Element | None,
+    reference: etree._Element | None,
+) -> str:
+    digest_value = signature.findtext(f".//{{{DS_NS}}}DigestValue") if signature is not None else ""
+    if not digest_value:
+        return "missing"
+    if operation is not None and _digest_matches(operation, digest_value, exclusive=True):
+        return "operation_wrapper"
+    if solicitud is not None and _digest_matches(solicitud, digest_value, exclusive=False):
+        return "solicitud"
+    if reference is not None and "http://www.w3.org/2000/09/xmldsig#enveloped-signature" in _transform_algorithms(reference):
+        return "solicitud"
+    if reference is not None and (reference.get("URI") or "").startswith("#"):
+        return "redacted-id"
+    return "unknown"
+
+
+def _digest_matches(node: etree._Element, expected_digest: str, *, exclusive: bool) -> bool:
+    clean = deepcopy(node)
+    for nested_signature in clean.findall(f".//{{{DS_NS}}}Signature"):
+        parent = nested_signature.getparent()
+        if parent is not None:
+            parent.remove(nested_signature)
+    data = etree.tostring(clean, method="c14n", exclusive=exclusive, with_comments=False)
+    actual = base64.b64encode(hashlib.sha1(data).digest()).decode("ascii")
+    return actual == expected_digest
+
+
+def _reference_target_path(paths: tuple[str, ...], reference: etree._Element | None, signed_target: str = "operation_wrapper") -> str:
     if reference is None:
         return "missing"
     uri = reference.get("URI")
     if uri == "":
-        return "/soapenv:Envelope/soapenv:Body/des:VerificaSolicitudDescarga/des:solicitud"
+        if signed_target == "solicitud":
+            return "/soapenv:Envelope/soapenv:Body/des:VerificaSolicitudDescarga/des:solicitud"
+        return "/soapenv:Envelope/soapenv:Body/des:VerificaSolicitudDescarga"
     target = (uri or "").lstrip("#")
     if not target:
         return "missing"

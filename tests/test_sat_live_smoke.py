@@ -25,12 +25,15 @@ from cfdi_vault.sat_auth_http import validate_auth_headers_for_contract
 from cfdi_vault.sat_live_smoke import (
     AUTH_ACTION,
     DEFAULT_VERIFY_ENDPOINT,
+    DS_NS,
+    SAT_REQUEST_NS,
     SatEfirmMaterial,
     SatLiveMetadataSmokeAdapter,
     SatLiveSmokeEndpoints,
     SatLiveSmokeError,
     SatV15RequestOperation,
     VERIFY_ACTION,
+    VERIFY_EXCLUSIVE_C14N,
     _build_request_envelope,
     resolve_v15_request_operation,
     v15_request_soap_action,
@@ -162,6 +165,36 @@ def test_metadata_verify_smoke_uses_stored_request_id_without_new_request_or_dow
     assert "SYNTHETIC_TOKEN" not in repr(transport.requests[1])
 
 
+def test_metadata_verify_smoke_reports_finished_packages_without_download(tmp_path: Path) -> None:
+    responses = [
+        SoapTransportResponse(200, body=_soap("<sat:AutenticaResult>SYNTHETIC_TOKEN</sat:AutenticaResult>")),
+        SoapTransportResponse(
+            200,
+            body=_soap(
+                """
+                <sat:VerificaSolicitudDescargaResult IdSolicitud="SYN-REQ-003" CodEstatus="5000" EstadoSolicitud="3" Mensaje="Finished">
+                  <sat:IdsPaquetes>
+                    <sat:IdPaquete>SYN-PKG-001</sat:IdPaquete>
+                    <sat:IdPaquete>SYN-PKG-002</sat:IdPaquete>
+                  </sat:IdsPaquetes>
+                </sat:VerificaSolicitudDescargaResult>
+                """
+            ),
+        ),
+    ]
+    transport = FakeSoapTransport(responses)
+
+    result = SatLiveMetadataSmokeAdapter(
+        profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material()
+    ).metadata_verify_smoke("648a0000-1111-2222-3333-444444447b27")
+
+    assert (result.result, result.auth, result.request, result.verification) == ("metadata-verify-ok", "authenticated", "not_run", "finished")
+    assert result.sat_state == "finished"
+    assert result.package_count == 2
+    assert len(transport.requests) == 2
+    assert transport.requests[1].endpoint == DEFAULT_VERIFY_ENDPOINT
+
+
 def test_metadata_verify_smoke_sends_ready_verify_post_without_sensitive_repr(tmp_path: Path) -> None:
     responses = [
         SoapTransportResponse(200, body=_soap("<sat:AutenticaResult>SYNTHETIC_TOKEN</sat:AutenticaResult>")),
@@ -185,6 +218,26 @@ def test_metadata_verify_smoke_sends_ready_verify_post_without_sensitive_repr(tm
     assert b"Signature" in verify_request.body
     assert b"None" not in verify_request.body
     assert b"TODO" not in verify_request.body
+
+    root = etree.fromstring(verify_request.body)
+    body = root.find("{http://schemas.xmlsoap.org/soap/envelope/}Body")
+    assert body is not None
+    operation = body.find(f"{{{SAT_REQUEST_NS}}}VerificaSolicitudDescarga")
+    assert operation is not None
+    solicitud = operation.find(f"{{{SAT_REQUEST_NS}}}solicitud")
+    assert solicitud is not None
+    signature = solicitud.find(f"{{{DS_NS}}}Signature")
+    assert signature is not None
+    signed_info = signature.find(f"{{{DS_NS}}}SignedInfo")
+    assert signed_info is not None
+    assert signed_info.find(f"{{{DS_NS}}}CanonicalizationMethod").get("Algorithm") == VERIFY_EXCLUSIVE_C14N
+    reference = signed_info.find(f"{{{DS_NS}}}Reference")
+    assert reference is not None
+    assert reference.get("URI") == ""
+    transforms = tuple(node.get("Algorithm") for node in reference.findall(f".//{{{DS_NS}}}Transform"))
+    assert transforms == (VERIFY_EXCLUSIVE_C14N,)
+    assert signature.find(f".//{{{DS_NS}}}X509IssuerSerial") is not None
+    assert signature.find(f".//{{{DS_NS}}}X509Certificate") is not None
 
 
 def test_metadata_verify_smoke_fails_before_verify_transport_when_endpoint_is_wrong(tmp_path: Path) -> None:
