@@ -44,7 +44,7 @@ Runtime WSDL must be checked before endpoint/operation changes.
 | Authentication | `https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/Autenticacion/Autenticacion.svc` | `Autentica` |
 | Request | `https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/SolicitaDescargaService.svc` | `SolicitaDescargaEmitidos`, `SolicitaDescargaRecibidos`, `SolicitaDescargaFolio` |
 | Verification | `https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/VerificaSolicitudDescargaService.svc` | `VerificaSolicitudDescarga` |
-| Download | `https://cfdidescargamasiva.clouda.sat.gob.mx/DescargaMasivaService.svc` | `Descargar` |
+| Download | `https://cfdidescargamasiva.clouda.sat.gob.mx/DescargaMasivaService.svc` | `Descargar`; 2026-07-08 runtime `?singleWsdl` returned HTTP 400, so live behavior must stay guarded and reconfirmed before changes. |
 
 ## Productive retenciones endpoints
 

@@ -19,6 +19,12 @@ Last verified: 2026-07-08.
 
 This page lists source categories. The normative selection rules live in [SAT Download Source Policy](source-policy.md).
 
+Current research summary: the 2026-07-08 pass verified SAT-published service pages
+and runtime WSDL for authentication, request, and verification. It did not find a
+SAT-hosted v1.5 PDF during the web pass, and the CFDI download `?singleWsdl` returned
+HTTP 400 while the retenciones download WSDL exposed `Descargar`. Do not turn either
+gap into an implementation guess.
+
 ## Source matrix
 
 | Source level | Examples | Repository use |
@@ -36,7 +42,7 @@ This page lists source categories. The normative selection rules live in [SAT Do
 | Flow is auth, solicitud, verify, download, package decode. | `V1_5_CONTRACT` | Cross-check with runtime WSDL before endpoint or SOAPAction changes. |
 | Request operations are `SolicitaDescargaEmitidos`, `SolicitaDescargaRecibidos`, and `SolicitaDescargaFolio`. | `V1_5_CONTRACT` + `RUNTIME_WSDL` | Keep v1.5-only behavior isolated and tested. |
 | Verify operation is `VerificaSolicitudDescarga`. | `V1_5_CONTRACT` + `RUNTIME_WSDL` + `COMMUNITY_ORACLE` | Download is enabled only after finished state with package IDs. |
-| Download operation is `Descargar`. | `V1_5_CONTRACT` + `RUNTIME_WSDL` | Decode response package as base64 ZIP. |
+| Download operation is `Descargar`. | `V1_5_CONTRACT` target + `RUNTIME_WSDL` for retenciones download only | Decode response package as base64 ZIP; do not treat CFDI download as runtime-WSDL-confirmed until the CFDI `?singleWsdl` HTTP 400 gap is resolved. |
 | Metadata is TXT inside downloaded ZIP packages; CSV is local export. | `V1_5_CONTRACT` | Do not document SAT as returning ready-made CSV. |
 | Community libraries help compare implementation shape. | `COMMUNITY_ORACLE` | Never vendor or require them in normal runtime/CI. |
 

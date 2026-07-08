@@ -81,6 +81,7 @@ Without that model, projects become one-off scripts with hidden credential risk,
 | Gap | Why it matters | Next document |
 |---|---|---|
 | Public API contract | PyPI users need stable imports, not accidental internal modules. | `docs/release/python-package-plan.md` |
+| SAT SOAP public API research | Contributors need verified authentication, flow, storage, and source traceability before promoting live behavior. | `docs/api/sat-download-public-api.md` |
 | Package release workflow | Users should install with `pip`, not clone the repository. | `docs/release/python-package-plan.md` |
 | Example consumer project | The reference system should show how another repo imports the library. | Future `examples/library-consumer/` |
 | API stability markers | Internal SAT probing code should not look like supported API. | Future API reference docs |
@@ -89,6 +90,8 @@ Without that model, projects become one-off scripts with hidden credential risk,
 ## Acceptance checklist
 
 - [ ] README states the problem, the reference system, and the library separately.
+- [ ] `docs/release/library-scope.md` and `docs/foundation/reference-system-scope.md` stay aligned.
+- [ ] `docs/release/public-api.md` lists every supported import before a package release.
 - [ ] Package docs do not imply the full reference system is installed or production-ready.
 - [ ] Docs show the intended CLI flow and the reusable Python integration surface.
 - [ ] Backlog includes package release tasks.
