@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .common import *
+from cfdi_vault.sat_verify_post_probe import VERIFY_POST_PROBE_ENVELOPE_SOURCES, VERIFY_POST_PROBE_VARIANTS
 
 
 def _validate_live_transport_probe_guard(
@@ -144,6 +145,10 @@ def _validate_live_verify_post_probe_guard(
     manual_real_sat: bool,
     permit_ref: str | None,
 ) -> None:
+    if not manual_real_sat:
+        typer.echo("error=live_sat_guard_denied", err=True)
+        typer.echo("reason=missing-manual-real-sat-flag", err=True)
+        raise typer.Exit(code=1)
     if permit_ref is None:
         typer.echo("error=live_permit_denied", err=True)
         typer.echo("reason=permit-required", err=True)
@@ -268,8 +273,21 @@ def _run_transport_probe() -> tuple[SatProbeResult, ...]:
 def _run_auth_post_probe() -> SatAuthPostProbeResult:
     return run_sat_auth_post_probe()
 
-def _run_verify_post_probe() -> SatVerifyPostProbeResult:
-    return run_sat_verify_post_probe()
+def _run_verify_post_probe(
+    *,
+    variant: str = "default",
+    envelope_source: str = "synthetic",
+    connect_timeout_seconds: float = 10,
+    read_timeout_seconds: float = 10,
+    dry_run: bool = False,
+) -> SatVerifyPostProbeResult:
+    return run_sat_verify_post_probe(
+        variant=variant,
+        envelope_source=envelope_source,
+        connect_timeout_seconds=connect_timeout_seconds,
+        read_timeout_seconds=read_timeout_seconds,
+        dry_run=dry_run,
+    )
 
 def _run_auth_matrix_probe() -> tuple[SatAuthMatrixProbeResult, ...]:
     return run_sat_auth_matrix_probe()
@@ -360,11 +378,46 @@ def _print_verify_post_probe_result(*, profile_id: str, result: SatVerifyPostPro
         f"correlation_id={result.correlation_id}",
         f"request_body_bytes_len={result.request_body_bytes_len}",
         f"has_authorization={'yes' if result.has_authorization else 'no'}",
+        f"variant={result.variant}",
+        f"envelope_source={result.envelope_source}",
+        f"body_shape_verified={'yes' if result.body_shape_verified else 'no'}",
+        f"operation={result.operation}",
+        f"has_id_solicitud={'yes' if result.has_id_solicitud else 'no'}",
+        f"has_rfc_solicitante={'yes' if result.has_rfc_solicitante else 'no'}",
+        f"has_signature={'yes' if result.has_signature else 'no'}",
+        f"has_signed_info={'yes' if result.has_signed_info else 'no'}",
+        f"has_signature_value={'yes' if result.has_signature_value else 'no'}",
+        f"has_key_info={'yes' if result.has_key_info else 'no'}",
+        f"has_x509_issuer_serial={'yes' if result.has_x509_issuer_serial else 'no'}",
+        f"has_x509_certificate={'yes' if result.has_x509_certificate else 'no'}",
+        f"signature_placement={result.signature_placement}",
+        f"signed_target={result.signed_target}",
+        f"canonicalization={result.canonicalization}",
+        f"transform={result.transform}",
+        f"reference_uri={result.reference_uri}",
+        f"digest_method={result.digest_method}",
+        f"signature_method={result.signature_method}",
+        f"has_authorization_wrap={'yes' if result.has_authorization_wrap else 'no'}",
+        f"authorization_in_body={'yes' if result.authorization_in_body else 'no'}",
+        f"content_type={result.content_type}",
+        f"soap_action_present={'yes' if result.soap_action_present else 'no'}",
+        f"post_attempted={'yes' if result.post_attempted else 'no'}",
+        f"response_received={'yes' if result.response_received else 'no'}",
+        f"soap_fault_detected={'yes' if result.soap_fault_detected else 'no'}",
+        f"timeout_stage={result.timeout_stage}",
+        f"exception_stage={result.exception_stage}",
+        f"request_size_bytes={result.request_size_bytes}",
+        f"connect_timeout_seconds={result.connect_timeout_seconds:g}",
+        f"read_timeout_seconds={result.read_timeout_seconds:g}",
+        f"request_body_sha256_redacted={result.request_body_sha256_redacted}",
+        f"redaction_active={'yes' if result.redaction_active else 'no'}",
     ]
     if result.http_status is not None:
         fields.append(f"http_status={result.http_status}")
     if result.payload_size is not None:
         fields.append(f"payload_size={result.payload_size}")
+    if result.response_size_bytes is not None:
+        fields.append(f"response_size_bytes={result.response_size_bytes}")
     typer.echo("probe_result=" + "|".join(fields))
     typer.echo(f"safe_hint={result.safe_hint}")
     typer.echo("efirma_loaded=no")
@@ -465,13 +518,40 @@ def sat_probe_verify_post(
     profile: str = typer.Option("default", "--profile", help="Local setup profile id."),
     manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Required for live SAT verify POST probe."),
     permit: str | None = typer.Option(None, "--permit", help="Required one-time local verify_post_probe permit id."),
+    variant: str = typer.Option("default", "--variant", help="Transport variant to probe."),
+    envelope_source: str = typer.Option(
+        "synthetic",
+        "--envelope-source",
+        help="Probe envelope source: synthetic or production-signed.",
+    ),
+    connect_timeout: float = typer.Option(10, "--connect-timeout", help="Connect timeout in seconds."),
+    read_timeout: float = typer.Option(10, "--read-timeout", help="Read timeout in seconds."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print redacted probe shape without real network I/O."),
 ) -> None:
     """Probe SAT verify HTTPS POST transport without e.firma material, real token, or real request id."""
 
-    _validate_live_verify_post_probe_guard(profile_id=profile, manual_real_sat=manual_real_sat, permit_ref=permit)
-    result = _run_verify_post_probe()
+    normalized_variant = str(variant or "default").strip().lower()
+    normalized_envelope_source = str(envelope_source or "synthetic").strip().lower()
+    if normalized_variant not in VERIFY_POST_PROBE_VARIANTS:
+        typer.echo("error=invalid_verify_post_probe_variant", err=True)
+        typer.echo(f"allowed={','.join(VERIFY_POST_PROBE_VARIANTS)}", err=True)
+        raise typer.Exit(code=2)
+    if normalized_envelope_source not in VERIFY_POST_PROBE_ENVELOPE_SOURCES:
+        typer.echo("error=invalid_verify_post_probe_envelope_source", err=True)
+        typer.echo(f"allowed={','.join(VERIFY_POST_PROBE_ENVELOPE_SOURCES)}", err=True)
+        raise typer.Exit(code=2)
+
+    if not dry_run:
+        _validate_live_verify_post_probe_guard(profile_id=profile, manual_real_sat=manual_real_sat, permit_ref=permit)
+    result = _run_verify_post_probe(
+        variant=normalized_variant,
+        envelope_source=normalized_envelope_source,
+        connect_timeout_seconds=connect_timeout,
+        read_timeout_seconds=read_timeout,
+        dry_run=dry_run,
+    )
     _print_verify_post_probe_result(profile_id=profile, result=result)
-    if result.status != "ok":
+    if result.status not in {"ok", "dry_run"}:
         raise typer.Exit(code=1)
 
 def sat_probe_auth_matrix(

@@ -19,6 +19,7 @@ def test_help_command_lists_recovery_flow() -> None:
     assert "sat lint-auth-envelope" in result.output
     assert "sat diagnose-live" in result.output
     assert "sat probe-transport" in result.output
+    assert "sat probe-verify-post" in result.output
     assert "sat probe-auth-matrix" in result.output
     assert "Command catalog" in result.output
 
@@ -56,6 +57,7 @@ def test_cli_subcommand_help_builds_for_setup_and_worker() -> None:
         ["sat", "lint-auth-envelope", "--help"],
         ["sat", "diagnose-live", "--help"],
         ["sat", "probe-transport", "--help"],
+        ["sat", "probe-verify-post", "--help"],
         ["sat", "probe-auth-matrix", "--help"],
         ["worker", "run", "--help"],
     ):

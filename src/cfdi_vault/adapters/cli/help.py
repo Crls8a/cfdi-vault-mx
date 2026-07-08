@@ -181,6 +181,12 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "example": "cfdi-vault sat probe-auth-post --profile default --permit PERMIT_ID",
     },
     {
+        "command": "sat probe-verify-post",
+        "purpose": "Build a redacted SAT verify POST shape and optionally probe transport without real request ids.",
+        "when": "Run offline with --dry-run first, then only with an explicit live permit for transport diagnostics.",
+        "example": "cfdi-vault sat probe-verify-post --profile default --dry-run --envelope-source production-signed",
+    },
+    {
         "command": "sat probe-auth-matrix",
         "purpose": "Run a no-credential auth GET/WSDL/POST matrix with Python and optional external clients.",
         "when": "Run after auth endpoint parity is merged to isolate Python/client/SAT/proxy transport behavior.",
