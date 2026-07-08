@@ -366,8 +366,29 @@ def test_efirma_material_stays_out_of_tls_client_transport(tmp_path: Path) -> No
     assert request.tls_verify is True
     assert request.client_tls_certificate is None
     assert request.timeout_seconds == 60
+    assert request.connect_timeout_seconds is None
+    assert request.read_timeout_seconds is None
     assert b"BinarySecurityToken" in request.body
     assert material.certificate_pem.decode("ascii") not in repr(request)
+
+
+def test_gate_only_adapter_can_pass_separate_connect_and_read_timeouts(tmp_path: Path) -> None:
+    transport = FakeSoapTransport([SoapTransportResponse(200, body=_soap("<sat:AutenticaResult>SYNTHETIC_TOKEN</sat:AutenticaResult>"))])
+
+    SatLiveMetadataSmokeAdapter(
+        profile=_profile(tmp_path),
+        provider=DummySecretProvider(),
+        transport=transport,
+        material=_material(),
+        timeout_seconds=180,
+        connect_timeout_seconds=15,
+        read_timeout_seconds=180,
+    ).auth_smoke()
+
+    request = transport.requests[0]
+    assert request.timeout_seconds == 180
+    assert request.connect_timeout_seconds == 15
+    assert request.read_timeout_seconds == 180
 
 
 def test_auth_smoke_headers_match_soap11_contract_without_sensitive_headers(tmp_path: Path) -> None:

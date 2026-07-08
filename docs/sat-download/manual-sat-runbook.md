@@ -81,6 +81,7 @@ cfdi-vault sat verify-live-gate `
   --request-ref <REQUEST_REF> `
   --manual-real-sat `
   --permit <PERMIT_ID> `
+  --connect-timeout-seconds 15 `
   --read-timeout-seconds 60
 ```
 
@@ -164,15 +165,26 @@ This command performs, in order:
 
 1. redacted preflight only;
 2. local production-signed `VerificaSolicitudDescarga` oracle parity;
-3. at most one live auth + verify attempt with the configured read timeout.
+3. public read-only verify WSDL/endpoint reachability check without e.firma material;
+4. at most one live auth + verify attempt with the configured gate timeouts.
 
 It does not create a new request, download packages, persist XML/PDF, or store raw SOAP/SAT responses.
+
+Gate timeout controls:
+
+- `--connect-timeout-seconds` defaults to 15 seconds and applies to the gate's public WSDL/endpoint check and guarded SOAP connect phase when separate gate timeouts are enabled.
+- `--read-timeout-seconds` defaults to 60 seconds and may be explicitly raised up to 180 seconds for this gate only.
+- `CFDI_VAULT_VERIFY_GATE_CONNECT_TIMEOUT_SECONDS` and `CFDI_VAULT_VERIFY_GATE_READ_TIMEOUT_SECONDS` are local fallback overrides when the flags are omitted.
+- The normal SAT runtime path is not changed by these gate-only diagnostics.
 
 Required extra evidence:
 
 - `production_signed=yes`;
 - `oracle_parity=passed`;
+- `wsdl_check=passed`;
+- `connect_timeout_seconds=15` or the approved timeout;
 - `read_timeout_seconds=60` or the approved timeout;
+- `raw_wsdl_persisted=no`;
 - `download_executed=no`;
 - `raw_soap_persisted=no`;
 - `raw_response_persisted=no`.
@@ -204,6 +216,28 @@ Controlled rerun after resolving the missing preflight inputs:
 - result: not completed because the single live verify attempt reached the approved read timeout (`error_kind=verify_read_timeout`).
 
 The controlled rerun used a clean detached worktree at the same gate commit to avoid stashing, deleting, or mixing unrelated local documentation edits present in the main worktree.
+
+Controlled timeout-diagnostics rerun after adding gate-only connect/read timeout controls:
+
+- live SAT executed: yes;
+- production-signed: yes;
+- oracle parity: passed;
+- WSDL/endpoint check: passed;
+- WSDL HTTP status: 200;
+- WSDL elapsed: 392 ms;
+- connect timeout: 15 seconds;
+- read timeout: 180 seconds;
+- verify elapsed: not reported by this run;
+- preflight: ready;
+- `EstadoSolicitud`: accepted;
+- `CodigoEstado`: not reported;
+- `NumeroCFDIs`: not reported;
+- `IdsPaquetes`: none;
+- download executed: no;
+- raw WSDL persisted: no;
+- raw SOAP persisted: no;
+- raw SAT response persisted: no;
+- result: completed; the verify response was received without packages and no download was attempted.
 
 ## Required confirmation
 

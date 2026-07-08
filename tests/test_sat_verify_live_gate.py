@@ -13,10 +13,16 @@ from cfdi_vault import setup as setup_flow
 from cfdi_vault.cli import LiveSmokeCliResult, _print_verify_live_gate_result, app
 from cfdi_vault.sat_live_request_state import LiveMetadataRequestRecord
 from cfdi_vault.sat_verify_live_gate import (
+    DEFAULT_VERIFY_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_VERIFY_READ_TIMEOUT_SECONDS,
     LIVE_GATE_ENV,
+    MAX_VERIFY_READ_TIMEOUT_SECONDS,
     PRODUCTION_SIGNED_ENV,
     VerifyOracleParityResult,
+    VerifyWsdlCheckResult,
     build_verify_live_gate_preflight,
+    check_verify_wsdl_endpoint,
+    resolve_verify_gate_timeout_config,
     run_verify_oracle_parity,
 )
 from cfdi_vault.secrets import DummySecretProvider
@@ -93,6 +99,106 @@ def test_verify_live_gate_preflight_requires_positive_read_timeout(tmp_path: Pat
     assert preflight.missing == ("invalid-read-timeout",)
 
 
+def test_verify_live_gate_preflight_rejects_read_timeout_above_documented_max(tmp_path: Path) -> None:
+    profile = _profile(tmp_path)
+    record = _record()
+    provider = DummySecretProvider({profile.phrase_ref: SYNTHETIC_PHRASE})
+
+    preflight = build_verify_live_gate_preflight(
+        profile=profile,
+        record=record,
+        provider=provider,
+        env={LIVE_GATE_ENV: "1", PRODUCTION_SIGNED_ENV: "1"},
+        manual_real_sat=True,
+        permit_ref="permit-synthetic",
+        read_timeout_seconds=MAX_VERIFY_READ_TIMEOUT_SECONDS + 1,
+        repo_root=Path.cwd(),
+    )
+
+    assert preflight.ready is False
+    assert preflight.missing == ("read-timeout-too-large",)
+
+
+def test_verify_gate_timeout_config_defaults_and_allows_gate_only_override() -> None:
+    defaults = resolve_verify_gate_timeout_config(connect_timeout_seconds=None, read_timeout_seconds=None, env={})
+
+    assert defaults.connect_timeout_seconds == DEFAULT_VERIFY_CONNECT_TIMEOUT_SECONDS
+    assert defaults.read_timeout_seconds == DEFAULT_VERIFY_READ_TIMEOUT_SECONDS
+    assert defaults.invalid == ()
+
+    overridden = resolve_verify_gate_timeout_config(
+        connect_timeout_seconds=15,
+        read_timeout_seconds=180,
+        env={"CFDI_VAULT_VERIFY_GATE_READ_TIMEOUT_SECONDS": "30"},
+    )
+
+    assert overridden.connect_timeout_seconds == 15
+    assert overridden.read_timeout_seconds == 180
+    assert overridden.invalid == ()
+
+
+def test_verify_live_gate_preflight_accepts_configurable_connect_timeout(tmp_path: Path) -> None:
+    profile = _profile(tmp_path)
+    record = _record()
+    provider = DummySecretProvider({profile.phrase_ref: SYNTHETIC_PHRASE})
+
+    preflight = build_verify_live_gate_preflight(
+        profile=profile,
+        record=record,
+        provider=provider,
+        env={LIVE_GATE_ENV: "1", PRODUCTION_SIGNED_ENV: "1"},
+        manual_real_sat=True,
+        permit_ref="permit-synthetic",
+        connect_timeout_seconds=15,
+        read_timeout_seconds=180,
+        repo_root=Path.cwd(),
+    )
+
+    assert preflight.ready is True
+    assert preflight.connect_timeout_seconds == 15
+    assert preflight.read_timeout_seconds == 180
+
+
+def test_verify_wsdl_check_does_not_read_or_persist_raw_wsdl() -> None:
+    class FakeResponse:
+        read_called = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def getcode(self) -> int:
+            return 200
+
+        def read(self) -> bytes:
+            self.read_called = True
+            return b"<definitions>raw wsdl must stay unread</definitions>"
+
+    class FakeOpener:
+        def __init__(self) -> None:
+            self.response = FakeResponse()
+            self.timeout = None
+            self.url = ""
+
+        def urlopen(self, request, timeout):  # noqa: ANN001
+            self.timeout = timeout
+            self.url = request.full_url
+            return self.response
+
+    opener = FakeOpener()
+
+    result = check_verify_wsdl_endpoint(connect_timeout_seconds=15, opener=opener)
+
+    assert result.status == "passed"
+    assert result.reachable is True
+    assert result.status_code == 200
+    assert opener.timeout == 15
+    assert opener.url.endswith("?wsdl")
+    assert opener.response.read_called is False
+
+
 def test_verify_oracle_parity_passes_with_synthetic_production_signed_shape(tmp_path: Path) -> None:
     profile = _profile(tmp_path)
     record = _record()
@@ -127,6 +233,99 @@ def test_cli_verify_live_gate_does_not_run_without_preflight() -> None:
     assert "full_rfc_visible=no" in result.output
     assert "full_id_solicitud_visible=no" in result.output
     assert "download_executed=no" in result.output
+
+
+def test_cli_verify_live_gate_blocks_signed_live_when_wsdl_check_fails(monkeypatch, tmp_path: Path) -> None:
+    profile = _profile(tmp_path)
+    record = _record()
+    provider = DummySecretProvider({profile.phrase_ref: SYNTHETIC_PHRASE})
+
+    monkeypatch.setattr("cfdi_vault.cli._load_download_profile_or_none", lambda profile_id: profile)
+    monkeypatch.setattr("cfdi_vault.cli._setup_provider", lambda profile_id: provider)
+    monkeypatch.setattr("cfdi_vault.cli._load_request_record_or_none", lambda loaded_profile, request_ref: record)
+    monkeypatch.setattr(
+        "cfdi_vault.cli.run_verify_oracle_parity",
+        lambda **kwargs: VerifyOracleParityResult(status="passed", operation="VerificaSolicitudDescarga"),
+    )
+    monkeypatch.setattr(
+        "cfdi_vault.cli.check_verify_wsdl_endpoint",
+        lambda **kwargs: VerifyWsdlCheckResult(status="failed", reachable=False, error_kind="wsdl_unreachable"),
+    )
+    monkeypatch.setattr(
+        "cfdi_vault.cli._run_live_metadata_verify_smoke",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("signed live verify must not run")),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "sat",
+            "verify-live-gate",
+            "--profile",
+            "dummy-profile",
+            "--request-ref",
+            "req-synthetic",
+            "--manual-real-sat",
+            "--permit",
+            "permit-synthetic",
+            "--connect-timeout-seconds",
+            "15",
+            "--read-timeout-seconds",
+            "180",
+        ],
+        env={LIVE_GATE_ENV: "1", PRODUCTION_SIGNED_ENV: "1"},
+    )
+
+    assert result.exit_code == 1
+    assert "oracle_parity=passed" in result.output
+    assert "wsdl_check=failed" in result.output
+    assert "wsdl_error_kind=wsdl_unreachable" in result.output
+    assert "live_sat_executed=no" in result.output
+    assert "raw_wsdl_persisted=no" in result.output
+    assert "raw_soap_persisted=no" in result.output
+
+
+def test_cli_verify_live_gate_requires_oracle_before_any_network(monkeypatch, tmp_path: Path) -> None:
+    profile = _profile(tmp_path)
+    record = _record()
+    provider = DummySecretProvider({profile.phrase_ref: SYNTHETIC_PHRASE})
+
+    monkeypatch.setattr("cfdi_vault.cli._load_download_profile_or_none", lambda profile_id: profile)
+    monkeypatch.setattr("cfdi_vault.cli._setup_provider", lambda profile_id: provider)
+    monkeypatch.setattr("cfdi_vault.cli._load_request_record_or_none", lambda loaded_profile, request_ref: record)
+    monkeypatch.setattr(
+        "cfdi_vault.cli.run_verify_oracle_parity",
+        lambda **kwargs: VerifyOracleParityResult(status="failed", reason="synthetic-oracle-failure"),
+    )
+    monkeypatch.setattr(
+        "cfdi_vault.cli.check_verify_wsdl_endpoint",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("wsdl check must not run after oracle failure")),
+    )
+    monkeypatch.setattr(
+        "cfdi_vault.cli._run_live_metadata_verify_smoke",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("signed live verify must not run")),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "sat",
+            "verify-live-gate",
+            "--profile",
+            "dummy-profile",
+            "--request-ref",
+            "req-synthetic",
+            "--manual-real-sat",
+            "--permit",
+            "permit-synthetic",
+        ],
+        env={LIVE_GATE_ENV: "1", PRODUCTION_SIGNED_ENV: "1"},
+    )
+
+    assert result.exit_code == 1
+    assert "oracle_parity=failed" in result.output
+    assert "wsdl_check=not-run" in result.output
+    assert "live_sat_executed=no" in result.output
 
 
 def test_verify_live_gate_prints_package_count_without_download_or_ids(tmp_path: Path, capsys) -> None:

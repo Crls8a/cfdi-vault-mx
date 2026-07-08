@@ -44,7 +44,7 @@ from cfdi_vault.sat_soap_parse import (
     parse_package_download_response,
     parse_verification_response,
 )
-from cfdi_vault.sat_transport import SoapTransportPort, SoapTransportRequest
+from cfdi_vault.sat_transport import SoapConnectTimeout, SoapReadTimeout, SoapTransportPort, SoapTransportRequest
 from cfdi_vault.secrets import CredentialKind, CredentialProviderError, CredentialReference
 from cfdi_vault.setup_core import ExistenceProvider, LocalProfile
 SOAP11_NS = "http://schemas.xmlsoap.org/soap/envelope/"
@@ -71,7 +71,7 @@ MATERIAL_HINT = "check local profile readiness and e.firma material without prin
 BUILD_HINT = "check envelope construction and XML signature inputs without printing SOAP"
 READINESS_HINT = "check auth SOAPAction, content-type, namespace, WS-Security, signature, and non-empty signed body"
 DIAGNOSTIC_STAGES = ("preflight", "profile_load", "secret_resolve", "credential_load", "certificate_parse", "private_key_load", "xmlsig_sign", "auth_envelope_build", "auth_request_readiness", "auth_transport", "auth_response_parse", "token_extract", "metadata_request_build", "metadata_request_transport", "metadata_request_parse", "verify_request_build", "verify_request_readiness", "verify_transport", "verify_response_parse", "package_download", "package_process")
-LIVE_ERROR_KINDS = ("guard_failed", "profile_not_ready", "secret_unavailable", "credential_load_failed", "certificate_parse_failed", "private_key_load_failed", "xmlsig_failed", "envelope_build_failed", "transport_tls_failed", "tls_handshake_failed", "certificate_verify_failed", "client_cert_rejected", "proxy_connect_failed", "connection_reset", "connection_reset_during_post", "remote_closed_connection", "timeout", "verify_read_timeout", "transport_timeout", "transport_http_error", "http_status_error", "soap_fault", "token_missing", "token_parse_failed", "sat_status_error", "sat_duplicate_request", "sat_unauthorized", "sat_no_data", "sat_retryable", "sat_permanent", "unexpected_response", "unexpected_http_response", "client_configuration_error", "redaction_failure", "unknown_live_adapter_failure")
+LIVE_ERROR_KINDS = ("guard_failed", "profile_not_ready", "secret_unavailable", "credential_load_failed", "certificate_parse_failed", "private_key_load_failed", "xmlsig_failed", "envelope_build_failed", "transport_tls_failed", "tls_handshake_failed", "certificate_verify_failed", "client_cert_rejected", "connect_timeout", "proxy_connect_failed", "connection_reset", "connection_reset_during_post", "remote_closed_connection", "timeout", "verify_read_timeout", "transport_timeout", "transport_http_error", "http_status_error", "soap_fault", "token_missing", "token_parse_failed", "sat_status_error", "sat_duplicate_request", "sat_unauthorized", "sat_no_data", "sat_retryable", "sat_permanent", "unexpected_response", "unexpected_http_response", "client_configuration_error", "redaction_failure", "unknown_live_adapter_failure")
 @dataclass(frozen=True)
 class SatLiveDiagnosticEntry:
     """One redacted live diagnostic stage result."""
@@ -366,6 +366,8 @@ class SatLiveMetadataSmokeAdapter:
         material: SatEfirmMaterial | None = None,
         endpoints: SatLiveSmokeEndpoints | None = None,
         timeout_seconds: float = 60,
+        connect_timeout_seconds: float | None = None,
+        read_timeout_seconds: float | None = None,
         auth_envelope_variant: str = DEFAULT_AUTH_ENVELOPE_VARIANT,
         wcf_action_header_enabled: bool = True,
     ) -> None:
@@ -380,6 +382,8 @@ class SatLiveMetadataSmokeAdapter:
             os.getenv("CFDI_VAULT_SAT_DOWNLOAD_ENDPOINT", DEFAULT_DOWNLOAD_ENDPOINT),
         )
         self._timeout_seconds = timeout_seconds
+        self._connect_timeout_seconds = connect_timeout_seconds
+        self._read_timeout_seconds = read_timeout_seconds
         self._auth_envelope_variant = _validated_auth_envelope_variant(auth_envelope_variant)
         self._wcf_action_header_enabled = wcf_action_header_enabled
     def auth_smoke(self) -> SatLiveSmokeSummary:
@@ -599,7 +603,16 @@ class SatLiveMetadataSmokeAdapter:
             readiness = _assert_verify_request_ready(endpoint, body, headers)
         started = time.perf_counter()
         try:
-            response = self._transport.send(SoapTransportRequest(endpoint=endpoint, body=body, headers=headers, timeout_seconds=self._timeout_seconds))
+            response = self._transport.send(
+                SoapTransportRequest(
+                    endpoint=endpoint,
+                    body=body,
+                    headers=headers,
+                    timeout_seconds=self._timeout_seconds,
+                    connect_timeout_seconds=self._connect_timeout_seconds,
+                    read_timeout_seconds=self._read_timeout_seconds,
+                )
+            )
         except HTTPError as exc:
             response_body = exc.read(8192)
             raise SatLiveSmokeError(
@@ -1261,6 +1274,10 @@ def _classify_transport_failure(exc: BaseException) -> TransportFailureClassific
     marker = _exception_marker(root)
     exception_class = type(root).__name__
     exception_errno = _exception_errno(root)
+    if isinstance(root, SoapConnectTimeout):
+        return TransportFailureClassification("connect_timeout", "network", exception_class, exception_errno)
+    if isinstance(root, SoapReadTimeout):
+        return TransportFailureClassification("timeout", "network", exception_class, exception_errno)
     if isinstance(root, ssl.SSLCertVerificationError):
         return TransportFailureClassification("certificate_verify_failed", "tls", exception_class, exception_errno)
     if isinstance(root, ssl.SSLError):
@@ -1285,6 +1302,8 @@ def _classify_transport_exception(exc: BaseException) -> str:
 
 
 def _root_transport_exception(exc: BaseException) -> BaseException:
+    if isinstance(exc, (SoapConnectTimeout, SoapReadTimeout)):
+        return exc
     if isinstance(exc, URLError) and isinstance(exc.reason, BaseException):
         return _root_transport_exception(exc.reason)
     for attr in ("__cause__", "__context__"):

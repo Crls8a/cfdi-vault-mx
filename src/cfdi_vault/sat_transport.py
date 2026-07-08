@@ -8,8 +8,12 @@ perform network calls accidentally.
 from __future__ import annotations
 
 import os
+import errno
+import socket
+import ssl
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from http.client import HTTPConnection, HTTPSConnection
 from typing import Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib import request as urllib_request
@@ -25,6 +29,8 @@ class SoapTransportRequest:
     body: bytes
     headers: Mapping[str, str] = field(default_factory=dict)
     timeout_seconds: float | None = None
+    connect_timeout_seconds: float | None = None
+    read_timeout_seconds: float | None = None
     tls_verify: bool = True
     client_tls_certificate: object | None = None
 
@@ -37,6 +43,9 @@ class SoapTransportRequest:
             raise ValueError("tls-verification-required")
         if self.client_tls_certificate is not None:
             raise ValueError("client-tls-certificate-not-supported")
+        _validate_optional_timeout(self.timeout_seconds, "timeout_seconds")
+        _validate_optional_timeout(self.connect_timeout_seconds, "connect_timeout_seconds")
+        _validate_optional_timeout(self.read_timeout_seconds, "read_timeout_seconds")
 
     def __repr__(self) -> str:
         return (
@@ -45,6 +54,8 @@ class SoapTransportRequest:
             f"headers={_redact_headers(self.headers)!r}, "
             f"body=<redacted {len(self.body)} bytes>, "
             f"timeout_seconds={self.timeout_seconds!r}, "
+            f"connect_timeout_seconds={self.connect_timeout_seconds!r}, "
+            f"read_timeout_seconds={self.read_timeout_seconds!r}, "
             "tls_verify=True, "
             "client_tls_certificate=None)"
         )
@@ -82,6 +93,14 @@ class LiveSatGuardError(RuntimeError):
     def __init__(self, reasons: Sequence[str]) -> None:
         self.reasons = tuple(reasons)
         super().__init__("live SAT transport denied: " + ", ".join(self.reasons))
+
+
+class SoapConnectTimeout(TimeoutError):
+    """Raised when the guarded SOAP transport cannot connect in time."""
+
+
+class SoapReadTimeout(TimeoutError):
+    """Raised when the guarded SOAP transport connects but cannot read in time."""
 
 
 @dataclass(frozen=True)
@@ -186,6 +205,8 @@ class GuardedSoapHttpTransport:
         return self._send_with_urllib(request)
 
     def _send_with_urllib(self, request: SoapTransportRequest) -> SoapTransportResponse:
+        if request.connect_timeout_seconds is not None or request.read_timeout_seconds is not None:
+            return self._send_with_http_client(request)
         http_request = urllib_request.Request(
             request.endpoint,
             data=request.body,
@@ -202,9 +223,64 @@ class GuardedSoapHttpTransport:
                 reason=getattr(response, "reason", ""),
             )
 
+    def _send_with_http_client(self, request: SoapTransportRequest) -> SoapTransportResponse:
+        parts = urlsplit(request.endpoint)
+        if parts.scheme not in {"http", "https"} or not parts.hostname:
+            raise ValueError("unsupported-soap-endpoint")
+        path = urlunsplit(("", "", parts.path or "/", parts.query, ""))
+        connect_timeout = request.connect_timeout_seconds or request.timeout_seconds
+        read_timeout = request.read_timeout_seconds or request.timeout_seconds
+        connection: HTTPConnection
+        if parts.scheme == "https":
+            connection = HTTPSConnection(
+                parts.hostname,
+                port=parts.port,
+                timeout=connect_timeout,
+                context=ssl.create_default_context(),
+            )
+        else:
+            connection = HTTPConnection(parts.hostname, port=parts.port, timeout=connect_timeout)
+        try:
+            try:
+                connection.connect()
+            except (TimeoutError, socket.timeout, OSError) as exc:
+                if _looks_like_timeout(exc):
+                    raise SoapConnectTimeout("soap-connect-timeout") from exc
+                raise
+            if connection.sock is not None and read_timeout is not None:
+                connection.sock.settimeout(read_timeout)
+            try:
+                connection.request("POST", path, body=request.body, headers=dict(request.headers))
+                response = connection.getresponse()
+                body = response.read()
+            except (TimeoutError, socket.timeout, OSError) as exc:
+                if _looks_like_timeout(exc):
+                    raise SoapReadTimeout("soap-read-timeout") from exc
+                raise
+            return SoapTransportResponse(
+                status_code=response.status,
+                headers=dict(response.getheaders()),
+                body=body,
+                reason=response.reason,
+            )
+        finally:
+            connection.close()
+
 
 def _is_truthy(value: str | None) -> bool:
     return value is not None and value.strip().lower() not in _FALSEY_ENV_VALUES
+
+
+def _validate_optional_timeout(value: float | None, field_name: str) -> None:
+    if value is not None and value <= 0:
+        raise ValueError(f"{field_name}-must-be-positive")
+
+
+def _looks_like_timeout(exc: BaseException) -> bool:
+    return isinstance(exc, (TimeoutError, socket.timeout)) or getattr(exc, "errno", None) in {
+        errno.ETIMEDOUT,
+        getattr(errno, "WSAETIMEDOUT", -1),
+    }
 
 
 def _redact_headers(headers: Mapping[str, str]) -> dict[str, str]:

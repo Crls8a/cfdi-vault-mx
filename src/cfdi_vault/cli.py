@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from time import perf_counter
 
 import typer
 
@@ -80,10 +81,16 @@ from cfdi_vault.sat_contract import SatOutcomeAction
 from cfdi_vault.sat_transport_probe import SatProbeResult, run_sat_transport_probe
 from cfdi_vault.sat_verify_post_probe import SatVerifyPostProbeResult, run_sat_verify_post_probe
 from cfdi_vault.sat_verify_live_gate import (
+    DEFAULT_VERIFY_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_VERIFY_READ_TIMEOUT_SECONDS,
+    MAX_VERIFY_CONNECT_TIMEOUT_SECONDS,
+    MAX_VERIFY_READ_TIMEOUT_SECONDS,
     VerifyLiveGatePreflight,
     VerifyOracleParityResult,
+    VerifyWsdlCheckResult,
     build_verify_live_gate_preflight,
+    check_verify_wsdl_endpoint,
+    resolve_verify_gate_timeout_config,
     run_verify_oracle_parity,
 )
 from cfdi_vault.live_permit import (
@@ -262,7 +269,7 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "command": "sat verify-live-gate",
         "purpose": "Run the controlled v1.5 production-signed verify gate after redacted preflight and local oracle parity.",
         "when": "Use for the single approved verify live gate only; it never downloads packages.",
-        "example": "cfdi-vault sat verify-live-gate --profile default --request-ref <request-ref> --manual-real-sat --permit PERMIT_ID --read-timeout-seconds 60",
+        "example": "cfdi-vault sat verify-live-gate --profile default --request-ref <request-ref> --manual-real-sat --permit PERMIT_ID --connect-timeout-seconds 15 --read-timeout-seconds 60",
     },
     {
         "command": "sat inspect-auth-contract",
@@ -406,6 +413,7 @@ class LiveSmokeCliResult:
     request_body_bytes_len: int | None = None
     envelope_sha256: str | None = None
     signed_reference_count: int | None = None
+    duration_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1292,11 +1300,19 @@ def sat_verify_live_gate(
     request_ref: str | None = typer.Option(None, "--request-ref", help="Local redacted request reference from metadata-request-state."),
     manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Required human gate for real SAT verify."),
     permit: str | None = typer.Option(None, "--permit", help="One-time local metadata_live_smoke permit id."),
-    read_timeout_seconds: float = typer.Option(
-        DEFAULT_VERIFY_READ_TIMEOUT_SECONDS,
+    connect_timeout_seconds: float | None = typer.Option(
+        None,
+        "--connect-timeout-seconds",
+        min=1.0,
+        max=MAX_VERIFY_CONNECT_TIMEOUT_SECONDS,
+        help=f"Gate-only connect timeout in seconds. Defaults to {DEFAULT_VERIFY_CONNECT_TIMEOUT_SECONDS:g}.",
+    ),
+    read_timeout_seconds: float | None = typer.Option(
+        None,
         "--read-timeout-seconds",
         min=1.0,
-        help="Explicit verify read timeout in seconds.",
+        max=MAX_VERIFY_READ_TIMEOUT_SECONDS,
+        help=f"Gate-only verify read timeout in seconds. Defaults to {DEFAULT_VERIFY_READ_TIMEOUT_SECONDS:g}; maximum {MAX_VERIFY_READ_TIMEOUT_SECONDS:g}.",
     ),
 ) -> None:
     """Run the controlled v1.5 production-signed verify live gate only when preflight passes."""
@@ -1304,6 +1320,11 @@ def sat_verify_live_gate(
     local_profile = _load_download_profile_or_none(profile)
     provider = _setup_provider(profile) if local_profile is not None else None
     record = _load_request_record_or_none(local_profile, request_ref) if local_profile is not None and request_ref else None
+    timeout_config = resolve_verify_gate_timeout_config(
+        connect_timeout_seconds=connect_timeout_seconds,
+        read_timeout_seconds=read_timeout_seconds,
+        env=os.environ,
+    )
     preflight = build_verify_live_gate_preflight(
         profile=local_profile,
         record=record,
@@ -1311,47 +1332,64 @@ def sat_verify_live_gate(
         env=os.environ,
         manual_real_sat=manual_real_sat,
         permit_ref=permit,
-        read_timeout_seconds=read_timeout_seconds,
+        connect_timeout_seconds=timeout_config.connect_timeout_seconds,
+        read_timeout_seconds=timeout_config.read_timeout_seconds,
+        timeout_invalid=timeout_config.invalid,
         repo_root=_find_checkout_root(Path.cwd()),
     )
     oracle = VerifyOracleParityResult(status="not-run", reason="preflight-not-ready")
+    wsdl_check = VerifyWsdlCheckResult(status="not-run", reachable=False)
     result: LiveSmokeCliResult | None = None
     live_executed = False
     error_kind = ""
+    verify_elapsed_ms: int | None = None
     if preflight.ready and local_profile is not None and record is not None and provider is not None:
         try:
             oracle = run_verify_oracle_parity(profile=local_profile, record=record, provider=provider)
         except SatLiveSmokeError as exc:
             oracle = VerifyOracleParityResult(status="failed", reason=exc.error_kind)
         if oracle.status == "passed":
-            query = _query_from_live_request_record(local_profile.rfc, record)
-            permit_verified = _validate_live_smoke_guard(
-                profile_id=profile,
-                manual_real_sat=manual_real_sat,
-                query=query,
-                metadata_only=True,
-                range_within_limit=_is_minimal_live_smoke_range(query),
-                mode="verify-live-gate",
-                permit_ref=permit,
+            wsdl_check = check_verify_wsdl_endpoint(
+                endpoint_verify=preflight.endpoint_verify,
+                connect_timeout_seconds=preflight.connect_timeout_seconds,
             )
-            try:
-                result = _run_live_metadata_verify_smoke(
-                    profile,
-                    record.id_solicitud,
-                    live_permit_verified=permit_verified,
-                    timeout_seconds=read_timeout_seconds,
+            if wsdl_check.status == "passed":
+                query = _query_from_live_request_record(local_profile.rfc, record)
+                permit_verified = _validate_live_smoke_guard(
+                    profile_id=profile,
+                    manual_real_sat=manual_real_sat,
+                    query=query,
+                    metadata_only=True,
+                    range_within_limit=_is_minimal_live_smoke_range(query),
+                    mode="verify-live-gate",
+                    permit_ref=permit,
                 )
-                live_executed = True
-            except SatLiveSmokeError as exc:
-                live_executed = exc.failed_stage in {"auth_transport", "auth_response_parse", "token_extract", "verify_transport", "verify_response_parse"}
-                error_kind = exc.error_kind
+                try:
+                    started = perf_counter()
+                    result = _run_live_metadata_verify_smoke(
+                        profile,
+                        record.id_solicitud,
+                        live_permit_verified=permit_verified,
+                        connect_timeout_seconds=preflight.connect_timeout_seconds,
+                        read_timeout_seconds=preflight.read_timeout_seconds,
+                    )
+                    verify_elapsed_ms = result.duration_ms
+                    live_executed = True
+                except SatLiveSmokeError as exc:
+                    live_executed = exc.failed_stage in {"auth_transport", "auth_response_parse", "token_extract", "verify_transport", "verify_response_parse"}
+                    error_kind = exc.error_kind
+                    verify_elapsed_ms = exc.diagnostic.duration_ms if exc.failed_stage == "verify_transport" else None
+            else:
+                error_kind = wsdl_check.error_kind
     _print_verify_live_gate_result(
         profile_id=profile,
         preflight=preflight,
         oracle=oracle,
+        wsdl_check=wsdl_check,
         result=result,
         live_executed=live_executed,
         error_kind=error_kind,
+        verify_elapsed_ms=verify_elapsed_ms,
     )
     if not preflight.ready or oracle.status != "passed" or result is None:
         raise typer.Exit(code=1)
@@ -2590,17 +2628,22 @@ def _run_live_metadata_verify_smoke(
     request_id: str,
     *,
     live_permit_verified: bool = False,
-    timeout_seconds: float = DEFAULT_VERIFY_READ_TIMEOUT_SECONDS,
+    connect_timeout_seconds: float | None = None,
+    read_timeout_seconds: float = DEFAULT_VERIFY_READ_TIMEOUT_SECONDS,
 ) -> LiveSmokeCliResult:
     profile = _load_download_profile(profile_id)
     adapter = SatLiveMetadataSmokeAdapter(
         profile=profile,
         provider=_setup_provider(profile_id),
         transport=_live_smoke_transport(live_permit_verified=live_permit_verified),
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=read_timeout_seconds,
+        connect_timeout_seconds=connect_timeout_seconds,
+        read_timeout_seconds=read_timeout_seconds if connect_timeout_seconds is not None else None,
     )
+    started = perf_counter()
     result = adapter.metadata_verify_smoke(request_id)
-    return _live_smoke_cli_result(result)
+    elapsed_ms = max(0, int((perf_counter() - started) * 1000))
+    return replace(_live_smoke_cli_result(result), duration_ms=elapsed_ms)
 
 
 def _live_verify_due_verifier(profile_id: str, *, live_permit_verified: bool = False) -> SatLiveMetadataSmokeAdapter:
@@ -2984,9 +3027,11 @@ def _print_verify_live_gate_result(
     profile_id: str,
     preflight: VerifyLiveGatePreflight,
     oracle: VerifyOracleParityResult,
+    wsdl_check: VerifyWsdlCheckResult | None = None,
     result: LiveSmokeCliResult | None,
     live_executed: bool,
     error_kind: str,
+    verify_elapsed_ms: int | None = None,
 ) -> None:
     completed = result is not None and oracle.status == "passed"
     package_summary = (
@@ -3002,6 +3047,8 @@ def _print_verify_live_gate_result(
     typer.echo(f"live_sat_executed={_yes_no(live_executed)}")
     typer.echo(f"production_signed={_yes_no(preflight.opt_in_production_signed and oracle.status == 'passed')}")
     typer.echo(f"oracle_parity={oracle.status}")
+    typer.echo(f"wsdl_check={wsdl_check.status if wsdl_check else 'not-run'}")
+    typer.echo(f"connect_timeout_seconds={preflight.connect_timeout_seconds:g}")
     typer.echo(f"read_timeout_seconds={preflight.read_timeout_seconds:g}")
     typer.echo(f"preflight_ready={_yes_no(preflight.ready)}")
     typer.echo(f"preflight_missing={','.join(preflight.missing) if preflight.missing else 'none'}")
@@ -3017,6 +3064,11 @@ def _print_verify_live_gate_result(
     typer.echo(f"id_solicitud_redacted={preflight.id_solicitud_redacted}")
     typer.echo(f"endpoint_verify={preflight.endpoint_verify}")
     typer.echo(f"soap_action={preflight.soap_action}")
+    typer.echo(f"wsdl_reachable={_yes_no(wsdl_check.reachable) if wsdl_check else 'no'}")
+    typer.echo(f"wsdl_http_status={wsdl_check.status_code if wsdl_check and wsdl_check.status_code is not None else 'not_reported'}")
+    typer.echo(f"wsdl_elapsed_ms={wsdl_check.elapsed_ms if wsdl_check and wsdl_check.elapsed_ms is not None else 'not_reported'}")
+    typer.echo(f"wsdl_error_kind={wsdl_check.error_kind if wsdl_check and wsdl_check.error_kind else 'none'}")
+    typer.echo("raw_wsdl_persisted=no")
     typer.echo(f"oracle_operation={oracle.operation or 'not-run'}")
     typer.echo(f"oracle_namespace={oracle.namespace or 'not-run'}")
     typer.echo(f"oracle_signature_placement={oracle.signature_placement or 'not-run'}")
@@ -3039,6 +3091,7 @@ def _print_verify_live_gate_result(
     typer.echo("full_rfc_visible=no")
     typer.echo("full_id_solicitud_visible=no")
     typer.echo("full_id_paquete_visible=no")
+    typer.echo(f"verify_elapsed_ms={verify_elapsed_ms if verify_elapsed_ms is not None else 'not_reported'}")
     typer.echo(f"error_kind={error_kind or oracle.reason or 'none'}")
 
 
