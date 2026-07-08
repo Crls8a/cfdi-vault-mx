@@ -10,7 +10,6 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-from time import perf_counter
 
 import typer
 
@@ -83,13 +82,11 @@ from cfdi_vault.sat_verify_post_probe import SatVerifyPostProbeResult, run_sat_v
 from cfdi_vault.sat_verify_live_gate import (
     DEFAULT_VERIFY_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_VERIFY_READ_TIMEOUT_SECONDS,
-    MAX_VERIFY_CONNECT_TIMEOUT_SECONDS,
-    MAX_VERIFY_READ_TIMEOUT_SECONDS,
     VerifyLiveGatePreflight,
     VerifyOracleParityResult,
     VerifyWsdlCheckResult,
-    build_verify_live_gate_preflight,
     check_verify_wsdl_endpoint,
+    build_verify_live_gate_preflight,
     resolve_verify_gate_timeout_config,
     run_verify_oracle_parity,
 )
@@ -269,7 +266,7 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "command": "sat verify-live-gate",
         "purpose": "Run the controlled v1.5 production-signed verify gate after redacted preflight and local oracle parity.",
         "when": "Use for the single approved verify live gate only; it never downloads packages.",
-        "example": "cfdi-vault sat verify-live-gate --profile default --request-ref <request-ref> --manual-real-sat --permit PERMIT_ID --connect-timeout-seconds 15 --read-timeout-seconds 60",
+        "example": "cfdi-vault sat verify-live-gate --profile default --request-ref <request-ref> --manual-real-sat --permit PERMIT_ID --read-timeout-seconds 60",
     },
     {
         "command": "sat inspect-auth-contract",
@@ -369,27 +366,27 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
     },
     {
         "command": "import-xml",
-        "purpose": "Import one local synthetic CFDI XML into the legacy local-first SQLite vault.",
-        "when": "Use for old lab/demo fixtures, not for SAT recovery.",
-        "example": "cfdi-vault import-xml examples/synthetic-cfdi/invoice-income.xml",
+        "purpose": "Import one local synthetic CFDI XML into PostgreSQL.",
+        "when": "Use for synthetic fixtures or controlled local import checks, not for real SAT recovery.",
+        "example": "cfdi-vault import-xml examples/synthetic-cfdi/invoice-income.xml --database-url postgresql+psycopg://...",
     },
     {
         "command": "import-zip",
-        "purpose": "Import local synthetic XML files from a ZIP into the legacy SQLite vault.",
-        "when": "Use for old lab/demo fixtures, not for SAT recovery.",
-        "example": "cfdi-vault import-zip examples/synthetic-cfdi/invoices.zip",
+        "purpose": "Import local synthetic XML files from a ZIP into PostgreSQL.",
+        "when": "Use for synthetic fixtures or controlled local import checks, not for real SAT recovery.",
+        "example": "cfdi-vault import-zip examples/synthetic-cfdi/invoices.zip --database-url postgresql+psycopg://...",
     },
     {
         "command": "summary",
-        "purpose": "Show legacy SQLite totals grouped by month, issuer, and comprobante type.",
-        "when": "Use with the local synthetic import path.",
-        "example": "cfdi-vault summary",
+        "purpose": "Show PostgreSQL totals grouped by month, issuer, and comprobante type.",
+        "when": "Use after synthetic import or recovery data exists.",
+        "example": "cfdi-vault summary --database-url postgresql+psycopg://...",
     },
     {
         "command": "export-csv",
-        "purpose": "Export legacy SQLite imported CFDI records to CSV.",
-        "when": "Use with the local synthetic import path.",
-        "example": "cfdi-vault export-csv export.csv",
+        "purpose": "Export PostgreSQL imported CFDI records to CSV.",
+        "when": "Use after synthetic import or recovery data exists.",
+        "example": "cfdi-vault export-csv export.csv --database-url postgresql+psycopg://...",
     },
 )
 
@@ -413,7 +410,6 @@ class LiveSmokeCliResult:
     request_body_bytes_len: int | None = None
     envelope_sha256: str | None = None
     signed_reference_count: int | None = None
-    duration_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -438,28 +434,28 @@ class LiveSmokeAdapterUnavailable(RuntimeError):
     """Raised after guards pass when the real live adapter is not wired yet."""
 
 
-def _db_option() -> Path:
-    return Path("cfdi-vault.sqlite3")
-
-
-def _recovery_db_option() -> Path:
-    return Path("cfdi-vault-recovery.sqlite3")
-
 
 def _service(
     database_url: str | None = None,
-    recovery_db: Path | None = None,
     storage: Path | None = None,
 ) -> RecoveryService:
     queue = RabbitMqQueue(os.environ["RABBITMQ_URL"]) if os.getenv("RABBITMQ_URL") else None
     cache = RedisCache(os.environ["REDIS_URL"]) if os.getenv("REDIS_URL") else None
     return RecoveryService(
-        database_url=database_url or os.getenv("DATABASE_URL"),
-        sqlite_path=recovery_db or _recovery_db_option(),
+        database_url=_require_database_url(database_url),
         storage_root=_resolve_storage_root(storage),
         queue=queue,
         cache=cache,
     )
+
+
+def _require_database_url(database_url: str | None = None) -> str:
+    resolved_url = database_url or os.getenv("DATABASE_URL")
+    if not resolved_url:
+        typer.echo("error=database_url_required", err=True)
+        typer.echo("detail=Set DATABASE_URL or pass --database-url.", err=True)
+        raise typer.Exit(code=1)
+    return resolved_url
 
 
 def _resolve_storage_root(storage: Path | None = None) -> Path:
@@ -876,13 +872,12 @@ def setup_status(
 @app.command("doctor")
 def doctor(
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
     profile_id: str = typer.Option("default", "--profile-id", help="Local setup profile id to inspect."),
 ) -> None:
     """Check database, queue, cache, storage, and setup profile readiness."""
 
-    checks = _service(database_url, recovery_db, storage).doctor()
+    checks = _service(database_url, storage).doctor()
     for check in checks:
         status = "OK" if check.ok else "FAIL"
         typer.echo(f"{status} {check.name}: {check.detail}")
@@ -1300,19 +1295,17 @@ def sat_verify_live_gate(
     request_ref: str | None = typer.Option(None, "--request-ref", help="Local redacted request reference from metadata-request-state."),
     manual_real_sat: bool = typer.Option(False, "--manual-real-sat", help="Required human gate for real SAT verify."),
     permit: str | None = typer.Option(None, "--permit", help="One-time local metadata_live_smoke permit id."),
-    connect_timeout_seconds: float | None = typer.Option(
-        None,
+    connect_timeout_seconds: float = typer.Option(
+        DEFAULT_VERIFY_CONNECT_TIMEOUT_SECONDS,
         "--connect-timeout-seconds",
         min=1.0,
-        max=MAX_VERIFY_CONNECT_TIMEOUT_SECONDS,
-        help=f"Gate-only connect timeout in seconds. Defaults to {DEFAULT_VERIFY_CONNECT_TIMEOUT_SECONDS:g}.",
+        help="Explicit verify WSDL/preflight connect timeout in seconds.",
     ),
-    read_timeout_seconds: float | None = typer.Option(
-        None,
+    read_timeout_seconds: float = typer.Option(
+        DEFAULT_VERIFY_READ_TIMEOUT_SECONDS,
         "--read-timeout-seconds",
         min=1.0,
-        max=MAX_VERIFY_READ_TIMEOUT_SECONDS,
-        help=f"Gate-only verify read timeout in seconds. Defaults to {DEFAULT_VERIFY_READ_TIMEOUT_SECONDS:g}; maximum {MAX_VERIFY_READ_TIMEOUT_SECONDS:g}.",
+        help="Explicit verify read timeout in seconds.",
     ),
 ) -> None:
     """Run the controlled v1.5 production-signed verify live gate only when preflight passes."""
@@ -1338,60 +1331,52 @@ def sat_verify_live_gate(
         repo_root=_find_checkout_root(Path.cwd()),
     )
     oracle = VerifyOracleParityResult(status="not-run", reason="preflight-not-ready")
-    wsdl_check = VerifyWsdlCheckResult(status="not-run", reachable=False)
+    wsdl = VerifyWsdlCheckResult(status="not-run", reachable=False)
     result: LiveSmokeCliResult | None = None
     live_executed = False
     error_kind = ""
-    verify_elapsed_ms: int | None = None
     if preflight.ready and local_profile is not None and record is not None and provider is not None:
         try:
             oracle = run_verify_oracle_parity(profile=local_profile, record=record, provider=provider)
         except SatLiveSmokeError as exc:
             oracle = VerifyOracleParityResult(status="failed", reason=exc.error_kind)
         if oracle.status == "passed":
-            wsdl_check = check_verify_wsdl_endpoint(
+            wsdl = check_verify_wsdl_endpoint(
                 endpoint_verify=preflight.endpoint_verify,
                 connect_timeout_seconds=preflight.connect_timeout_seconds,
             )
-            if wsdl_check.status == "passed":
-                query = _query_from_live_request_record(local_profile.rfc, record)
-                permit_verified = _validate_live_smoke_guard(
-                    profile_id=profile,
-                    manual_real_sat=manual_real_sat,
-                    query=query,
-                    metadata_only=True,
-                    range_within_limit=_is_minimal_live_smoke_range(query),
-                    mode="verify-live-gate",
-                    permit_ref=permit,
+        if oracle.status == "passed" and wsdl.status == "passed":
+            query = _query_from_live_request_record(local_profile.rfc, record)
+            permit_verified = _validate_live_smoke_guard(
+                profile_id=profile,
+                manual_real_sat=manual_real_sat,
+                query=query,
+                metadata_only=True,
+                range_within_limit=_is_minimal_live_smoke_range(query),
+                mode="verify-live-gate",
+                permit_ref=permit,
+            )
+            try:
+                result = _run_live_metadata_verify_smoke(
+                    profile,
+                    record.id_solicitud,
+                    live_permit_verified=permit_verified,
+                    timeout_seconds=preflight.read_timeout_seconds,
                 )
-                try:
-                    started = perf_counter()
-                    result = _run_live_metadata_verify_smoke(
-                        profile,
-                        record.id_solicitud,
-                        live_permit_verified=permit_verified,
-                        connect_timeout_seconds=preflight.connect_timeout_seconds,
-                        read_timeout_seconds=preflight.read_timeout_seconds,
-                    )
-                    verify_elapsed_ms = result.duration_ms
-                    live_executed = True
-                except SatLiveSmokeError as exc:
-                    live_executed = exc.failed_stage in {"auth_transport", "auth_response_parse", "token_extract", "verify_transport", "verify_response_parse"}
-                    error_kind = exc.error_kind
-                    verify_elapsed_ms = exc.diagnostic.duration_ms if exc.failed_stage == "verify_transport" else None
-            else:
-                error_kind = wsdl_check.error_kind
+                live_executed = True
+            except SatLiveSmokeError as exc:
+                live_executed = exc.failed_stage in {"auth_transport", "auth_response_parse", "token_extract", "verify_transport", "verify_response_parse"}
+                error_kind = exc.error_kind
     _print_verify_live_gate_result(
         profile_id=profile,
         preflight=preflight,
         oracle=oracle,
-        wsdl_check=wsdl_check,
+        wsdl=wsdl,
         result=result,
         live_executed=live_executed,
-        error_kind=error_kind,
-        verify_elapsed_ms=verify_elapsed_ms,
+        error_kind=error_kind or wsdl.error_kind,
     )
-    if not preflight.ready or oracle.status != "passed" or result is None:
+    if not preflight.ready or oracle.status != "passed" or wsdl.status != "passed" or result is None:
         raise typer.Exit(code=1)
 
 
@@ -1606,12 +1591,11 @@ def init(
     rfc: str = typer.Option(..., "--rfc", help="Requester RFC."),
     name: str | None = typer.Option(None, "--name", help="Tenant display name."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Initialize the recovery schema, storage folders, and tenant row."""
 
-    service = _service(database_url, recovery_db, storage)
+    service = _service(database_url, storage)
     service.init_tenant(tenant_id, rfc, name)
     typer.echo(f"Initialized tenant {tenant_id} for RFC {rfc.upper()}")
 
@@ -1619,12 +1603,11 @@ def init(
 @queue_app.command("status")
 def queue_status(
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Show durable queue/job event counts."""
 
-    rows = _service(database_url, recovery_db, storage).queue_status()
+    rows = _service(database_url, storage).queue_status()
     typer.echo("queue,status,count")
     if not rows:
         typer.echo("(no queue events)")
@@ -1638,12 +1621,11 @@ def worker_run(
     loop: bool = typer.Option(False, "--loop", help="Keep polling the configured queue instead of running once."),
     poll_seconds: float = typer.Option(5.0, "--poll-seconds", min=0.5, help="Polling interval when --loop is used."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Run the recovery worker shell."""
 
-    worker = RecoveryWorker(_service(database_url, recovery_db, storage))
+    worker = RecoveryWorker(_service(database_url, storage))
     if loop:
         worker.run_forever(poll_seconds=poll_seconds)
         return
@@ -1661,7 +1643,6 @@ def sync_metadata(
     live: bool = typer.Option(False, "--live", help="Use live SAT SOAP. Not implemented in this slice."),
     enqueue: bool = typer.Option(False, "--enqueue", help="Publish the job for a worker instead of processing synchronously."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Submit a metadata sync. Fake SAT is used unless --live is passed."""
@@ -1675,7 +1656,7 @@ def sync_metadata(
         end=_parse_cli_datetime(end, end_of_day=True),
     )
     _require_queue_for_enqueue(enqueue)
-    result = _service(database_url, recovery_db, storage).sync_metadata(query, live=live, enqueue=enqueue)
+    result = _service(database_url, storage).sync_metadata(query, live=live, enqueue=enqueue)
     typer.echo(f"job_id={result.job_id}")
     typer.echo(f"request_id={result.request_id}")
     typer.echo(f"status={result.status}")
@@ -1693,7 +1674,6 @@ def sync_xml(
     live: bool = typer.Option(False, "--live", help="Use live SAT SOAP. Not implemented in this slice."),
     enqueue: bool = typer.Option(False, "--enqueue", help="Publish the job for a worker instead of processing synchronously."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Submit an XML/package sync. Fake mode stores packages and extracted XML evidence."""
@@ -1707,7 +1687,7 @@ def sync_xml(
         end=_parse_cli_datetime(end, end_of_day=True),
     )
     _require_queue_for_enqueue(enqueue)
-    result = _service(database_url, recovery_db, storage).sync_metadata(query, live=live, enqueue=enqueue)
+    result = _service(database_url, storage).sync_metadata(query, live=live, enqueue=enqueue)
     typer.echo(f"job_id={result.job_id}")
     typer.echo(f"request_id={result.request_id}")
     typer.echo(f"status={result.status}")
@@ -1768,6 +1748,7 @@ def download_sync(
     to_date: str = typer.Option(..., "--to", help="End date: YYYY-MM-DD."),
     kind: str = typer.Option(..., "--kind", help="metadata or cfdi."),
     direction: str = typer.Option(..., "--direction", help="received or issued."),
+    database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
 ) -> None:
     """Run one fake/offline SAT download sync using the setup profile storage root."""
 
@@ -1778,7 +1759,7 @@ def download_sync(
         kind=kind,
         direction=direction,
     )
-    service = _download_profile_service(loaded_profile)
+    service = _download_profile_service(loaded_profile, database_url)
     try:
         result = service.sync_metadata(query, live=False, enqueue=False)
     finally:
@@ -1836,6 +1817,7 @@ def download_live_smoke(
 def download_status(
     profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
     job_id: str | None = typer.Option(None, "--job-id", help="Local download job id from download sync."),
+    database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
 ) -> None:
     """Read safe fake download status or async verify scheduler aggregates."""
 
@@ -1854,7 +1836,7 @@ def download_status(
         return
 
     status = read_download_status(
-        loaded_profile.storage_root / "db" / "recovery.sqlite3",
+        _require_database_url(database_url),
         tenant_id=loaded_profile.profile_id,
         job_id=job_id,
     )
@@ -1871,12 +1853,11 @@ def download_status(
 def reconcile(
     tenant_id: str | None = typer.Option(None, "--tenant-id", help="Tenant identifier."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Recompute metadata/XML reconciliation states."""
 
-    count = _service(database_url, recovery_db, storage).reconcile(tenant_id=tenant_id)
+    count = _service(database_url, storage).reconcile(tenant_id=tenant_id)
     typer.echo(f"Updated {count} reconciliation row(s)")
 
 
@@ -1886,12 +1867,11 @@ def search(
     tenant_id: str | None = typer.Option(None, "--tenant-id", help="Tenant identifier."),
     limit: int = typer.Option(20, "--limit", min=1, max=200, help="Maximum rows."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Search normalized CFDI data."""
 
-    rows = _service(database_url, recovery_db, storage).search(text, tenant_id=tenant_id, limit=limit)
+    rows = _service(database_url, storage).search(text, tenant_id=tenant_id, limit=limit)
     typer.echo("uuid,issuer_rfc,receiver_rfc,issue_date,total,status,parser_status")
     if not rows:
         typer.echo("(no matches)")
@@ -1908,12 +1888,11 @@ def show(
     uuid: str = typer.Argument(..., help="CFDI UUID."),
     tenant_id: str | None = typer.Option(None, "--tenant-id", help="Tenant identifier."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Show one CFDI in terminal-friendly form."""
 
-    service = _service(database_url, recovery_db, storage)
+    service = _service(database_url, storage)
     try:
         typer.echo(service.render_text(uuid, tenant_id=tenant_id))
     except LookupError as exc:
@@ -1928,12 +1907,11 @@ def print_invoice(
     format: str = typer.Option("text", "--format", help="text, html, or pdf."),
     tenant_id: str | None = typer.Option(None, "--tenant-id", help="Tenant identifier."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Render a CFDI as text, HTML, or a basic PDF."""
 
-    service = _service(database_url, recovery_db, storage)
+    service = _service(database_url, storage)
     try:
         if format == "text":
             text = service.render_text(uuid, tenant_id=tenant_id)
@@ -1964,7 +1942,6 @@ def export(
     format: str = typer.Option("csv", "--format", help="Only csv is supported in this slice."),
     tenant_id: str | None = typer.Option(None, "--tenant-id", help="Tenant identifier."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    recovery_db: Path = typer.Option(_recovery_db_option(), "--recovery-db", help="SQLite fallback path for local fake mode."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
     """Export normalized CFDI data."""
@@ -1974,18 +1951,18 @@ def export(
         raise typer.Exit(code=1)
     if output_path is None:
         output_path = _resolve_storage_root(storage) / "exports" / "cfdi.csv"
-    count = _service(database_url, recovery_db, storage).export_csv(output_path, tenant_id=tenant_id)
+    count = _service(database_url, storage).export_csv(output_path, tenant_id=tenant_id)
     typer.echo(f"Exported {count} CFDI row(s) to {output_path}")
 
 
 @app.command("import-xml")
 def import_xml(
     xml_path: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
-    db: Path = typer.Option(_db_option(), "--db", help="SQLite database path."),
+    database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
 ) -> None:
     """Import one synthetic CFDI XML file."""
 
-    record = VaultService(db).import_xml_file(xml_path)
+    record = VaultService(database_url).import_xml_file(xml_path)
     _print_record(record)
     if record.error:
         raise typer.Exit(code=1)
@@ -1994,11 +1971,11 @@ def import_xml(
 @app.command("import-zip")
 def import_zip(
     zip_path: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
-    db: Path = typer.Option(_db_option(), "--db", help="SQLite database path."),
+    database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
 ) -> None:
     """Import all XML files from a ZIP archive."""
 
-    result = VaultService(db).import_zip_file(zip_path)
+    result = VaultService(database_url).import_zip_file(zip_path)
     _print_batch(result)
     if result.failed:
         raise typer.Exit(code=1)
@@ -2006,11 +1983,11 @@ def import_zip(
 
 @app.command("summary")
 def summary(
-    db: Path = typer.Option(_db_option(), "--db", help="SQLite database path."),
+    database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
 ) -> None:
     """Print totals grouped by month, issuer, and CFDI comprobante type."""
 
-    vault_summary = VaultService(db).summary()
+    vault_summary = VaultService(database_url).summary()
     _print_section("Totals by month", vault_summary.by_month)
     _print_section("Totals by issuer", vault_summary.by_issuer)
     _print_section("Totals by comprobante type", vault_summary.by_comprobante_type)
@@ -2019,11 +1996,11 @@ def summary(
 @app.command("export-csv")
 def export_csv(
     output_path: Path = typer.Argument(..., dir_okay=False, writable=True),
-    db: Path = typer.Option(_db_option(), "--db", help="SQLite database path."),
+    database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
 ) -> None:
     """Export imported CFDI records to CSV."""
 
-    count = VaultService(db).export_csv(output_path)
+    count = VaultService(database_url).export_csv(output_path)
     typer.echo(f"Exported {count} invoice(s) to {output_path}")
 
 
@@ -2112,10 +2089,8 @@ def _build_profile_download_query_with_profile(
     return query, profile
 
 
-def _download_profile_service(profile: setup_flow.LocalProfile) -> RecoveryService:
-    recovery_db = profile.storage_root / "db" / "recovery.sqlite3"
-    recovery_db.parent.mkdir(parents=True, exist_ok=True)
-    return RecoveryService(sqlite_path=recovery_db, storage_root=profile.storage_root)
+def _download_profile_service(profile: setup_flow.LocalProfile, database_url: str | None = None) -> RecoveryService:
+    return RecoveryService(database_url=_require_database_url(database_url), storage_root=profile.storage_root)
 
 
 def _validate_live_smoke_guard(
@@ -2628,22 +2603,17 @@ def _run_live_metadata_verify_smoke(
     request_id: str,
     *,
     live_permit_verified: bool = False,
-    connect_timeout_seconds: float | None = None,
-    read_timeout_seconds: float = DEFAULT_VERIFY_READ_TIMEOUT_SECONDS,
+    timeout_seconds: float = DEFAULT_VERIFY_READ_TIMEOUT_SECONDS,
 ) -> LiveSmokeCliResult:
     profile = _load_download_profile(profile_id)
     adapter = SatLiveMetadataSmokeAdapter(
         profile=profile,
         provider=_setup_provider(profile_id),
         transport=_live_smoke_transport(live_permit_verified=live_permit_verified),
-        timeout_seconds=read_timeout_seconds,
-        connect_timeout_seconds=connect_timeout_seconds,
-        read_timeout_seconds=read_timeout_seconds if connect_timeout_seconds is not None else None,
+        timeout_seconds=timeout_seconds,
     )
-    started = perf_counter()
     result = adapter.metadata_verify_smoke(request_id)
-    elapsed_ms = max(0, int((perf_counter() - started) * 1000))
-    return replace(_live_smoke_cli_result(result), duration_ms=elapsed_ms)
+    return _live_smoke_cli_result(result)
 
 
 def _live_verify_due_verifier(profile_id: str, *, live_permit_verified: bool = False) -> SatLiveMetadataSmokeAdapter:
@@ -3027,12 +2997,12 @@ def _print_verify_live_gate_result(
     profile_id: str,
     preflight: VerifyLiveGatePreflight,
     oracle: VerifyOracleParityResult,
-    wsdl_check: VerifyWsdlCheckResult | None = None,
     result: LiveSmokeCliResult | None,
     live_executed: bool,
     error_kind: str,
-    verify_elapsed_ms: int | None = None,
+    wsdl: VerifyWsdlCheckResult | None = None,
 ) -> None:
+    wsdl = wsdl or VerifyWsdlCheckResult(status="not-run", reachable=False)
     completed = result is not None and oracle.status == "passed"
     package_summary = (
         "not-run"
@@ -3047,9 +3017,13 @@ def _print_verify_live_gate_result(
     typer.echo(f"live_sat_executed={_yes_no(live_executed)}")
     typer.echo(f"production_signed={_yes_no(preflight.opt_in_production_signed and oracle.status == 'passed')}")
     typer.echo(f"oracle_parity={oracle.status}")
-    typer.echo(f"wsdl_check={wsdl_check.status if wsdl_check else 'not-run'}")
     typer.echo(f"connect_timeout_seconds={preflight.connect_timeout_seconds:g}")
     typer.echo(f"read_timeout_seconds={preflight.read_timeout_seconds:g}")
+    typer.echo(f"wsdl_check={wsdl.status}")
+    typer.echo(f"wsdl_reachable={_yes_no(wsdl.reachable)}")
+    typer.echo(f"wsdl_status_code={wsdl.status_code if wsdl.status_code is not None else 'not-run'}")
+    typer.echo(f"wsdl_elapsed_ms={wsdl.elapsed_ms if wsdl.elapsed_ms is not None else 'not-run'}")
+    typer.echo(f"wsdl_error_kind={wsdl.error_kind or 'none'}")
     typer.echo(f"preflight_ready={_yes_no(preflight.ready)}")
     typer.echo(f"preflight_missing={','.join(preflight.missing) if preflight.missing else 'none'}")
     typer.echo(f"opt_in_live={_yes_no(preflight.opt_in_live)}")
@@ -3064,11 +3038,6 @@ def _print_verify_live_gate_result(
     typer.echo(f"id_solicitud_redacted={preflight.id_solicitud_redacted}")
     typer.echo(f"endpoint_verify={preflight.endpoint_verify}")
     typer.echo(f"soap_action={preflight.soap_action}")
-    typer.echo(f"wsdl_reachable={_yes_no(wsdl_check.reachable) if wsdl_check else 'no'}")
-    typer.echo(f"wsdl_http_status={wsdl_check.status_code if wsdl_check and wsdl_check.status_code is not None else 'not_reported'}")
-    typer.echo(f"wsdl_elapsed_ms={wsdl_check.elapsed_ms if wsdl_check and wsdl_check.elapsed_ms is not None else 'not_reported'}")
-    typer.echo(f"wsdl_error_kind={wsdl_check.error_kind if wsdl_check and wsdl_check.error_kind else 'none'}")
-    typer.echo("raw_wsdl_persisted=no")
     typer.echo(f"oracle_operation={oracle.operation or 'not-run'}")
     typer.echo(f"oracle_namespace={oracle.namespace or 'not-run'}")
     typer.echo(f"oracle_signature_placement={oracle.signature_placement or 'not-run'}")
@@ -3085,13 +3054,13 @@ def _print_verify_live_gate_result(
     typer.echo("numero_cfdis=not_reported")
     typer.echo(f"ids_paquetes={package_summary}")
     typer.echo("download_executed=no")
+    typer.echo("raw_wsdl_persisted=no")
     typer.echo("raw_soap_persisted=no")
     typer.echo("raw_response_persisted=no")
     typer.echo("authorization_value_visible=no")
     typer.echo("full_rfc_visible=no")
     typer.echo("full_id_solicitud_visible=no")
     typer.echo("full_id_paquete_visible=no")
-    typer.echo(f"verify_elapsed_ms={verify_elapsed_ms if verify_elapsed_ms is not None else 'not_reported'}")
     typer.echo(f"error_kind={error_kind or oracle.reason or 'none'}")
 
 

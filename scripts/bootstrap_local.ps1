@@ -3,6 +3,7 @@ param(
     [string]$ProfileId = "alpha-local",
     [string]$From = "2024-01-01",
     [string]$To = "2024-01-02",
+    [string]$DatabaseUrl = $env:DATABASE_URL,
     [switch]$SkipScanner,
     [switch]$SkipTests,
     [switch]$SkipOfflineSmoke
@@ -60,22 +61,37 @@ if (-not $SkipScanner) {
     }
 }
 
+if (-not [string]::IsNullOrWhiteSpace($DatabaseUrl)) {
+    $env:DATABASE_URL = $DatabaseUrl
+    $env:CFDI_VAULT_TEST_DATABASE_URL = $DatabaseUrl
+}
+
 if (-not $SkipTests) {
+    if ([string]::IsNullOrWhiteSpace($env:CFDI_VAULT_TEST_DATABASE_URL)) {
+        throw "CFDI_VAULT_TEST_DATABASE_URL or -DatabaseUrl is required for PostgreSQL-backed tests."
+    }
+
     Invoke-Step "Run pytest" {
         & $python -m pytest -q
     }
 }
 
 if (-not $SkipOfflineSmoke) {
+    if ([string]::IsNullOrWhiteSpace($DatabaseUrl)) {
+        throw "DATABASE_URL or -DatabaseUrl is required for the PostgreSQL-only offline smoke."
+    }
+
     $smokeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("cfdi-vault-local-alpha-" + [System.Guid]::NewGuid().ToString("N"))
     $smokeAppData = Join-Path $smokeRoot "appdata"
     New-Item -ItemType Directory -Path $smokeAppData -Force | Out-Null
 
     $previousLocalAppData = $env:LOCALAPPDATA
     $previousAlphaProfile = $env:CFDI_VAULT_ALPHA_PROFILE
+    $previousDatabaseUrl = $env:DATABASE_URL
     try {
         $env:LOCALAPPDATA = $smokeAppData
         $env:CFDI_VAULT_ALPHA_PROFILE = $ProfileId
+        $env:DATABASE_URL = $DatabaseUrl
 
         Invoke-Step "Create synthetic AppData profile for offline smoke" {
             @"
@@ -107,7 +123,7 @@ setup_flow.write_profile(profile, paths.profile_json)
 
         Invoke-Step "Run offline status and doctor" {
             & $cli status --profile-id $ProfileId | Out-Null
-            & $cli doctor --profile-id $ProfileId --recovery-db (Join-Path $smokeRoot "doctor.sqlite3") --storage (Join-Path $smokeRoot "doctor-storage") | Out-Null
+            & $cli doctor --profile-id $ProfileId --storage (Join-Path $smokeRoot "doctor-storage") | Out-Null
         }
 
         Invoke-Step "Run fake/offline download plan and request" {
@@ -137,6 +153,12 @@ setup_flow.write_profile(profile, paths.profile_json)
         }
         else {
             $env:CFDI_VAULT_ALPHA_PROFILE = $previousAlphaProfile
+        }
+        if ($null -eq $previousDatabaseUrl) {
+            Remove-Item Env:\DATABASE_URL -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:DATABASE_URL = $previousDatabaseUrl
         }
         Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction SilentlyContinue
     }

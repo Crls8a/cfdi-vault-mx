@@ -1,13 +1,13 @@
-"""Database setup and SQLAlchemy models for CFDI Vault MX."""
+"""PostgreSQL database setup and SQLAlchemy models for CFDI Vault MX."""
 
 from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from pathlib import Path
+import os
 
 from sqlalchemy import DateTime, Numeric, String, create_engine
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -41,27 +41,19 @@ class Invoice(Base):
 SessionFactory = sessionmaker[object]
 
 
-def create_sqlite_engine(db_path: str | Path) -> Engine:
-    """Create a SQLite engine for a local database path."""
+def create_engine_from_url(database_url: str | None = None) -> Engine:
+    """Create a PostgreSQL SQLAlchemy engine.
 
-    if str(db_path) == ":memory:":
-        return create_engine("sqlite+pysqlite:///:memory:", future=True)
-
-    path = Path(db_path).expanduser().resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return create_engine(f"sqlite+pysqlite:///{path.as_posix()}", future=True)
-
-
-def create_engine_from_url(database_url: str | None = None, *, sqlite_path: str | Path | None = None) -> Engine:
-    """Create an engine from a URL, defaulting to the local SQLite vault.
-
-    The recovery architecture is PostgreSQL-first for durable deployments, but
-    tests and local examples still need a dependency-light SQLite path.
+    Set DATABASE_URL explicitly for CLI, workers, tests, and local Docker Compose
+    runs. Only PostgreSQL URLs are supported.
     """
 
-    if database_url:
-        return create_engine(database_url, future=True)
-    return create_sqlite_engine(sqlite_path or "cfdi-vault.sqlite3")
+    resolved_url = database_url or os.getenv("DATABASE_URL")
+    if not resolved_url:
+        raise RuntimeError("PostgreSQL DATABASE_URL is required.")
+    if not make_url(resolved_url).drivername.startswith("postgresql"):
+        raise RuntimeError("Only PostgreSQL DATABASE_URL values are supported.")
+    return create_engine(resolved_url, future=True)
 
 
 def create_session_factory(engine: Engine) -> SessionFactory:

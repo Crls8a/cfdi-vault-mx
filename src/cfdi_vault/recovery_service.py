@@ -101,14 +101,10 @@ class MetadataImportResult:
     storage_key: str
 
 
-def read_download_status(sqlite_path: str | Path, tenant_id: str, job_id: str) -> DownloadStatus | None:
+def read_download_status(database_url: str, tenant_id: str, job_id: str) -> DownloadStatus | None:
     """Read safe persisted aggregates for one download job without initializing schema."""
 
-    path = Path(sqlite_path).expanduser()
-    if not path.is_file():
-        return None
-
-    engine = create_engine_from_url(sqlite_path=path)
+    engine = create_engine_from_url(database_url)
     try:
         session_factory = create_session_factory(engine)
         with session_factory() as session:
@@ -209,13 +205,12 @@ class RecoveryService:
         self,
         *,
         database_url: str | None = None,
-        sqlite_path: str | Path | None = None,
         storage_root: str | Path = "storage",
         sat_client: SatClientPort | None = None,
         queue: QueuePort | None = None,
         cache: CachePort | None = None,
     ) -> None:
-        self.engine = create_engine_from_url(database_url, sqlite_path=sqlite_path or "cfdi-vault-recovery.sqlite3")
+        self.engine = create_engine_from_url(database_url)
         init_recovery_schema(self.engine)
         self.session_factory = create_session_factory(self.engine)
         self.storage: LocalStorage | StoragePort = LocalStorage(storage_root)

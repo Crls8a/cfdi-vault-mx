@@ -4,9 +4,16 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://cfdi_vault:cfdi_vault@postgres:5432/cfdi_vault}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cfdi_vault:cfdi_vault@rabbitmq:5672/}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CFDI_STORAGE_ROOT: ${CFDI_STORAGE_ROOT:-/app/storage}
     depends_on:
       postgres:
         condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
       redis:
@@ -21,9 +28,16 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://cfdi_vault:cfdi_vault@postgres:5432/cfdi_vault}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cfdi_vault:cfdi_vault@rabbitmq:5672/}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CFDI_STORAGE_ROOT: ${CFDI_STORAGE_ROOT:-/app/storage}
     depends_on:
       postgres:
         condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
       redis:
@@ -48,6 +62,21 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  flyway:
+    image: redgate/flyway:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - -url=jdbc:postgresql://postgres:5432/${POSTGRES_DB:-cfdi_vault}
+      - -user=${POSTGRES_USER:-cfdi_vault}
+      - -password=${POSTGRES_PASSWORD:-cfdi_vault}
+      - -locations=filesystem:/flyway/sql
+      - -cleanDisabled=true
+      - migrate
+    volumes:
+      - ./db/migration:/flyway/sql:ro
 
   rabbitmq:
     image: rabbitmq:3.13-management-alpine

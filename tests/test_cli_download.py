@@ -106,7 +106,7 @@ def test_download_request_prints_synthetic_accepted_result(tmp_path: Path) -> No
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
 
 
-def test_download_sync_cfdi_runs_fake_pipeline_without_sensitive_output(tmp_path: Path) -> None:
+def test_download_sync_cfdi_runs_fake_pipeline_without_sensitive_output(tmp_path: Path, reset_postgres_database: str) -> None:
     appdata_root = tmp_path / "appdata"
     paths = _write_setup_profile(appdata_root)
 
@@ -141,16 +141,14 @@ def test_download_sync_cfdi_runs_fake_pipeline_without_sensitive_output(tmp_path
     assert lines["request_id"] == f"FAKE-{lines['criteria_hash'][:16].upper()}"
     assert lines["status"] == "succeeded"
     assert lines["metadata_count"] == "2"
-    assert paths.storage_root.joinpath("db", "recovery.sqlite3").is_file()
     assert len(list(paths.storage_root.glob("*/xml/2024/01/*.xml"))) == 2
     assert "PKG-" not in result.output
     assert ".zip" not in result.output
     assert ".xml" not in result.output
-    assert "recovery.sqlite3" not in result.output
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
 
 
-def test_download_status_reads_persisted_fake_sync_aggregates_safely(tmp_path: Path) -> None:
+def test_download_status_reads_persisted_fake_sync_aggregates_safely(tmp_path: Path, reset_postgres_database: str) -> None:
     appdata_root = tmp_path / "appdata"
     _write_setup_profile(appdata_root)
     runner = CliRunner()
@@ -200,21 +198,20 @@ def test_download_status_reads_persisted_fake_sync_aggregates_safely(tmp_path: P
     _assert_no_download_status_leaks(status.output, appdata_root)
 
 
-def test_download_status_missing_db_or_unknown_job_fails_safely(tmp_path: Path) -> None:
+def test_download_status_missing_or_unknown_job_fails_safely(tmp_path: Path, reset_postgres_database: str) -> None:
     appdata_root = tmp_path / "appdata"
     paths = _write_setup_profile(appdata_root)
     runner = CliRunner()
 
-    missing_db = runner.invoke(
+    missing_job = runner.invoke(
         app,
         ["download", "status", "--profile", "dummy-profile", "--job-id", "missing-job"],
         env={"LOCALAPPDATA": str(appdata_root)},
     )
 
-    assert missing_db.exit_code == 1
-    assert "error=status_not_found" in missing_db.output
-    assert not paths.storage_root.joinpath("db", "recovery.sqlite3").exists()
-    _assert_no_download_status_leaks(missing_db.output, appdata_root)
+    assert missing_job.exit_code == 1
+    assert "error=status_not_found" in missing_job.output
+    _assert_no_download_status_leaks(missing_job.output, appdata_root)
 
     sync = runner.invoke(
         app,
@@ -247,7 +244,7 @@ def test_download_status_missing_db_or_unknown_job_fails_safely(tmp_path: Path) 
     _assert_no_download_status_leaks(unknown_job.output, appdata_root)
 
 
-def test_download_sync_replay_same_criteria_returns_stable_result(tmp_path: Path) -> None:
+def test_download_sync_replay_same_criteria_returns_stable_result(tmp_path: Path, reset_postgres_database: str) -> None:
     appdata_root = tmp_path / "appdata"
     _write_setup_profile(appdata_root)
     args = [
@@ -422,7 +419,6 @@ def test_download_sync_live_option_is_rejected_without_running(tmp_path: Path) -
     assert "job_id=" not in result.output
     assert "request_id=" not in result.output
     assert "mode=fake" not in result.output
-    assert not paths.storage_root.joinpath("db", "recovery.sqlite3").exists()
 
 
 @pytest.mark.parametrize(
@@ -1820,4 +1816,3 @@ def _assert_no_download_status_leaks(output: str, appdata_root: Path) -> None:
     assert "PKG-" not in output
     assert ".zip" not in output
     assert ".xml" not in output
-    assert "recovery.sqlite3" not in output

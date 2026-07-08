@@ -122,15 +122,14 @@ def test_status_cli_reports_missing_profile_with_redaction(tmp_path: Path) -> No
     assert str(appdata_root) not in result.output
 
 
-def test_doctor_includes_setup_status_without_failing_on_missing_profile(tmp_path: Path) -> None:
+def test_doctor_includes_setup_status_without_failing_on_missing_profile(tmp_path: Path, reset_postgres_database: str) -> None:
     appdata_root = tmp_path / "appdata"
     storage_root = tmp_path / "storage"
-    recovery_db = tmp_path / "recovery.sqlite3"
 
     result = CliRunner().invoke(
         app,
-        ["doctor", "--recovery-db", str(recovery_db), "--profile-id", "dummy-profile"],
-        env={"LOCALAPPDATA": str(appdata_root), "CFDI_STORAGE_ROOT": str(storage_root)},
+        ["doctor", "--profile-id", "dummy-profile"],
+        env={"LOCALAPPDATA": str(appdata_root), "CFDI_STORAGE_ROOT": str(storage_root), "DATABASE_URL": reset_postgres_database},
     )
 
     assert result.exit_code == 0, result.output

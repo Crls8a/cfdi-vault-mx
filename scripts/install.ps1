@@ -24,6 +24,7 @@ if (-not (Test-Path ".env")) {
 
 if (-not $SkipDockerUp) {
     docker compose up -d --build postgres rabbitmq redis
+    docker compose run --rm flyway
     docker compose run --rm app doctor
 }
 

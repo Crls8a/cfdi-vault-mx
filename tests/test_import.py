@@ -11,12 +11,11 @@ from cfdi_vault.service import VaultService
 from tests.conftest import write_xml
 
 
-def test_import_xml_stores_invoice_and_hash(tmp_path: Path, sample_xml: bytes) -> None:
-    db_path = tmp_path / "vault.sqlite3"
+def test_import_xml_stores_invoice_and_hash(tmp_path: Path, sample_xml: bytes, reset_postgres_database: str) -> None:
     xml_path = tmp_path / "invoice.xml"
     xml_path.write_bytes(sample_xml)
 
-    service = VaultService(db_path)
+    service = VaultService(reset_postgres_database)
     record = service.import_xml_file(xml_path)
 
     assert record.imported is True
@@ -31,8 +30,7 @@ def test_import_xml_stores_invoice_and_hash(tmp_path: Path, sample_xml: bytes) -
     assert invoice.total == Decimal("143.200000")
 
 
-def test_import_zip_imports_multiple_xml_files(tmp_path: Path) -> None:
-    db_path = tmp_path / "vault.sqlite3"
+def test_import_zip_imports_multiple_xml_files(tmp_path: Path, reset_postgres_database: str) -> None:
     first = write_xml(tmp_path / "first.xml", uuid="00000000-0000-4000-8000-000000000201")
     second = write_xml(tmp_path / "second.xml", uuid="00000000-0000-4000-8000-000000000202")
     zip_path = tmp_path / "batch.zip"
@@ -41,7 +39,7 @@ def test_import_zip_imports_multiple_xml_files(tmp_path: Path) -> None:
         archive.write(second, "nested/second.xml")
         archive.writestr("notes.txt", "not an XML file")
 
-    result = VaultService(db_path).import_zip_file(zip_path)
+    result = VaultService(reset_postgres_database).import_zip_file(zip_path)
 
     assert result.total_files == 2
     assert result.imported == 2
@@ -49,11 +47,10 @@ def test_import_zip_imports_multiple_xml_files(tmp_path: Path) -> None:
     assert result.failed == 0
 
 
-def test_import_deduplicates_by_uuid(tmp_path: Path, sample_xml: bytes) -> None:
-    db_path = tmp_path / "vault.sqlite3"
+def test_import_deduplicates_by_uuid(tmp_path: Path, sample_xml: bytes, reset_postgres_database: str) -> None:
     xml_path = tmp_path / "invoice.xml"
     xml_path.write_bytes(sample_xml)
-    service = VaultService(db_path)
+    service = VaultService(reset_postgres_database)
 
     first = service.import_xml_file(xml_path)
     second = service.import_xml_file(xml_path)

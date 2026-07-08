@@ -1,8 +1,33 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
+
+from cfdi_vault.db import Base, create_engine_from_url
+import cfdi_vault.recovery_db  # noqa: F401
+
+
+@pytest.fixture
+def postgres_database_url() -> str:
+    url = os.getenv("CFDI_VAULT_TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("CFDI_VAULT_TEST_DATABASE_URL is required for PostgreSQL-backed tests.")
+    return url
+
+
+@pytest.fixture
+def reset_postgres_database(postgres_database_url: str, monkeypatch: pytest.MonkeyPatch) -> str:
+    monkeypatch.setenv("DATABASE_URL", postgres_database_url)
+    engine = create_engine_from_url(postgres_database_url)
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    try:
+        yield postgres_database_url
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
 
 
 @pytest.fixture
