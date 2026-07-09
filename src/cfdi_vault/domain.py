@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import StrEnum
 import hashlib
@@ -162,45 +162,121 @@ class DownloadQuery:
 
 @dataclass(frozen=True)
 class QueueMessage:
-    """Message envelope sent through RabbitMQ or fake queue adapters."""
+    """Reference-only delivery envelope sent through queue adapters."""
 
     queue: QueueName
     tenant_id: str
-    rfc: str
-    payload: dict[str, Any]
     job_id: str = field(default_factory=lambda: str(uuid4()))
+    profile_id: str | None = None
     correlation_id: str = field(default_factory=lambda: str(uuid4()))
     attempt: int = 0
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    message_id: str = field(default_factory=lambda: str(uuid4()))
+    idempotency_key: str = ""
+    envelope_version: int = 1
+    not_before: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.envelope_version, bool) or not isinstance(self.envelope_version, int):
+            raise TypeError("queue envelope_version must be an integer")
+        if self.envelope_version != 1:
+            raise ValueError("unsupported queue envelope version")
+        if isinstance(self.attempt, bool) or not isinstance(self.attempt, int) or self.attempt < 0:
+            raise ValueError("queue attempt must be a non-negative integer")
+        for name, value in (
+            ("tenant_id", self.tenant_id),
+            ("job_id", self.job_id),
+            ("message_id", self.message_id),
+            ("correlation_id", self.correlation_id),
+        ):
+            if not isinstance(value, str):
+                raise TypeError(f"queue {name} must be a string")
+            if not value.strip():
+                raise ValueError(f"queue {name} cannot be empty")
+        if self.profile_id is not None and (not isinstance(self.profile_id, str) or not self.profile_id.strip()):
+            raise ValueError("queue profile_id must be a non-empty string or null")
+        if not self.idempotency_key:
+            object.__setattr__(self, "idempotency_key", self.job_id)
+        if not isinstance(self.idempotency_key, str):
+            raise TypeError("queue idempotency_key must be a string")
+        if not isinstance(self.created_at, datetime) or (
+            self.not_before is not None and not isinstance(self.not_before, datetime)
+        ):
+            raise TypeError("queue timestamps must be datetime values")
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "queue": self.queue.value,
             "job_id": self.job_id,
             "tenant_id": self.tenant_id,
-            "rfc": self.rfc,
+            "profile_id": self.profile_id,
             "correlation_id": self.correlation_id,
+            "message_id": self.message_id,
+            "idempotency_key": self.idempotency_key,
+            "envelope_version": self.envelope_version,
             "attempt": self.attempt,
-            "payload": self.payload,
             "created_at": self.created_at.isoformat(),
+            "not_before": self.not_before.isoformat() if self.not_before else None,
         }
+
+    def retry_after(self, delay_seconds: int, *, now: datetime | None = None) -> "QueueMessage":
+        """Create the next delivery while preserving correlation/idempotency."""
+
+        if isinstance(delay_seconds, bool) or not isinstance(delay_seconds, int) or delay_seconds < 0:
+            raise ValueError("retry delay_seconds must be a non-negative integer")
+        moment = now or datetime.now(timezone.utc)
+        return replace(
+            self,
+            message_id=str(uuid4()),
+            attempt=self.attempt + 1,
+            not_before=moment + timedelta(seconds=delay_seconds),
+        )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "QueueMessage":
-        created_at = data.get("created_at")
-        if isinstance(created_at, str):
-            parsed_created_at = datetime.fromisoformat(created_at)
-        else:
-            parsed_created_at = datetime.now(timezone.utc)
+        allowed = {
+            "queue",
+            "job_id",
+            "tenant_id",
+            "profile_id",
+            "correlation_id",
+            "message_id",
+            "idempotency_key",
+            "envelope_version",
+            "attempt",
+            "created_at",
+            "not_before",
+        }
+        unknown = set(data) - allowed
+        missing = allowed - set(data)
+        if unknown:
+            raise ValueError(f"unsupported queue envelope fields: {sorted(unknown)}")
+        if missing:
+            raise ValueError(f"missing queue envelope fields: {sorted(missing)}")
+        for name in ("queue", "job_id", "tenant_id", "correlation_id", "message_id", "idempotency_key", "created_at"):
+            if not isinstance(data[name], str):
+                raise TypeError(f"queue {name} must be a string")
+        profile_id = data["profile_id"]
+        if profile_id is not None and not isinstance(profile_id, str):
+            raise TypeError("queue profile_id must be a string or null")
+        for name in ("envelope_version", "attempt"):
+            if isinstance(data[name], bool) or not isinstance(data[name], int):
+                raise TypeError(f"queue {name} must be an integer")
+        not_before = data["not_before"]
+        if not_before is not None and not isinstance(not_before, str):
+            raise TypeError("queue not_before must be an ISO datetime string or null")
         return cls(
-            queue=QueueName(str(data["queue"])),
-            job_id=str(data["job_id"]),
-            tenant_id=str(data["tenant_id"]),
-            rfc=str(data["rfc"]),
-            correlation_id=str(data["correlation_id"]),
-            attempt=int(data.get("attempt", 0)),
-            payload=dict(data.get("payload") or {}),
-            created_at=parsed_created_at,
+            queue=QueueName(data["queue"]),
+            job_id=data["job_id"],
+            tenant_id=data["tenant_id"],
+            profile_id=profile_id,
+            correlation_id=data["correlation_id"],
+            message_id=data["message_id"],
+            idempotency_key=data["idempotency_key"],
+            envelope_version=data["envelope_version"],
+            attempt=data["attempt"],
+            created_at=datetime.fromisoformat(data["created_at"]),
+            not_before=datetime.fromisoformat(not_before) if not_before is not None else None,
         )
 
 

@@ -36,6 +36,7 @@ from cfdi_vault.fake_sat import FakeSatClient
 from cfdi_vault.metadata_parser import InvalidMetadataRow, parse_metadata_bytes
 from cfdi_vault.ports import CachePort, QueuePort, SatClientPort, StoragePort
 from cfdi_vault.queueing import InMemoryQueue
+from cfdi_vault.queue_contract import TerminalQueueError
 from cfdi_vault.reconciliation import decide_metadata_state
 from cfdi_vault.recovery_db import (
     CfdiDocument,
@@ -315,15 +316,27 @@ class RecoveryService:
             ttl_seconds=3600,
         )
         if enqueue:
-            self.queue.publish(QueueMessage(QueueName.SAT_REQUEST, query.tenant_id, query.requester_rfc, _query_payload(query), job_id=job_id))
+            self.queue.publish(
+                QueueMessage(
+                    queue=QueueName.SAT_REQUEST,
+                    tenant_id=query.tenant_id,
+                    job_id=job_id,
+                )
+            )
             return SyncResult(job_id=job_id, request_id="", packages=(), metadata_count=0, status=JobStatus.PENDING.value)
 
         return self._process_sat_request_job(query, job_id=job_id)
 
     def process_queue_message(self, message: QueueMessage) -> SyncResult:
-        """Process one queued SAT request message."""
+        """Hydrate one reference-only queue message from durable job state."""
 
-        query = _query_from_payload(message.payload)
+        with self.session_factory() as session:
+            job = session.get(DownloadJob, message.job_id)
+            if job is None or job.tenant_id != message.tenant_id:
+                raise TerminalQueueError("job_reference_not_found")
+            if not isinstance(job.payload, dict):
+                raise TerminalQueueError("job_reference_invalid")
+            query = _query_from_payload(job.payload)
         return self._process_sat_request_job(query, job_id=message.job_id)
 
     def ingest_metadata_file(

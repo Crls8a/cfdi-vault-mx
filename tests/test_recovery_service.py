@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from cfdi_vault.domain import DownloadDirection, ReconciliationState, RequestType
+from cfdi_vault.domain import DownloadDirection, QueueName, ReconciliationState, RequestType
 from cfdi_vault.fake_sat import FakeSatClient
 from cfdi_vault.recovery_db import CfdiDocument, CfdiMetadataLedger, SatPackageRecord, SatRequestRecord, XmlEvidence
 from cfdi_vault.recovery_service import RecoveryService, build_default_query, write_minimal_pdf
@@ -353,6 +353,11 @@ def test_enqueued_sync_is_processed_by_worker(tmp_path, reset_postgres_database:
         )
 
         queued = service.sync_metadata(query, enqueue=True)
+        message = service.queue._messages[QueueName.SAT_REQUEST.value][0]  # type: ignore[attr-defined]
+        assert message is not None
+        assert message.job_id == queued.job_id
+        assert message.tenant_id == "default"
+        assert all(key not in message.as_dict() for key in ("rfc", "uuid", "criteria", "payload"))
         report = RecoveryWorker(service).run_once()
 
         assert queued.status == "pending"
