@@ -12,7 +12,7 @@ CFDI Vault MX recovery work uses PostgreSQL as the durable source of truth, Rabb
 | API boundary | A future FastAPI service will own ingestion-facing endpoints and short transactional boundaries. It should accept stored XML/package references, validate them, and publish/coordinate ingestion jobs. |
 | Worker responsibility | Workers consume queued work gradually, parse or enrich stored XML, and write normalized rows into PostgreSQL. They should not depend on one giant CLI process holding the full recovery flow. |
 | Redis | Redis stores transient progress, locks, token cache, rate-limit state, and worker heartbeat. Redis is never the source of truth. |
-| Storage | The filesystem/object storage layer keeps raw ZIP/XML evidence. PostgreSQL stores hashes, sizes, state, and storage references. Filesystem is the default local adapter; MinIO is a future optional S3-compatible lab adapter, not a library requirement. |
+| Storage | The filesystem/object storage layer keeps raw ZIP/XML evidence. PostgreSQL stores hashes, sizes, state, and storage references. Filesystem is the default local adapter; MinIO is available in Docker Compose as an optional S3-compatible lab, not a library requirement. |
 
 ## Current Docker Compose contract
 
@@ -24,6 +24,8 @@ CFDI Vault MX recovery work uses PostgreSQL as the durable source of truth, Rabb
 | `flyway` | Applies versioned PostgreSQL migrations from `db/migration/` before app/worker startup. |
 | `rabbitmq` | Durable queue broker for recovery and ingestion jobs. |
 | `redis` | Transient progress, locks, token cache, rate-limit state, and worker heartbeat. |
+| `minio` | Optional S3-compatible object-storage lab for future storage-port adapter work. It is isolated behind the `object-storage` Compose profile. |
+| `minio-create-bucket` | Optional one-shot bucket bootstrap for the local evidence bucket. |
 | `app` | CLI/container entrypoint for operator commands and future API-adjacent orchestration. |
 | `worker` | Queue consumer process. Current implementation is a worker shell; retry/DLQ policy is still planned. |
 | `./storage:/app/storage` | Host-visible package/XML/evidence storage. |
@@ -31,7 +33,13 @@ CFDI Vault MX recovery work uses PostgreSQL as the durable source of truth, Rabb
 
 FastAPI is intentionally not a Compose service yet because the API code does not exist. Add an `api` service only when the FastAPI ingestion boundary is implemented and tested.
 
-MinIO is also intentionally not a Compose service yet. Add it only after the storage port/object-key contract exists and a MinIO adapter is tested behind that port. Until then, filesystem storage remains the reference-system default.
+MinIO is intentionally optional. Start it only when practicing object-storage behavior or developing the storage adapter:
+
+```bash
+docker compose --profile object-storage up -d minio minio-create-bucket
+```
+
+The current app and worker still use filesystem storage through `CFDI_STORAGE_ROOT`; they must not depend on MinIO until the storage port/object-key contract and adapter tests exist.
 
 ## Target recovery flow
 
@@ -89,7 +97,7 @@ Redis must not store:
 ## Implementation gaps
 
 - Expand Flyway migrations beyond the initial baseline as the model evolves.
-- Add a storage-port object-key contract and optional MinIO adapter for S3-compatible local practice.
+- Wire a storage-port object-key contract and MinIO adapter for S3-compatible local practice.
 - Add PostgreSQL full-text/trigram indexes where measured search needs justify them.
 - Implement RabbitMQ exchanges, routing keys, retry, and DLQ policy.
 - Add the FastAPI ingestion service and its request/response contract.

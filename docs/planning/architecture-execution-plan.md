@@ -31,10 +31,11 @@ gantt
     Module responsibilities and execution map :done, docs-map, 2026-07-09, 1d
 
     section Infrastructure foundation
+    MinIO Docker profile and docs        :done, minio-profile, after docs-map, 1d
     RabbitMQ retry and DLQ policy        :queue, after docs-map, 2d
     Redis progress locks heartbeat       :redis, after docs-map, 2d
     PostgreSQL evidence/index gaps       :db, after docs-map, 2d
-    Storage object-key and MinIO adapter :storage, after docs-map, 2d
+    Storage object-key and MinIO adapter :storage, after minio-profile, 2d
 
     section API and ingestion
     FastAPI ingestion contract           :api-contract, after storage, 1d
@@ -60,7 +61,7 @@ gantt
 | RabbitMQ retry/DLQ | Redis, DB, parser plan, SAT library plan | Responsibility docs | It owns queue semantics and does not need API implementation first. |
 | Redis progress/locks/heartbeat | RabbitMQ, DB, parser plan | Responsibility docs | It owns transient state and worker observability. |
 | PostgreSQL evidence/index gaps | Queue, Redis, parser plan | Responsibility docs | It defines durable state needed by later API/E2E. |
-| Storage object-key + MinIO adapter | Queue, Redis, parser plan | Storage port/object-key decision | API should accept storage references after keys are stable. |
+| Storage object-key + MinIO adapter | Queue, Redis, parser plan | Storage port/object-key decision and optional Docker MinIO profile | API should accept storage references after keys are stable. |
 | FastAPI ingestion contract | Parser plan, SAT library plan | Storage reference contract | API payload must know what a valid evidence reference is. |
 | Parser version matrix | Queue, Redis, DB | Responsibility docs | Extractor design can progress before API implementation. |
 | Parser implementation | SAT library facade | Parser matrix and evidence schema | Writes parser status and accounting payloads. |
@@ -72,11 +73,11 @@ gantt
 
 | ID | Branch | Type | Owner role | Scope | Depends on | Acceptance |
 |---|---|---|---|---|---|---|
-| ARCH-EXEC-001 | `docs/architecture-execution-map` | docs | Architecture | Module responsibilities, MinIO boundary, Gantt/worktree plan. | `dev` | Docs scanners and markdown diff check pass. |
+| ARCH-EXEC-001 | `docs/architecture-execution-map` | docs/infra | Architecture | Module responsibilities, MinIO boundary/profile, Gantt/worktree plan. | `dev` | Docs scanners, Compose config, and markdown diff check pass. |
 | QUEUE-003 | `feature/rabbitmq-retry-dlq-worker` | feature | Queue/Worker | Exchanges/routing, retry count, DLQ, worker retry events. | ARCH-EXEC-001 | Queue tests prove retry and DLQ without raw payloads. |
 | CACHE-002 | `feature/redis-progress-locks-heartbeat` | feature | Queue/Worker | Progress keys, locks, heartbeat, stale worker reporting. | ARCH-EXEC-001 | Redis adapter tests and worker status tests pass. |
 | DB-005 | `feature/postgres-evidence-indexes` | feature | Data | Evidence metadata, parser status, search indexes as Flyway migrations. | ARCH-EXEC-001 | Migration/repository tests pass; no runtime create-all shortcut. |
-| STOR-004 | `feature/storage-object-minio-adapter` | feature | Storage | Storage port object keys, filesystem adapter parity, optional MinIO lab. | ARCH-EXEC-001 | Filesystem tests pass; MinIO remains optional/reference-system-only. |
+| STOR-004 | `feature/storage-object-minio-adapter` | feature | Storage | Storage port object keys, filesystem adapter parity, MinIO adapter behind the optional lab. | ARCH-EXEC-001 | Filesystem and MinIO adapter tests pass; MinIO remains optional/reference-system-only. |
 | API-001 | `feature/api-ingestion-contract` | feature | API | Request/response contract for stored references. | STOR-004 | Tests reject raw XML/ZIP/secrets and accept storage refs. |
 | API-002 | `feature/api-ingestion-endpoint` | feature | API | FastAPI endpoint validates refs and enqueues `cfdi.parse.xml`. | API-001, QUEUE-003 | Endpoint tests prove no inline parser/bulk DB load. |
 | PARSER-001 | `feature/parser-version-matrix` | feature | Parser | Matrix for CFDI 3.2/3.3/4.0, unknown, payments, payroll. | ARCH-EXEC-001 | Fixture matrix docs/tests define complete vs partial. |

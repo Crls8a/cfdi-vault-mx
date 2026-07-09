@@ -77,10 +77,10 @@ During sprint planning, replace candidate rows with the actual committed sprint 
 
 | Status | ID | Title | Owner role | Blocker / next action |
 |---|---|---|---|---|
-| Ready | ARCH-EXEC-001 | Document module responsibilities and execution map | Architecture | Start first; this gates clean parallel implementation. |
+| In review | ARCH-EXEC-001 | Document module responsibilities and execution map | Architecture | Review docs plus optional MinIO Docker profile before accepting. |
 | Ready | QUEUE-003 | Implement RabbitMQ retry and DLQ policy | Queue / Worker | Start after ARCH-EXEC-001 is accepted. |
 | Ready | CACHE-002 | Implement Redis progress, locks, and heartbeat | Queue / Worker | Can run in parallel with QUEUE-003 after architecture docs. |
-| Ready | STOR-004 | Define object-key storage and optional MinIO adapter | Storage | Must define storage refs before API ingestion implementation. |
+| Ready | STOR-004 | Define object-key storage and optional MinIO adapter | Storage | MinIO lab exists; implement the storage port/object-key adapter before API ingestion. |
 | Ready | PARSER-005 | Implement version-specific CFDI extraction plan | Parser | Can run in parallel after architecture docs. |
 | Ready | LIB-005 | Define SAT v1.5 Python library facade plan | Release / SAT | Can run in parallel after architecture docs; do not promote live modules. |
 | Blocked | API-003 | Implement stored-reference ingestion API path | API / Queue | Wait for STOR-004 and QUEUE-003. |

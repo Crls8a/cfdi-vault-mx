@@ -28,7 +28,7 @@ flowchart TD
 | Work unit | Scope | Output | Acceptance |
 |---|---|---|---|
 | DB/PostgreSQL | Flyway, JSONB, full-text/trigram indexes. | Migration files and repository tests. | PostgreSQL integration test passes. |
-| Storage/MinIO | Storage object-key contract, filesystem parity, optional MinIO adapter. | Storage port docs, adapter tests, and Compose notes when implemented. | XML/ZIP evidence can move from filesystem to MinIO without changing domain/application code. |
+| Storage/MinIO | Storage object-key contract, filesystem parity, optional MinIO adapter. | Storage port docs, adapter tests, and the existing Compose `object-storage` profile. | XML/ZIP evidence can move from filesystem to MinIO without changing domain/application code. |
 | FastAPI ingestion | Stored XML/package reference API and queue handoff. | API contract, endpoint tests, and no-raw-payload validation. | Endpoint publishes idempotent jobs without parsing or bulk-loading inline. |
 | Queue/worker | RabbitMQ exchanges, retry, DLQ, heartbeat. | Worker loop and queue policy docs. | Fake retry and DLQ tests pass. |
 | Redis/cache | Progress schema, locks, rate limits. | Cache key contract and adapter tests. | Lock/rate-limit behavior tested. |

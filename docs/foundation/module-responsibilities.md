@@ -8,9 +8,9 @@ CLI, API, worker, or database into a God component.
 
 The CLI starts and observes work. Application services coordinate use cases. Workers perform
 long-running jobs. PostgreSQL stores durable state and accounting data. Storage keeps raw ZIP/XML
-evidence. RabbitMQ hands off work. Redis keeps transient progress/locks. FastAPI accepts stored
-references and enqueues ingestion work. The SAT v1.5 library exposes reusable Python contracts,
-not the reference-system runtime.
+evidence. RabbitMQ hands off work. Redis keeps transient progress/locks. MinIO is available as an
+optional Docker object-storage lab. FastAPI accepts stored references and enqueues ingestion work.
+The SAT v1.5 library exposes reusable Python contracts, not the reference-system runtime.
 
 ## Quick path
 
@@ -40,6 +40,7 @@ not the reference-system runtime.
 | Worker | Consume jobs, download/extract/parse/reconcile in retryable units. | PostgreSQL updates and storage references. | Worker heartbeat/progress. | Human prompts, CLI formatting, secret logging. |
 | PostgreSQL | Source of truth for jobs, request/package state, XML evidence refs, accounting data, reconciliation, queue audit. | Tables and Flyway-managed schema. | None. | Raw credential material; it should store references and redacted audit only. |
 | Storage | Keep raw package ZIPs, extracted XML, exports, and evidence files. | Bytes plus path/object keys. | None. | Business state decisions. |
+| MinIO | Optional S3-compatible lab for object keys and bucket behavior. | Local object-storage volume. | Console/API session state. | Required app/runtime dependency or library dependency. |
 | RabbitMQ | Durable handoff for slow/retryable jobs. | Message delivery and DLQ state. | Queue depth/backpressure. | Raw XML, ZIPs, SOAP bodies, secrets, e.firma material. |
 | Redis | Progress, locks, rate limits, token cache when approved, worker heartbeat. | None; it is not source of truth. | Short-lived keys. | XML/ZIP bytes, queue audit, PostgreSQL records, secrets. |
 | SAT v1.5 library | Typed request/auth/verify/download contracts, ports, results, fake/offline adapters. | Reusable Python API. | Caller-managed objects/results. | Reference-system assumptions like Docker, PostgreSQL, RabbitMQ, or CLI internals. |
@@ -104,17 +105,19 @@ but version behavior must be visible.
 
 ## Storage and MinIO decision
 
-Start with the filesystem storage already used by the reference system. Introduce MinIO only as
+Start with the filesystem storage already used by the reference system. Docker Compose now exposes
+MinIO as an optional lab for object-storage behavior, but production code should use it only through
 an object-storage adapter behind the storage port, not as a domain dependency.
 
 | Option | Use | Tradeoff |
 |---|---|---|
 | Filesystem storage | Default local/reference-system evidence store. | Simple and already aligned with local workflows. Harder to model remote/object semantics. |
-| MinIO | Optional S3-compatible development lab for object storage behavior. | Good practice for buckets, object keys, and future cloud portability. Adds Compose/service/test complexity. |
+| MinIO | Optional S3-compatible development lab behind the Compose `object-storage` profile. | Good practice for buckets, object keys, and future cloud portability. Adds service/test complexity and must remain optional. |
 | Cloud object storage | Future production-style adapter. | Useful later, but should wait until the storage port and MinIO adapter prove the contract. |
 
-MinIO should be planned as `feature/minio-storage-adapter` after the storage port/object-key
-contract is accepted. Do not add it as a required dependency for the library package.
+MinIO adapter work should be planned inside `feature/storage-object-minio-adapter` after the
+storage port/object-key contract is accepted. Do not add it as a required dependency for the
+library package, app, or worker before adapter tests exist.
 
 ## Module obligations
 
