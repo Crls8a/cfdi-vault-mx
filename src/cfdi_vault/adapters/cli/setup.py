@@ -203,8 +203,7 @@ def setup_command(
         rfc = _required_text(rfc, "RFC")
         mode = setup_flow.CredentialMode(credential_mode.strip().lower())
         phrase_value = _prompt_private_key_phrase()
-        phrase_ref = setup_flow.default_phrase_reference(profile_id)
-        provider = _provider_for_reference(CredentialReference(uri=phrase_ref, kind=CredentialKind.PHRASE))
+        provider = _setup_provider(profile_id)
         result = setup_flow.run_setup(
             profile_id=profile_id,
             rfc=rfc,
