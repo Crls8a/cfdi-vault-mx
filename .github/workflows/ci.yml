@@ -65,3 +65,37 @@ jobs:
       - name: Run tests
         run: |
           python -m pytest -q
+
+  rabbitmq-integration:
+    name: RabbitMQ integration
+    runs-on: ubuntu-latest
+    services:
+      rabbitmq:
+        image: rabbitmq:3.13-alpine
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      CFDI_VAULT_TEST_RABBITMQ_URL: amqp://guest:guest@localhost:5672/
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package with infrastructure extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,infra]"
+
+      - name: Run RabbitMQ integration tests
+        run: |
+          python -m pytest tests/test_rabbitmq_integration.py -q
