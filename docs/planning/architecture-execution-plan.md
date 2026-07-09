@@ -46,17 +46,20 @@ gantt
     section API and ingestion
     FastAPI ingestion contract           :api-contract, after storage queue redis db, 1d
     FastAPI enqueue endpoint             :api-impl, after api-contract queue-worker redis-read, 2d
+    Accounting write model               :db-write, after db parser-impl, 2d
+    XML parse worker                      :xml-worker, after api-impl parser-impl, 2d
 
     section Parsing
     Parser version matrix                :parser-plan, after docs-map, 1d
     CFDI 3.2/3.3/4.0 extractors          :parser-impl, after parser-plan, 3d
 
     section SAT library
-    SAT v1.5 public API candidates       :lib-plan, after docs-map, 1d
-    SAT facade over ports                :lib-facade, after lib-plan, 2d
+    SAT v1.5 public API contract         :lib-plan, after docs-map, 1d
+    SAT offline models and adapters      :lib-models, after lib-plan, 2d
+    SAT facade over ports                :lib-facade, after lib-models, 2d
 
     section End to end
-    Fake SAT package ingestion E2E       :e2e, after queue redis db api-impl parser-impl, 3d
+    Fake SAT package ingestion E2E       :e2e, after storage queue-worker redis-read db-write api-impl parser-impl xml-worker, 3d
     CLI progress search show             :cli, after e2e, 2d
 ```
 
@@ -93,9 +96,12 @@ gantt
 | API-003B | `feature/api-ingestion-endpoint` | feature | API | FastAPI endpoint validates refs and enqueues `cfdi.parse.xml`. | API-003A, QUEUE-004, CACHE-003 | Endpoint tests prove no inline parser/bulk DB load. |
 | PARSER-005A | `feature/parser-version-matrix` | feature | Parser | Matrix for CFDI 3.2/3.3/4.0, unknown, payments, payroll. | ARCH-EXEC-001 | Fixture matrix docs/tests define complete vs partial. |
 | PARSER-005B | `feature/cfdi-version-detector` | feature | Parser | Version detector, extractors, complement registry, and partial/unknown behavior. | PARSER-005A, DB-005 | Parser tests store version/status/accounting payload. |
-| LIB-001 | `feature/sat-v15-public-api-contract` | feature/docs | Library | Supported imports, errors, ports, result models. | ARCH-EXEC-001 | Import smoke and public API docs list supported names. |
-| LIB-002 | `feature/sat-v15-library-facade` | feature | Library | `cfdi_vault.sat_download` facade over injected ports. | LIB-001 | Facade works with fake/offline adapters, no runtime dependency. |
-| PIPE-003 | `feature/fake-sat-ingestion-e2e` | feature | Application | Fake SAT package to storage to API/queue to parser to DB to reconciliation. | STOR-004A, QUEUE-004, CACHE-003, DB-005, API-003B, PARSER-005B | E2E proves reprocessability and operator-visible status after every runtime gate is stable. |
+| LIB-005A | `feature/sat-v15-public-api-contract` | feature/docs | Library | Supported imports, result models, public errors, source policy, and live/internal exclusions. | ARCH-EXEC-001 | Import smoke and public API docs list supported names without service or live-SAT requirements. |
+| LIB-005B | `feature/sat-v15-result-models` | feature | Library | Typed results/errors plus fake readers and offline adapter contracts. | LIB-005A | Offline tests pass without Docker, PostgreSQL, RabbitMQ, Redis, or live SAT. |
+| LIB-005C | `feature/sat-v15-facade` | feature | Library | Import-first `cfdi_vault.sat_download` facade over injected ports/fakes. | LIB-005B | Consumer import smoke works without external services or live SAT. |
+| WORKER-002 | `feature/xml-parse-worker` | feature | Queue/Worker | Read stored XML references and invoke the parser registry. | API-003B, PARSER-005B | Worker records parser status and retry/manual-review state. |
+| DB-006 | `feature/accounting-write-model` | feature | Data | Persist normalized accounting rows and complement payloads. | DB-005, PARSER-005B | Repository tests prove idempotent UUID/version writes. |
+| PIPE-003 | `feature/fake-sat-ingestion-e2e` | feature | Application | Fake SAT package to storage to API/queue to parser to DB to reconciliation. | STOR-004A, QUEUE-004, CACHE-003, DB-005, DB-006, API-003B, PARSER-005B, WORKER-002 | E2E proves reprocessability and operator-visible status after every runtime gate is stable. |
 | CLI-005 | `feature/cli-progress-search-show` | feature | CLI/UX | Progress dashboard, storage locate, search/show status. | PIPE-003 | CLI tests show status without sensitive leakage. |
 
 ## Worktree plan
@@ -107,10 +113,11 @@ Keep at most three active implementation worktrees unless a final audit justifie
 | Wave 1 | 3 | `feature/rabbitmq-retry-dlq-worker`, `feature/redis-progress-locks-heartbeat`, `feature/postgres-evidence-indexes` |
 | Wave 2 | 3 | `feature/worker-job-envelope`, `feature/storage-object-key-contract`, `feature/parser-version-matrix` |
 | Wave 3 | 3 | `feature/worker-progress-read-model`, `feature/cfdi-version-detector`, `feature/sat-v15-public-api-contract` |
-| Wave 4 | 2 | `feature/api-ingestion-contract`, `feature/sat-v15-library-facade` |
-| Wave 5 | 1 | `feature/api-ingestion-endpoint` |
-| Wave 6 | 2 | `feature/fake-sat-ingestion-e2e`, `feature/storage-object-minio-adapter` |
-| Wave 7 | 1 | `feature/cli-progress-search-show` |
+| Wave 4 | 3 | `feature/api-ingestion-contract`, `feature/accounting-write-model`, `feature/sat-v15-result-models` |
+| Wave 5 | 2 | `feature/api-ingestion-endpoint`, `feature/sat-v15-facade` |
+| Wave 6 | 1 | `feature/xml-parse-worker` |
+| Wave 7 | 2 | `feature/fake-sat-ingestion-e2e`, `feature/storage-object-minio-adapter` |
+| Wave 8 | 1 | `feature/cli-progress-search-show` |
 
 Each worktree report must include branch, base, files changed, tests, merge status, and cleanup recommendation.
 

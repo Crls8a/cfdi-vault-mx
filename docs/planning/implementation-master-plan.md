@@ -106,7 +106,7 @@ Goal: convert foundation contracts into tested adapters. The API contract remain
 | QUEUE-004 | feature | Queue/worker | `feature/worker-job-envelope` | QUEUE-003, DB-005 | Worker consumes typed job envelopes, writes durable state, reports retry reason. | Worker tests show retryable/non-retryable split and queue audit rows. |
 | CACHE-003 | feature | Cache/worker | `feature/worker-progress-read-model` | CACHE-002, QUEUE-004 | Bridge worker heartbeat/progress to status read model. | CLI/API can query progress without reading Redis as source of truth. |
 | PARSER-005B | feature | Parser | `feature/cfdi-version-detector` | PARSER-005A, DB-005 | Implement version detector, version-specific extractors, complement registry, and partial/unknown behavior. | Synthetic fixture tests cover 3.2/3.3/4.0/unknown, known/unknown complements, and complete/partial status. |
-| LIB-005B | feature | SAT library | `feature/sat-v15-result-models` | LIB-005A | Add typed request/result/error models and fake/offline adapter contracts. | Public models have type hints, docstrings, tests, and no live SAT side effects. |
+| LIB-005B | feature | SAT library | `feature/sat-v15-result-models` | LIB-005A | Add typed request/result/error models, fake readers/adapters, and offline contract tests. | Public models and fakes have type hints, docstrings, offline tests, and no external-service or live-SAT side effects. |
 
 ## Phase 3: API and queued ingestion sprint
 
@@ -126,7 +126,7 @@ Goal: prove the full safe path before live SAT or release promises.
 
 | Item | Type | Agent | Branch/worktree | Depends on | Tasks | Acceptance |
 |---|---|---|---|---|---|---|
-| PIPE-003 | feature | Integration maintainer | `feature/fake-sat-ingestion-e2e` | STOR-004A, QUEUE-004, CACHE-003, DB-005, DB-006, API-003B, PARSER-005B | Fake SAT package to filesystem storage, API enqueue, worker parse, PostgreSQL write, reconciliation status only after all runtime gates are stable. | E2E proves evidence-first flow, indexed evidence, consistent progress, and reprocessability from stored XML without requiring optional MinIO. |
+| PIPE-003 | feature | Integration maintainer | `feature/fake-sat-ingestion-e2e` | STOR-004A, QUEUE-004, CACHE-003, DB-005, DB-006, API-003B, PARSER-005B, WORKER-002 | Fake SAT package to filesystem storage, API enqueue, worker parse, PostgreSQL write, reconciliation status only after all runtime gates are stable. | E2E proves evidence-first flow, indexed evidence, consistent progress, and reprocessability from stored XML without requiring optional MinIO. |
 | REC-002 | feature | Data/parser | `feature/reconciliation-events` | PIPE-003 | Add missing XML, duplicate UUID, partial parser, cancelled/unavailable events. | Reconciliation events are operator-visible and tested. |
 | QA-003 | test | QA/security | `test/fake-sat-e2e-fixture-gates` | PIPE-003 | Expand scanners and integration fixtures for no-real-data policy. | Scanner blocks real-looking RFCs, certificates, secrets, XML/ZIP evidence. |
 | DOC-PIPE-001 | docs | Architecture lead | same phase PR or docs branch | PIPE-003 | Update diagrams/runbook with verified E2E behavior. | Docs match tested behavior, not planned behavior. |

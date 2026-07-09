@@ -69,8 +69,12 @@ This backlog is the shared task source for the CFDI recovery library. Each item 
 | API-003B | Next | API / Ingestion | Implement queued XML ingestion endpoint | API-003A, QUEUE-004, CACHE-003 | API / Queue | FastAPI rejects raw XML/ZIP/secrets, enqueues `cfdi.parse.xml`, and does no parser/database bulk work inline. |
 | PARSER-005A | Next | Parser | Define CFDI parser version matrix | ARCH-EXEC-001 | Parser | CFDI 3.2, 3.3, 4.0, unknown, payments, payroll, and partial parser behavior are covered by fixture-safe scenarios. |
 | PARSER-005B | Phase 2 | Parser | Implement version-specific CFDI parser rollout | PARSER-005A, DB-005 | Parser | Version detection, extractors, complement registry, and partial/unknown behavior are tested. |
-| LIB-005 | Next | Release / Library | Define SAT v1.5 Python library facade plan | ARCH-EXEC-001 | Release / SAT | Supported imports, errors, ports, fake adapters, and future `cfdi_vault.sat_download` facade are documented and import-smoked. |
-| PIPE-003 | Next | Recovery Pipeline | Prove fake SAT package-to-ingestion E2E | STOR-004A, QUEUE-004, CACHE-003, DB-005, API-003B, PARSER-005B | Architecture | Fake SAT flow starts only after storage, queue, PostgreSQL evidence, Redis progress, API, and parser gates; optional MinIO is not an E2E prerequisite. |
+| LIB-005A | Next | Release / Library | Define SAT v1.5 public API contract | ARCH-EXEC-001 | Release / SAT | Supported imports, public errors/results, source policy, and live/internal exclusions are documented and import-smoked. |
+| LIB-005B | Phase 2 | Release / Library | Add SAT v1.5 offline models and adapter contracts | LIB-005A | Release / SAT | Typed models, fake readers/adapters, and offline tests pass without services or live SAT. |
+| LIB-005C | Phase 3 | Release / Library | Add SAT v1.5 import-first facade | LIB-005B | Release / SAT | `cfdi_vault.sat_download` delegates through injected ports/fakes without Docker, databases, brokers, caches, or live SAT. |
+| WORKER-002 | Phase 3 | Queue/Worker | Implement XML parse worker | API-003B, PARSER-005B | Queue / Worker | Worker reads filesystem storage references and records parser/retry/manual-review state. |
+| DB-006 | Phase 3 | Data | Implement accounting write model | DB-005, PARSER-005B | Data / Accounting | Normalized rows and complement payloads are written idempotently by UUID/version. |
+| PIPE-003 | Next | Recovery Pipeline | Prove fake SAT package-to-ingestion E2E | STOR-004A, QUEUE-004, CACHE-003, DB-005, DB-006, API-003B, PARSER-005B, WORKER-002 | Architecture | Fake SAT flow starts only after storage, queue, PostgreSQL evidence/write model, Redis progress, API, parser, and worker gates; optional MinIO is not an E2E prerequisite. |
 
 ## Backlog hygiene
 

@@ -84,8 +84,15 @@ During sprint planning, replace candidate rows with the actual committed sprint 
 | Ready | DB-005 | Add PostgreSQL evidence metadata and indexes | Data | Can run in parallel after architecture docs; evidence references must be queryable before API ingestion. |
 | Ready | STOR-004A | Define object-key storage contract | Storage | Prove filesystem adapter parity before API ingestion; MinIO remains outside app/worker runtime. |
 | Ready | PARSER-005A | Define CFDI parser version matrix | Parser | Can run in parallel after architecture docs; PARSER-005B rollout waits for this matrix. |
-| Ready | LIB-005 | Define SAT v1.5 Python library facade plan | Release / SAT | Can run in parallel after architecture docs; do not promote live modules. |
+| Ready | LIB-005A | Define SAT v1.5 public API contract | Release / SAT | Import-first contract can run after architecture docs; exclude services, internal/live modules, and live SAT. |
 | Blocked | STOR-004B | Implement optional MinIO storage adapter | Storage | Phase 2: wait for STOR-004A contract tests; do not wire MinIO into app/worker runtime. |
+| Blocked | QUEUE-004 | Implement typed worker job envelope | Queue / Worker | Wait for QUEUE-003 and DB-005; retain reference-only retry/audit semantics. |
+| Blocked | CACHE-003 | Add durable progress read model | Queue / Worker | Wait for CACHE-002 and QUEUE-004; Redis remains transient rather than recovery truth. |
 | Blocked | PARSER-005B | Implement version-specific CFDI parser rollout | Parser | Wait for PARSER-005A and DB-005; cover detector, extractors, complements, and partial/unknown behavior. |
+| Blocked | LIB-005B | Add SAT v1.5 offline models and adapters | Release / SAT | Wait for LIB-005A; fake readers/adapters and tests must remain service-free and offline. |
+| Blocked | LIB-005C | Add SAT v1.5 import-first facade | Release / SAT | Wait for LIB-005B; facade delegates through injected ports/fakes without live SAT. |
 | Blocked | API-003A | Define stored-reference ingestion API contract | API / Queue | Wait for STOR-004A filesystem parity, QUEUE-003 reliability, DB-005 evidence indexes, and CACHE-002 progress/lock/heartbeat semantics. |
-| Blocked | PIPE-003 | Prove fake SAT package-to-ingestion E2E | Architecture | Wait for STOR-004A, queue, PostgreSQL, Redis, API-003B, and PARSER-005B; optional MinIO is not a prerequisite. |
+| Blocked | API-003B | Implement queued XML ingestion endpoint | API / Queue | Wait for API-003A, QUEUE-004, and CACHE-003. |
+| Blocked | DB-006 | Implement accounting write model | Data | Wait for DB-005 and PARSER-005B; prove idempotent normalized writes. |
+| Blocked | WORKER-002 | Implement XML parse worker | Queue / Worker | Wait for API-003B and PARSER-005B; read storage references rather than raw payloads. |
+| Blocked | PIPE-003 | Prove fake SAT package-to-ingestion E2E | Architecture | Wait for STOR-004A, QUEUE-004, CACHE-003, DB-005/DB-006, API-003B, PARSER-005B, and WORKER-002; optional MinIO is not a prerequisite. |
