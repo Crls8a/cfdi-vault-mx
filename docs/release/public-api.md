@@ -10,6 +10,10 @@ The first public API should be import-first and small. The CLI remains valuable 
 reference system, demos, and packaging smoke checks, but the library promise is the
 Python contract documented here and in [SAT download public API research and contract](../api/sat-download-public-api.md).
 
+LIB-005A's exact SAT module classification, reserved names, error semantics, and
+promotion gates live in [SAT v1.5 public API contract](../api/sat-v15-public-api.md).
+Reserved LIB-005B/C names are not supported imports until their own gates pass.
+
 ## Public today
 
 | Import | Stability | Notes |
@@ -17,6 +21,10 @@ Python contract documented here and in [SAT download public API research and con
 | `cfdi_vault.__version__` | Stable | Exported from `cfdi_vault.__init__`. |
 
 No SAT live/probe module is public API today.
+
+No SAT result, error, port, fake, or `cfdi_vault.sat_download` facade is public
+today. Their names are reserved by LIB-005A without re-exporting implementation
+modules prematurely.
 
 ## Candidate public surfaces
 
@@ -80,6 +88,8 @@ commands.
 ## Next release gates
 
 - Add `docs/api/` links to the README and documentation index.
-- Add import smoke tests for every promoted public name.
-- Decide whether to introduce a single `cfdi_vault.sat_download` facade.
+- Implement and harden the reserved LIB-005B results, errors, split ports, and
+  offline fakes before promoting their imports.
+- Introduce the reserved `cfdi_vault.sat_download` facade only in LIB-005C.
+- Extend import smoke tests whenever a reserved name is actually promoted.
 - Keep live SAT support internal until the security gate is approved.
