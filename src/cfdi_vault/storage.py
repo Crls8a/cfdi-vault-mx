@@ -8,18 +8,31 @@ import hashlib
 from pathlib import Path
 import re
 
+from cfdi_vault.storage_contract import (
+    EvidenceReference,
+    StorageCollisionError,
+    StorageError,
+    StorageIOError,
+    StorageKey,
+    StorageNotFoundError,
+)
+
 
 SEGMENT_PATTERN = re.compile(r"[^A-Za-z0-9_.=-]+")
 
 
-@dataclass(frozen=True)
-class StoredFile:
+@dataclass(frozen=True, slots=True)
+class StoredFile(EvidenceReference):
     """Result of an idempotent local write."""
 
     path: Path
-    sha256: str
-    size_bytes: int
     written: bool
+
+    @property
+    def reference(self) -> EvidenceReference:
+        """Return adapter-neutral metadata without exposing the local path."""
+
+        return EvidenceReference(key=self.key, sha256=self.sha256, size_bytes=self.size_bytes)
 
 
 def sha256_bytes(content: bytes) -> str:
@@ -47,46 +60,38 @@ class LocalStorage:
     def metadata_key(self, rfc: str, period: datetime, id_solicitud: str, sha256: str, *, extension: str = "csv") -> str:
         """Build a deterministic key for a metadata TXT/CSV index."""
 
-        return self._period_key(
-            rfc,
-            "metadata",
-            period,
-            f"{_safe_segment(id_solicitud)}-{_safe_segment(sha256[:12])}.{_safe_segment(extension.lstrip('.'))}",
-        )
+        self.ensure_layout(rfc, period)
+        return str(StorageKey.metadata(rfc, period, id_solicitud, sha256, extension=extension))
 
     def package_key(self, rfc: str, period: datetime, id_paquete: str, sha256: str) -> str:
         """Build a deterministic key for a SAT package ZIP."""
 
-        return self._period_key(
-            rfc,
-            "packages",
-            period,
-            f"{_safe_segment(id_paquete)}-{_safe_segment(sha256[:12])}.zip",
-        )
+        self.ensure_layout(rfc, period)
+        return str(StorageKey.package(rfc, period, id_paquete, sha256))
 
     def xml_key(self, rfc: str, issue_date: datetime, uuid: str, sha256: str) -> str:
         """Build a deterministic key for extracted XML evidence."""
 
-        return self._period_key(
-            rfc,
-            "xml",
-            issue_date,
-            f"{_safe_segment(uuid.upper())}-{_safe_segment(sha256[:12])}.xml",
-        )
+        self.ensure_layout(rfc, issue_date)
+        return str(StorageKey.xml(rfc, issue_date, uuid, sha256))
 
-    def write_bytes(self, key: str, content: bytes) -> str:
+    def write_bytes(self, key: str | StorageKey, content: bytes) -> str:
         """Store bytes and return a storage reference.
 
-        This method keeps the port-compatible overwrite behavior. Recovery code
+        This method keeps the legacy overwrite behavior. Recovery code
         should prefer ``write_bytes_idempotent`` for SAT evidence.
         """
 
-        path = self.path_for_key(key)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
+        storage_key = StorageKey.parse(key)
+        path = self.path_for_key(storage_key)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        except OSError:
+            raise StorageIOError(storage_key, "write") from None
         return str(path)
 
-    def write_bytes_idempotent(self, key: str, content: bytes) -> StoredFile:
+    def write_bytes_idempotent(self, key: str | StorageKey, content: bytes) -> StoredFile:
         """Write bytes once and reuse an existing identical file.
 
         If a file already exists at the deterministic key with different bytes,
@@ -94,27 +99,83 @@ class LocalStorage:
         accidental mutation and surfaces hash/path collisions immediately.
         """
 
-        path = self.path_for_key(key)
+        storage_key = StorageKey.parse(key)
+        path = self.path_for_key(storage_key)
         digest = sha256_bytes(content)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists():
-            existing = path.read_bytes()
-            existing_digest = sha256_bytes(existing)
-            if existing_digest != digest:
-                raise ValueError(f"storage collision for {path}: existing SHA-256 differs")
-            return StoredFile(path=path, sha256=digest, size_bytes=len(existing), written=False)
-        path.write_bytes(content)
-        return StoredFile(path=path, sha256=digest, size_bytes=len(content), written=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists():
+                existing = path.read_bytes()
+                existing_digest = sha256_bytes(existing)
+                if existing_digest != digest:
+                    raise StorageCollisionError(storage_key)
+                return StoredFile(
+                    key=storage_key,
+                    sha256=digest,
+                    size_bytes=len(existing),
+                    path=path,
+                    written=False,
+                )
+            path.write_bytes(content)
+        except StorageError:
+            raise
+        except OSError:
+            raise StorageIOError(storage_key, "write") from None
+        return StoredFile(
+            key=storage_key,
+            sha256=digest,
+            size_bytes=len(content),
+            path=path,
+            written=True,
+        )
 
-    def path_for_key(self, key: str) -> Path:
+    def read_bytes(self, key: str | StorageKey) -> bytes:
+        """Read evidence bytes addressed by a validated storage key."""
+
+        storage_key = StorageKey.parse(key)
+        return self._read_bytes(storage_key, operation="read")
+
+    def _read_bytes(self, storage_key: StorageKey, *, operation: str) -> bytes:
+        try:
+            return self.path_for_key(storage_key).read_bytes()
+        except StorageError:
+            raise
+        except FileNotFoundError:
+            raise StorageNotFoundError(storage_key, operation) from None
+        except OSError:
+            raise StorageIOError(storage_key, operation) from None
+
+    def stat(self, key: str | StorageKey) -> EvidenceReference:
+        """Return indexable metadata for stored evidence."""
+
+        storage_key = StorageKey.parse(key)
+        content = self._read_bytes(storage_key, operation="stat")
+        return EvidenceReference(key=storage_key, sha256=sha256_bytes(content), size_bytes=len(content))
+
+    def path_for_key(self, key: str | StorageKey) -> Path:
         """Resolve a storage key under the configured root."""
 
-        safe_key = key.replace("\\", "/").lstrip("/")
-        path = self.root / safe_key
-        root = self.root.resolve()
-        resolved_parent = path.parent.resolve()
-        resolved_parent.relative_to(root)
-        return path
+        storage_key = StorageKey.parse(key)
+        try:
+            self._reject_case_alias(storage_key)
+            path = self.root.joinpath(*storage_key.parts)
+            root = self.root.resolve()
+            path.resolve().relative_to(root)
+            return path
+        except StorageError:
+            raise
+        except (OSError, ValueError):
+            raise StorageIOError(storage_key, "resolve") from None
+
+    def _reject_case_alias(self, key: StorageKey) -> None:
+        current = self.root
+        for part in key.parts:
+            if not current.is_dir():
+                return
+            for entry in current.iterdir():
+                if entry.name.casefold() == part.casefold() and entry.name != part:
+                    raise StorageCollisionError(key, "case-insensitive alias", operation="resolve")
+            current /= part
 
     def ensure_layout(self, rfc: str | None = None, period: datetime | None = None) -> tuple[Path, ...]:
         """Create the base layout and return the folders that were ensured."""
@@ -137,12 +198,6 @@ class LocalStorage:
         for path in paths:
             path.mkdir(parents=True, exist_ok=True)
         return paths
-
-    def _period_key(self, rfc: str, family: str, period: datetime, filename: str) -> str:
-        self.ensure_layout(rfc, period)
-        year, month = _year_month(period)
-        return "/".join((_safe_rfc(rfc), family, year, month, filename))
-
 
 def _year_month(moment: datetime) -> tuple[str, str]:
     return f"{moment.year:04d}", f"{moment.month:02d}"

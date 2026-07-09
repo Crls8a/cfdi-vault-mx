@@ -82,6 +82,39 @@ Metadata, package, and XML filenames include a SHA-256 prefix so replaying the s
 - Unknown parser/complement support must not delete or rewrite evidence.
 - Reprocessing should read stored XML, not ask SAT again when evidence already exists.
 
+## Storage port and object-key contract
+
+STOR-004A defines the adapter-neutral boundary in
+`cfdi_vault.storage_contract` and `cfdi_vault.ports.StoragePort`:
+
+- `StorageKey` is a relative, canonical POSIX object key. It rejects absolute
+  paths, drive prefixes, backslashes, empty segments, and `.`/`..` traversal.
+- Metadata, package, and XML key factories normalize identifier segments,
+  validate a complete SHA-256 digest, and include its first 12 characters.
+- `EvidenceReference` contains only `storage_key`, `sha256`, and `size_bytes`.
+  It never contains evidence bytes, secrets, or an adapter-specific local path.
+- `StoragePort` provides idempotent write, read, and stat operations.
+  `LocalStorage` is the active adapter and preserves the existing filesystem
+  layout and collision protection.
+- Typed storage failures retain the relative key in structured `.key` data,
+  while their messages expose only operation/category; RFCs, evidence IDs,
+  adapter roots, and absolute paths stay private.
+- Object keys remain case-sensitive, while `LocalStorage` rejects aliases that
+  differ only by case so Windows and future object-storage behavior cannot
+  produce two references for one local file.
+
+The configured storage root/profile is the tenant boundary; object keys begin
+with the requester RFC and period. PostgreSQL remains responsible for binding
+that stable evidence reference to `tenant_id`, jobs, packages, and documents.
+Existing recovery fields that expose filesystem paths remain compatibility
+surfaces until their DB/application migration is delivered with the evidence
+index work; new queue/API contracts must use object keys instead.
+
+MinIO is not implemented by STOR-004A. A future STOR-004B adapter may be wired
+only after it passes the same write/read/stat and collision tests. Until then,
+`app` and `worker` continue to use `CFDI_STORAGE_ROOT=/app/storage`, and no
+MinIO variables belong in their runtime configuration.
+
 ## Extraction and discovery UX
 
 Future CLI commands should make storage discoverable:
