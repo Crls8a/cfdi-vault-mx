@@ -6,7 +6,9 @@ Use this runbook whenever an agent finishes a branch or worktree. The goal is to
 
 Completed, tested work must be integrated into `dev` before the worktree is considered done.
 
-`dev` is the local integration branch for reviewed agent work. Feature branches may exist while work is in progress, but they must not become a permanent substitute for integration.
+`dev` is the integration branch for reviewed agent work. Feature branches may exist while work is in progress, but they must not become a permanent substitute for integration. `origin/dev` is the current source of truth when reconciling local or historical branches.
+
+`main` is reserved for releases.
 
 ## Branch lineage guardrails
 
@@ -21,6 +23,9 @@ Use `dev` as the default base for new work.
 | Feature behavior | Integrate only with relevant tests and scanner evidence. |
 | CLI/SAT work | Preserve domain, port, adapter, and infrastructure boundaries; do not put command logic back into `src/cfdi_vault/cli.py`. |
 | Sensitive evidence | Never commit real SAT/CFDI data, RFCs, secrets, certificates, tokens, raw SOAP, ZIPs, XML, logs, or local paths. |
+| Historical branch snapshot | Treat as reference material only; compare real unique patches against `origin/dev`. |
+| Patch-equivalent or superseded branch | Do not merge it. Archive later with explicit authorization, or migrate only the useful part manually from a new branch based on `dev`. |
+| Temporary integration branch | Do not reuse it as a base after it is absorbed into `dev`. |
 
 If a branch cannot satisfy these rules, do not merge it as-is. Extract the safe part manually or leave it blocked with a clear plan.
 
@@ -88,6 +93,21 @@ Resolve conflicts by ownership:
 - Do not resurrect large legacy files just because that makes Git conflict resolution easier.
 - Keep docs indexes additive unless two entries say contradictory things.
 - Keep SAT/CLI changes separated by layer: domain/application decisions in core modules, user input/output in CLI adapters, external I/O behind ports/adapters.
+
+## Historical branch migration
+
+Use this path when a branch was created before later architecture changes, such
+as the CLI split or SAT/live-state hardening:
+
+1. Keep the historical branch unchanged.
+2. Compare it against `origin/dev` with `git cherry`, `git log --cherry-pick --right-only`, and file-level diffs.
+3. Ignore large triple-dot diffs when `git cherry` shows the patches are already covered.
+4. If useful work remains, create a new branch from `dev`.
+5. Manually port only the useful behavior or documentation into the current architecture.
+6. Run the scanner, `git diff --check`, and the smallest meaningful tests.
+
+Never make an old branch "work" by restoring obsolete structure. In particular,
+do not bring command logic back into `src/cfdi_vault/cli.py`.
 
 ## Cleanup
 
