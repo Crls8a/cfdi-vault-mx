@@ -24,6 +24,12 @@ from cfdi_vault.queue_contract import (
 )
 
 
+_DEAD_LETTER_QUEUE = "dead.letter.v1"
+
+
+def _retry_queue_name(queue_name: str, delay_seconds: int) -> str:
+    return f"{queue_name}.retry.v1.{delay_seconds}s"
+
 
 class InMemoryQueue:
     """Dependency-light queue adapter for tests and local fake workflows."""
@@ -125,9 +131,16 @@ class InMemoryQueue:
 class RabbitMqQueue:
     """RabbitMQ adapter using durable queues and persistent messages."""
 
-    def __init__(self, url: str, *, exchange: str = "") -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        exchange: str = "",
+        retry_policy: RetryPolicy | None = None,
+    ) -> None:
         self.url = url
         self.exchange = exchange
+        self.retry_policy = retry_policy or RetryPolicy()
 
     def publish(self, message: QueueMessage) -> None:
         pika = _load_pika()
@@ -180,12 +193,24 @@ class RabbitMqQueue:
             connection.close()
 
     def consume_one(self, queue_name: str) -> QueueMessage | None:
+        """Reject unsafe consumption that cannot defer ack until processing."""
+
+        raise RuntimeError("RabbitMQ consumption requires a handler")
+
+    def consume_one_reliably(
+        self,
+        queue_name: str,
+        handler: Callable[[QueueMessage], object],
+    ) -> DeliveryOutcome | None:
+        """Apply one bounded at-least-once delivery transition."""
+
         pika = _load_pika()
         parameters = pika.URLParameters(self.url)
         connection = pika.BlockingConnection(parameters)
         try:
             channel = connection.channel()
-            _declare_queue(channel, queue_name)
+            self._declare_transition_topology(channel, queue_name)
+            channel.confirm_delivery()
             method_frame, _properties, body = channel.basic_get(queue=queue_name, auto_ack=False)
             if method_frame is None:
                 return None
@@ -193,35 +218,85 @@ class RabbitMqQueue:
                 payload = json.loads(body.decode("utf-8"))
                 message = QueueMessage.from_dict(payload)
             except Exception:
-                channel.basic_nack(delivery_tag=method_frame.delivery_tag, requeue=False)
-                raise
-            channel.basic_ack(delivery_tag=method_frame.delivery_tag)
-            return message
-        finally:
-            connection.close()
+                return self._dead_letter_invalid(
+                    pika,
+                    channel,
+                    method_frame.delivery_tag,
+                    queue_name,
+                )
+            if message.queue.value != queue_name:
+                return self._dead_letter_delivery(
+                    pika,
+                    channel,
+                    method_frame.delivery_tag,
+                    message,
+                    "queue_origin_mismatch",
+                    original_queue=queue_name,
+                )
 
-    def consume_one_with_handler(self, queue_name: str, handler: Callable[[QueueMessage], object]) -> object | None:
-        pika = _load_pika()
-        parameters = pika.URLParameters(self.url)
-        connection = pika.BlockingConnection(parameters)
-        try:
-            channel = connection.channel()
-            _declare_queue(channel, queue_name)
-            method_frame, _properties, body = channel.basic_get(queue=queue_name, auto_ack=False)
-            if method_frame is None:
-                return None
             try:
-                payload = json.loads(body.decode("utf-8"))
-                message = QueueMessage.from_dict(payload)
                 result = handler(message)
+            except RetryableQueueError as exc:
+                delay = self.retry_policy.delay_after_failure(message.attempt)
+                if delay is None:
+                    return self._dead_letter_delivery(
+                        pika, channel, method_frame.delivery_tag, message, exc.reason_code
+                    )
+                retry = message.retry_after(delay)
+                try:
+                    confirmed = channel.basic_publish(
+                        exchange="",
+                        routing_key=_retry_queue_name(queue_name, delay),
+                        body=json.dumps(retry.as_dict(), sort_keys=True).encode("utf-8"),
+                        properties=self._message_properties(pika, retry),
+                        mandatory=True,
+                    )
+                    if confirmed is False:
+                        raise RuntimeError("retry publish was not confirmed")
+                except Exception:
+                    channel.basic_nack(delivery_tag=method_frame.delivery_tag, requeue=True)
+                    raise RuntimeError("queue retry transition failed") from None
+                channel.basic_ack(delivery_tag=method_frame.delivery_tag)
+                return DeliveryOutcome(
+                    DeliveryAction.RETRY,
+                    message,
+                    reason_code=exc.reason_code,
+                    delay_seconds=delay,
+                )
+            except TerminalQueueError as exc:
+                return self._dead_letter_delivery(
+                    pika, channel, method_frame.delivery_tag, message, exc.reason_code
+                )
             except Exception:
-                channel.basic_nack(delivery_tag=method_frame.delivery_tag, requeue=True)
-                raise
+                return self._dead_letter_delivery(
+                    pika, channel, method_frame.delivery_tag, message, "unclassified_failure"
+                )
+
             channel.basic_ack(delivery_tag=method_frame.delivery_tag)
-            return result
+            return DeliveryOutcome(DeliveryAction.ACK, message, result=result)
         finally:
             connection.close()
 
+    def _declare_transition_topology(self, channel: object, queue_name: str) -> None:
+        """Add versioned transition queues without changing the durable source queue."""
+
+        _declare_queue(channel, queue_name)
+        retry_delays = {
+            delay
+            for attempt in range(self.retry_policy.max_attempts)
+            if (delay := self.retry_policy.delay_after_failure(attempt)) is not None
+        }
+        for delay in sorted(retry_delays):
+            _declare_queue(
+                channel,
+                _retry_queue_name(queue_name, delay),
+                arguments={
+                    "x-message-ttl": delay * 1000,
+                    "x-dead-letter-exchange": "",
+                    "x-dead-letter-routing-key": queue_name,
+                },
+            )
+        _declare_queue(channel, _DEAD_LETTER_QUEUE)
 
     @staticmethod
     def _message_properties(
@@ -243,9 +318,97 @@ class RabbitMqQueue:
             },
         )
 
+    def _dead_letter_delivery(
+        self,
+        pika: object,
+        channel: object,
+        delivery_tag: object,
+        message: QueueMessage,
+        reason_code: str,
+        *,
+        original_queue: str | None = None,
+    ) -> DeliveryOutcome:
+        record = DeadLetterRecord(
+            original_queue=original_queue or message.queue.value,
+            job_id=message.job_id,
+            tenant_id=message.tenant_id,
+            message_id=message.message_id,
+            correlation_id=message.correlation_id,
+            idempotency_key=message.idempotency_key,
+            attempt=message.attempt,
+            reason_code=reason_code,
+        )
+        self._publish_dead_letter_record(pika, channel, delivery_tag, record, message)
+        return DeliveryOutcome(
+            DeliveryAction.DEAD_LETTER,
+            message,
+            reason_code=reason_code,
+        )
 
-def _declare_queue(channel: object, queue_name: str) -> object:
-    return channel.queue_declare(queue=queue_name, durable=True)
+    def _dead_letter_invalid(
+        self,
+        pika: object,
+        channel: object,
+        delivery_tag: object,
+        queue_name: str,
+    ) -> DeliveryOutcome:
+        record = DeadLetterRecord(
+            original_queue=queue_name,
+            job_id="unavailable",
+            tenant_id="unavailable",
+            message_id="unavailable",
+            correlation_id="unavailable",
+            idempotency_key="unavailable",
+            attempt=0,
+            reason_code="invalid_envelope",
+        )
+        self._publish_dead_letter_record(pika, channel, delivery_tag, record)
+        return DeliveryOutcome(
+            DeliveryAction.DEAD_LETTER,
+            None,
+            reason_code="invalid_envelope",
+        )
+
+    @staticmethod
+    def _publish_dead_letter_record(
+        pika: object,
+        channel: object,
+        delivery_tag: object,
+        record: DeadLetterRecord,
+        message: QueueMessage | None = None,
+    ) -> None:
+        property_values: dict[str, object] = {
+            "content_type": "application/json",
+            "delivery_mode": 2,
+        }
+        if message is not None:
+            property_values.update(
+                correlation_id=message.correlation_id,
+                message_id=message.message_id,
+            )
+        try:
+            confirmed = channel.basic_publish(
+                exchange="",
+                routing_key=_DEAD_LETTER_QUEUE,
+                body=json.dumps(record.as_dict(), sort_keys=True).encode("utf-8"),
+                properties=pika.BasicProperties(**property_values),
+                mandatory=True,
+            )
+            if confirmed is False:
+                raise RuntimeError("dead-letter publish was not confirmed")
+        except Exception:
+            channel.basic_nack(delivery_tag=delivery_tag, requeue=True)
+            raise RuntimeError("queue dead-letter transition failed") from None
+        channel.basic_ack(delivery_tag=delivery_tag)
+
+
+def _declare_queue(
+    channel: object,
+    queue_name: str,
+    *,
+    arguments: dict[str, object] | None = None,
+) -> object:
+    return channel.queue_declare(queue=queue_name, durable=True, arguments=arguments)
 
 
 def _load_pika():
