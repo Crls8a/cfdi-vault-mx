@@ -106,7 +106,39 @@ services:
       timeout: 5s
       retries: 5
 
+  minio:
+    image: minio/minio:latest
+    profiles: ["object-storage"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-cfdi_vault}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-cfdi_vault}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    command: ["server", "/data", "--console-address", ":9001"]
+
+  minio-create-bucket:
+    image: minio/mc:latest
+    profiles: ["object-storage"]
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-cfdi_vault}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-cfdi_vault}
+      MINIO_BUCKET: ${MINIO_BUCKET:-cfdi-vault-evidence}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do
+          sleep 2
+        done
+        mc mb --ignore-existing "local/$$MINIO_BUCKET"
+
 volumes:
   postgres_data:
   rabbitmq_data:
   redis_data:
+  minio_data:

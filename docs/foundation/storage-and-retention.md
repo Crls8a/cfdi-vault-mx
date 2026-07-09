@@ -16,6 +16,23 @@ PostgreSQL stores searchable accounting data and storage references. The filesys
 
 Storage is not a separate user workflow. It is a mandatory stage of the recovery pipeline: every downloaded package and extracted XML must be registered before normalized data is considered loaded.
 
+## Optional MinIO lab
+
+Docker Compose includes an optional MinIO profile so the team can practice S3-compatible object keys before choosing a production object-storage provider.
+
+```bash
+docker compose --profile object-storage up -d minio minio-create-bucket
+```
+
+| Setting | Default |
+|---|---|
+| API endpoint | `http://localhost:9000` |
+| Console endpoint | `http://localhost:9001` |
+| Bucket | `cfdi-vault-evidence` |
+| Container data volume | `minio_data` |
+
+MinIO is a reference-system lab service only. The default app and worker still use `CFDI_STORAGE_ROOT` and the host-mounted `./storage` directory until the storage port and MinIO adapter are implemented and tested.
+
 ## User-visible location
 
 | Mode | User sees XML under |
@@ -23,6 +40,7 @@ Storage is not a separate user workflow. It is a mandatory stage of the recovery
 | Local CLI default | `<repo>/storage/<RFC>/xml/YYYY/MM/...` |
 | Local CLI custom | `<--storage>/<RFC>/xml/YYYY/MM/...` |
 | Docker Compose | `<repo>/storage/<RFC>/xml/YYYY/MM/...` on the host, mounted to `/app/storage/<RFC>/xml/YYYY/MM/...` in the container |
+| Docker Compose MinIO lab | Future object keys under bucket `cfdi-vault-evidence`; not used by app/worker yet |
 | Future packaged installer | User-selected data directory, shown by `doctor` and setup summary |
 
 The `doctor` command must always show the resolved storage root and key subfolders.
@@ -115,3 +133,4 @@ Manifests are secondary indexes. PostgreSQL remains the source of truth.
 - Add storage usage summary to `doctor`.
 - Add tests proving custom `--storage` is honored.
 - Add safe export/copy command for XML evidence.
+- Implement the storage-port MinIO adapter and prove filesystem/object-storage parity.

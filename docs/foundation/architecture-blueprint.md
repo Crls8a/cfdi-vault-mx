@@ -2,6 +2,8 @@
 
 The system uses Clean Architecture: domain rules do not know about RabbitMQ, Redis, PostgreSQL, FastAPI, Typer, or SAT SOAP. Infrastructure adapters satisfy ports.
 
+For concrete module obligations, data ownership, MinIO/storage tradeoffs, parser responsibilities, and worktree execution rules, read [Module responsibilities and execution boundaries](module-responsibilities.md).
+
 ## System context
 
 ```mermaid
@@ -16,6 +18,7 @@ flowchart TD
     Ports --> MQ["RabbitMQ"]
     Ports --> Redis["Redis"]
     Ports --> Storage["Package/XML/export storage"]
+    Storage -. optional lab .-> MinIO["MinIO object storage"]
     Ports --> SAT["SAT SOAP services"]
     SAT -. fake mode .-> FakeSAT["Fake SAT fixtures"]
 ```
@@ -29,6 +32,7 @@ flowchart LR
     API -. planned .-> MQ["rabbitmq"]
     API -. planned .-> Redis["redis"]
     API -. planned .-> Storage["./storage volume"]
+    API -. future adapter .-> MinIO["minio (optional profile)"]
     CLI --> MQ
     CLI --> Redis
     CLI --> Storage
@@ -37,6 +41,7 @@ flowchart LR
     Worker --> PG
     Worker --> Redis
     Worker --> Storage
+    Worker -. future adapter .-> MinIO
 ```
 
 ## Code boundaries
@@ -73,6 +78,7 @@ Outer layers depend inward. Inner layers never import outer adapters.
 | Database | PostgreSQL as source of truth. |
 | API boundary | FastAPI will mediate ingestion requests once API code exists; Docker Compose should only add an API service with that implementation. |
 | XML ingestion | Stored XML/package references move through API/queue/worker before normalized PostgreSQL loading. |
+| Storage adapter path | Filesystem remains the default reference-system store; Docker Compose exposes optional MinIO for adapter practice behind the storage port. |
 | Flexible CFDI data | PostgreSQL JSONB-compatible payloads, not MongoDB. |
 | Search | PostgreSQL full-text/trigram first; OpenSearch later only if volume requires it. |
 | Local/dev | Docker Compose. |

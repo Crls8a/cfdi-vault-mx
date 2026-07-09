@@ -1,6 +1,6 @@
 # Workstream ownership and parallel development
 
-Parallel work is allowed only when each stream has a clear owner, write scope, dependencies, and acceptance criteria. The goal is speed with discipline, not random concurrency.
+Parallel work is allowed only when each stream has a clear owner, write scope, dependencies, acceptance criteria, and git worktree. The goal is speed with discipline, not random concurrency.
 
 ## Ownership model
 
@@ -8,7 +8,7 @@ Parallel work is allowed only when each stream has a clear owner, write scope, d
 |---|---|---|---|---|
 | Product/UX | Product architect | `user-stories.md`, `cli-ux-design.md` | Docs, CLI copy specs | Foundation review |
 | Installer/dev environment | Infra owner | `installer-design.md` | Docker, scripts, env docs | Product setup stories |
-| Storage/evidence | Storage owner | `storage-and-retention.md` | storage key builder, manifests, locate/export commands | data model |
+| Storage/evidence | Storage owner | `storage-and-retention.md`, `module-responsibilities.md` | storage key builder, manifests, filesystem adapter, optional MinIO adapter, locate/export commands | data model |
 | Recovery pipeline | Application owner | `recovery-pipeline.md`, `flows-and-states.md` | orchestration, stage transitions, partial failure behavior | storage and data model |
 | DB/search | Data owner | `data-and-accounting-model.md` | migrations, repositories, indexes | DB ADR |
 | Queue/worker | Queue owner | `flows-and-states.md` | queue adapters, worker, retry policy | retry/DLQ design |
@@ -50,7 +50,8 @@ flowchart TD
 2. Every implementation task must reference the foundation doc it satisfies.
 3. Docs and tests travel with the implementation.
 4. Work that crosses two layers needs fresh review.
-5. Live SAT work requires explicit security approval first.
+5. Each parallel implementation stream uses its own git worktree and reports cleanup status.
+6. Live SAT work requires explicit security approval first.
 
 ## Ready-to-delegate backlog
 
