@@ -9,32 +9,109 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from collections import defaultdict, deque
+from datetime import datetime, timezone
 import json
 from typing import Deque
 
 from cfdi_vault.domain import QueueMessage, QueueName
+from cfdi_vault.queue_contract import (
+    DeadLetterRecord,
+    DeliveryAction,
+    DeliveryOutcome,
+    RetryPolicy,
+    RetryableQueueError,
+    TerminalQueueError,
+)
+
 
 
 class InMemoryQueue:
     """Dependency-light queue adapter for tests and local fake workflows."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        retry_policy: RetryPolicy | None = None,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self._messages: dict[str, Deque[QueueMessage]] = defaultdict(deque)
+        self._dead_letters: Deque[DeadLetterRecord] = deque()
+        self.retry_policy = retry_policy or RetryPolicy()
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     def publish(self, message: QueueMessage) -> None:
         self._messages[message.queue.value].append(message)
 
-    def consume_one(self, queue_name: str) -> QueueMessage | None:
+    def peek(self, queue_name: str) -> QueueMessage | None:
+        """Inspect the head without acknowledging or removing it."""
+
         queue = self._messages.get(queue_name)
         if not queue:
             return None
-        return queue.popleft()
+        return queue[0]
 
-    def consume_one_with_handler(self, queue_name: str, handler: Callable[[QueueMessage], object]) -> object | None:
-        message = self.consume_one(queue_name)
-        if message is None:
+    def consume_one_reliably(
+        self,
+        queue_name: str,
+        handler: Callable[[QueueMessage], object],
+    ) -> DeliveryOutcome | None:
+        """Consume with bounded retry and redacted dead-letter transitions."""
+
+        queue = self._messages.get(queue_name)
+        if not queue:
             return None
-        return handler(message)
+        message = queue[0]
+        now = self.clock()
+        if message.not_before is not None and message.not_before > now:
+            return None
+        try:
+            result = handler(message)
+        except RetryableQueueError as exc:
+            delay = self.retry_policy.delay_after_failure(message.attempt)
+            queue.popleft()
+            if delay is not None:
+                self.publish(message.retry_after(delay, now=now))
+                return DeliveryOutcome(DeliveryAction.RETRY, message, reason_code=exc.reason_code, delay_seconds=delay)
+            return self._dead_letter(message, exc.reason_code)
+        except TerminalQueueError as exc:
+            queue.popleft()
+            return self._dead_letter(message, exc.reason_code)
+        except Exception:
+            queue.popleft()
+            return self._dead_letter(message, "unclassified_failure")
+        queue.popleft()
+        return DeliveryOutcome(DeliveryAction.ACK, message, result=result)
+
+    def consume_one_with_handler(
+        self,
+        queue_name: str,
+        handler: Callable[[QueueMessage], object],
+    ) -> object | None:
+        """Compatibility bridge that still uses reliable handler ordering."""
+
+        outcome = self.consume_one_reliably(queue_name, handler)
+        if outcome is None or outcome.action is not DeliveryAction.ACK:
+            return None
+        return outcome.result
+
+    def dead_letters(self) -> tuple[DeadLetterRecord, ...]:
+        """Return redacted dead-letter records for tests/operator adapters."""
+
+        return tuple(self._dead_letters)
+
+    def _dead_letter(self, message: QueueMessage, reason_code: str) -> DeliveryOutcome:
+        record = DeadLetterRecord(
+            original_queue=message.queue.value,
+            job_id=message.job_id,
+            tenant_id=message.tenant_id,
+            message_id=message.message_id,
+            correlation_id=message.correlation_id,
+            idempotency_key=message.idempotency_key,
+            attempt=message.attempt,
+            reason_code=reason_code,
+        )
+        self._dead_letters.append(record)
+        return DeliveryOutcome(DeliveryAction.DEAD_LETTER, message, reason_code=reason_code)
 
     def pending_count(self, queue_name: str | None = None) -> int:
         if queue_name:
