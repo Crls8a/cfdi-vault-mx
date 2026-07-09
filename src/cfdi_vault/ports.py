@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from cfdi_vault.cache_contract import ProgressObservation, WorkerHeartbeat
 from cfdi_vault.domain import CfdiStatusQuery, CfdiStatusResult, DownloadQuery, QueueMessage, UserFacingError
 from cfdi_vault.sat_contract import SatAuthResult, SatDownloadResult, SatRequestResult, SatVerificationResult
 from cfdi_vault.sat_transport import SoapTransportPort
@@ -93,13 +94,34 @@ class QueuePort(Protocol):
 
 
 class CachePort(Protocol):
-    """Fast transient cache abstraction. Redis is the production adapter."""
+    """Transient coordination only; durable job truth remains in PostgreSQL."""
 
     def set_json(self, key: str, value: dict[str, object], ttl_seconds: int | None = None) -> None:
         """Store JSON-like data."""
 
     def get_json(self, key: str) -> dict[str, object] | None:
         """Read JSON-like data."""
+
+    def acquire_lock(self, key: str, owner_id: str, ttl_seconds: int) -> bool:
+        """Atomically acquire an expiring lock for one opaque owner token."""
+
+    def renew_lock(self, key: str, owner_id: str, ttl_seconds: int) -> bool:
+        """Atomically extend a lock only when the owner token matches."""
+
+    def release_lock(self, key: str, owner_id: str) -> bool:
+        """Atomically release a lock only when the owner token matches."""
+
+    def set_progress(self, observation: ProgressObservation, ttl_seconds: int) -> None:
+        """Store a validated reference-only progress observation."""
+
+    def get_progress(self, tenant_id: str, job_id: str) -> ProgressObservation | None:
+        """Return transient progress, or None when absent/expired."""
+
+    def record_heartbeat(self, heartbeat: WorkerHeartbeat, ttl_seconds: int) -> None:
+        """Store a validated worker heartbeat with finite lifetime."""
+
+    def get_heartbeat(self, worker_id: str) -> WorkerHeartbeat | None:
+        """Return a transient heartbeat, or None when absent/expired."""
 
 
 class StoragePort(Protocol):
