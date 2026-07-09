@@ -5,8 +5,12 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from threading import Event, Thread
 import time
+from uuid import uuid4
 
+from cfdi_vault.cache_contract import CacheKeys, WorkerHeartbeat
 from cfdi_vault.domain import QueueMessage, QueueName
 from cfdi_vault.queue_contract import DeliveryAction, IdempotencyPort, QueueHandlerError, TerminalQueueError
 from cfdi_vault.recovery_service import RecoveryService
@@ -83,12 +87,39 @@ class RecoveryWorker:
         *,
         idempotency: IdempotencyPort | None = None,
         classify_failure: Callable[[Exception], QueueHandlerError] | None = None,
+        worker_id: str | None = None,
+        clock: Callable[[], datetime] | None = None,
+        heartbeat_ttl_seconds: int = 30,
+        heartbeat_interval_seconds: float | None = None,
     ) -> None:
+        if (
+            isinstance(heartbeat_ttl_seconds, bool)
+            or not isinstance(heartbeat_ttl_seconds, int)
+            or heartbeat_ttl_seconds < 1
+        ):
+            raise ValueError("heartbeat_ttl_seconds must be a positive integer")
         self.service = service
         self.idempotency = idempotency or InMemoryIdempotencyStore()
         self.classify_failure = classify_failure or (lambda error: TerminalQueueError("unclassified_failure"))
+        self.worker_id = worker_id or f"worker-{uuid4().hex}"
+        CacheKeys.heartbeat(self.worker_id)
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.heartbeat_ttl_seconds = heartbeat_ttl_seconds
+        interval = heartbeat_interval_seconds
+        if interval is None:
+            interval = min(5.0, heartbeat_ttl_seconds / 3)
+        if (
+            isinstance(interval, bool)
+            or not isinstance(interval, (int, float))
+            or interval <= 0
+            or interval >= heartbeat_ttl_seconds
+        ):
+            raise ValueError("heartbeat_interval_seconds must be positive and less than the heartbeat TTL")
+        self.heartbeat_interval_seconds = float(interval)
+        self.heartbeat_cache = getattr(service, "cache", None)
 
     def run_once(self, *, queue_name: str = QueueName.SAT_REQUEST.value) -> WorkerReport:
+        self._record_heartbeat()
         consume_reliably = getattr(self.service.queue, "consume_one_reliably", None)
         if consume_reliably is not None:
             outcome = consume_reliably(queue_name, self._handle)
@@ -104,8 +135,26 @@ class RecoveryWorker:
     def _handle(self, message: QueueMessage) -> WorkerReport:
         if not self.idempotency.acquire(message.idempotency_key):
             return WorkerReport(processed=0, detail="Duplicate delivery acknowledged; durable idempotency is not configured.")
+        heartbeat_stop = Event()
+        heartbeat_errors: list[Exception] = []
+        heartbeat_thread = Thread(
+            target=self._renew_heartbeat_until_stopped,
+            args=(heartbeat_stop, heartbeat_errors),
+            daemon=True,
+        )
+        heartbeat_thread.start()
         try:
-            result = self.service.process_queue_message(message)
+            try:
+                process_for_worker = getattr(self.service, "process_queue_message_for_worker", None)
+                if process_for_worker is None:
+                    result = self.service.process_queue_message(message)
+                else:
+                    result = process_for_worker(message, worker_ref=self.worker_id)
+            finally:
+                heartbeat_stop.set()
+                heartbeat_thread.join()
+            if heartbeat_errors:
+                raise RuntimeError("worker heartbeat renewal failed") from heartbeat_errors[0]
         except QueueHandlerError:
             self.idempotency.release(message.idempotency_key)
             raise
@@ -114,6 +163,22 @@ class RecoveryWorker:
             raise self.classify_failure(exc) from None
         self.idempotency.complete(message.idempotency_key)
         return WorkerReport(processed=1, detail=f"Processed job {result.job_id} with status {result.status}.")
+
+    def _renew_heartbeat_until_stopped(self, stop: Event, errors: list[Exception]) -> None:
+        while not stop.wait(self.heartbeat_interval_seconds):
+            try:
+                self._record_heartbeat()
+            except Exception as exc:
+                errors.append(exc)
+                return
+
+    def _record_heartbeat(self) -> None:
+        if self.heartbeat_cache is None:
+            return
+        self.heartbeat_cache.record_heartbeat(
+            WorkerHeartbeat(worker_id=self.worker_id, updated_at=self.clock()),
+            self.heartbeat_ttl_seconds,
+        )
 
     def run_forever(self, *, poll_seconds: float = 5.0) -> None:
         while True:
