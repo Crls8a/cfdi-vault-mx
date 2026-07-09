@@ -98,7 +98,7 @@ gantt
 
 ## Phase 2: Contracts and adapters sprint
 
-Goal: convert foundation contracts into tested adapters while keeping API and E2E work unblocked but not premature.
+Goal: convert foundation contracts into tested adapters. The API contract remains blocked on the Phase 1 storage, queue, PostgreSQL, and Redis gates; API implementation and E2E also wait for the Phase 2 worker/progress adapters.
 
 | Item | Type | Agent | Branch/worktree | Depends on | Tasks | Acceptance |
 |---|---|---|---|---|---|---|
@@ -114,8 +114,8 @@ Goal: make stored evidence enter the processing pipeline through a short API tra
 
 | Item | Type | Agent | Branch/worktree | Depends on | Tasks | Acceptance |
 |---|---|---|---|---|---|---|
-| API-003A | feature | API | `feature/api-ingestion-contract` | STOR-004A, QUEUE-003, DB-005 | Define request/response schema for stored XML/package references, idempotency key, tenant/job correlation. | Tests reject raw XML, ZIP bytes, secrets, SOAP bodies, and e.firma material. |
-| API-003B | feature | API | `feature/api-ingestion-endpoint` | API-003A, QUEUE-004 | Implement FastAPI endpoint that validates evidence reference and publishes `cfdi.parse.xml`. | Endpoint returns correlation id and does not parse XML inline. |
+| API-003A | feature | API | `feature/api-ingestion-contract` | STOR-004A, QUEUE-003, DB-005, CACHE-002 | Define request/response schema for stored XML/package references, idempotency key, tenant/job correlation only after every Phase 1 runtime contract is stable. | Tests reject raw XML, ZIP bytes, secrets, SOAP bodies, and e.firma material; filesystem parity, queue reliability, indexed evidence, and consistent progress semantics are proven. |
+| API-003B | feature | API | `feature/api-ingestion-endpoint` | API-003A, QUEUE-004, CACHE-003 | Implement FastAPI endpoint that validates evidence reference and publishes `cfdi.parse.xml`. | Endpoint returns correlation id and does not parse XML inline. |
 | WORKER-002 | feature | Queue/worker | `feature/xml-parse-worker` | API-003B, PARSER-005B | Worker reads XML by storage key and calls parser registry. | Worker writes parser status and retry/manual-review state. |
 | DB-006 | feature | Data | `feature/accounting-write-model` | DB-005, PARSER-005B | Persist normalized accounting rows and JSONB complement payloads. | Repository tests prove idempotent UUID/version writes. |
 | LIB-005C | feature | SAT library | `feature/sat-v15-facade` | LIB-005B | Add import-first facade over injected ports/fakes. | Consumer import smoke works without Docker, PostgreSQL, RabbitMQ, Redis, or live SAT. |
@@ -126,7 +126,7 @@ Goal: prove the full safe path before live SAT or release promises.
 
 | Item | Type | Agent | Branch/worktree | Depends on | Tasks | Acceptance |
 |---|---|---|---|---|---|---|
-| PIPE-003 | feature | Integration maintainer | `feature/fake-sat-ingestion-e2e` | QUEUE-004, CACHE-003, DB-006, API-003B, STOR-004B, PARSER-005B | Fake SAT package to storage, API enqueue, worker parse, PostgreSQL write, reconciliation status. | E2E proves evidence-first flow and reprocessability from stored XML. |
+| PIPE-003 | feature | Integration maintainer | `feature/fake-sat-ingestion-e2e` | STOR-004B, QUEUE-004, CACHE-003, DB-005, DB-006, API-003B, PARSER-005B | Fake SAT package to storage, API enqueue, worker parse, PostgreSQL write, reconciliation status only after all API runtime gates are stable. | E2E proves evidence-first flow, indexed evidence, consistent progress, and reprocessability from stored XML. |
 | REC-002 | feature | Data/parser | `feature/reconciliation-events` | PIPE-003 | Add missing XML, duplicate UUID, partial parser, cancelled/unavailable events. | Reconciliation events are operator-visible and tested. |
 | QA-003 | test | QA/security | `test/fake-sat-e2e-fixture-gates` | PIPE-003 | Expand scanners and integration fixtures for no-real-data policy. | Scanner blocks real-looking RFCs, certificates, secrets, XML/ZIP evidence. |
 | DOC-PIPE-001 | docs | Architecture lead | same phase PR or docs branch | PIPE-003 | Update diagrams/runbook with verified E2E behavior. | Docs match tested behavior, not planned behavior. |

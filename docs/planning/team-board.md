@@ -81,8 +81,10 @@ During sprint planning, replace candidate rows with the actual committed sprint 
 | In review | PLAN-EXEC-001 | Publish implementation master plan | Architecture / PM | Review agent roster, sprint phases, integration rhythm, and library/package track. |
 | Ready | QUEUE-003 | Implement RabbitMQ retry and DLQ policy | Queue / Worker | Start after ARCH-EXEC-001 is accepted. |
 | Ready | CACHE-002 | Implement Redis progress, locks, and heartbeat | Queue / Worker | Can run in parallel with QUEUE-003 after architecture docs. |
-| Ready | STOR-004 | Define object-key storage and optional MinIO adapter | Storage | MinIO lab exists; implement the storage port/object-key adapter before API ingestion. |
+| Ready | DB-005 | Add PostgreSQL evidence metadata and indexes | Data | Can run in parallel after architecture docs; evidence references must be queryable before API ingestion. |
+| Ready | STOR-004A | Define object-key storage contract | Storage | Prove filesystem adapter parity before API ingestion; MinIO remains outside app/worker runtime. |
 | Ready | PARSER-005 | Implement version-specific CFDI extraction plan | Parser | Can run in parallel after architecture docs. |
 | Ready | LIB-005 | Define SAT v1.5 Python library facade plan | Release / SAT | Can run in parallel after architecture docs; do not promote live modules. |
-| Blocked | API-003 | Implement stored-reference ingestion API path | API / Queue | Wait for STOR-004 and QUEUE-003. |
-| Blocked | PIPE-003 | Prove fake SAT package-to-ingestion E2E | Architecture | Wait for storage, queue, cache, API, and parser baseline. |
+| Blocked | STOR-004B | Implement optional MinIO storage adapter | Storage | Phase 2: wait for STOR-004A contract tests; do not wire MinIO into app/worker runtime. |
+| Blocked | API-003A | Define stored-reference ingestion API contract | API / Queue | Wait for STOR-004A filesystem parity, QUEUE-003 reliability, DB-005 evidence indexes, and CACHE-002 progress/lock/heartbeat semantics. |
+| Blocked | PIPE-003 | Prove fake SAT package-to-ingestion E2E | Architecture | Wait for the same storage, queue, PostgreSQL, and Redis gates plus API-003B and the parser baseline. |
