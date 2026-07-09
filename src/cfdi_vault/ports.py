@@ -8,6 +8,7 @@ from cfdi_vault.domain import CfdiStatusQuery, CfdiStatusResult, DownloadQuery, 
 from cfdi_vault.sat_contract import SatAuthResult, SatDownloadResult, SatRequestResult, SatVerificationResult
 from cfdi_vault.sat_transport import SoapTransportPort
 from cfdi_vault.secrets import CredentialAccessAuditEvent, CredentialReference, SecretValue
+from cfdi_vault.storage_contract import EvidenceReference, StorageKey
 
 
 class SignerPort(Protocol):
@@ -102,10 +103,20 @@ class CachePort(Protocol):
 
 
 class StoragePort(Protocol):
-    """Raw package/XML storage abstraction."""
+    """Raw evidence storage abstraction.
 
-    def write_bytes(self, key: str, content: bytes) -> str:
-        """Store bytes and return a storage reference."""
+    Implementations store bytes separately from the stable, indexable metadata
+    returned to application code.
+    """
+
+    def write_bytes_idempotent(self, key: str | StorageKey, content: bytes) -> EvidenceReference:
+        """Store bytes once and return their stable reference metadata."""
+
+    def read_bytes(self, key: str | StorageKey) -> bytes:
+        """Read bytes without exposing an adapter-specific local path."""
+
+    def stat(self, key: str | StorageKey) -> EvidenceReference:
+        """Return hash and size metadata without returning evidence bytes."""
 
 
 class SearchPort(Protocol):
