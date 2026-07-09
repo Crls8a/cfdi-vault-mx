@@ -67,9 +67,10 @@ This backlog is the shared task source for the CFDI recovery library. Each item 
 | CACHE-003 | Next | Cache / Worker | Add durable progress read model | CACHE-002, QUEUE-004 | Queue / Worker | API/CLI can query progress while Redis remains transient and stale workers remain observable. |
 | API-003A | Next | API / Ingestion | Define stored-reference ingestion API contract | STOR-004A, QUEUE-003, DB-005, CACHE-002 | API / Architecture | Contract accepts storage references only after filesystem parity, queue reliability, indexed evidence, and progress/lock/heartbeat semantics are proven. |
 | API-003B | Next | API / Ingestion | Implement queued XML ingestion endpoint | API-003A, QUEUE-004, CACHE-003 | API / Queue | FastAPI rejects raw XML/ZIP/secrets, enqueues `cfdi.parse.xml`, and does no parser/database bulk work inline. |
-| PARSER-005 | Next | Parser | Implement version-specific CFDI extraction plan | ARCH-EXEC-001 | Parser | CFDI 3.2, 3.3, 4.0, unknown, payments, payroll, and partial parser behavior are covered by fixtures/tests. |
+| PARSER-005A | Next | Parser | Define CFDI parser version matrix | ARCH-EXEC-001 | Parser | CFDI 3.2, 3.3, 4.0, unknown, payments, payroll, and partial parser behavior are covered by fixture-safe scenarios. |
+| PARSER-005B | Phase 2 | Parser | Implement version-specific CFDI parser rollout | PARSER-005A, DB-005 | Parser | Version detection, extractors, complement registry, and partial/unknown behavior are tested. |
 | LIB-005 | Next | Release / Library | Define SAT v1.5 Python library facade plan | ARCH-EXEC-001 | Release / SAT | Supported imports, errors, ports, fake adapters, and future `cfdi_vault.sat_download` facade are documented and import-smoked. |
-| PIPE-003 | Next | Recovery Pipeline | Prove fake SAT package-to-ingestion E2E | STOR-004B, QUEUE-004, CACHE-003, DB-005, API-003B, PARSER-005 | Architecture | Fake SAT flow starts only after storage, queue, PostgreSQL evidence, and Redis progress gates; it stores evidence, enqueues parsing, loads PostgreSQL, reconciles, and exposes operator status. |
+| PIPE-003 | Next | Recovery Pipeline | Prove fake SAT package-to-ingestion E2E | STOR-004A, QUEUE-004, CACHE-003, DB-005, API-003B, PARSER-005B | Architecture | Fake SAT flow starts only after storage, queue, PostgreSQL evidence, Redis progress, API, and parser gates; optional MinIO is not an E2E prerequisite. |
 
 ## Backlog hygiene
 

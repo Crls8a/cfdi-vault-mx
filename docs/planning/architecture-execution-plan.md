@@ -91,11 +91,11 @@ gantt
 | STOR-004B | `feature/storage-object-minio-adapter` | feature | Storage | MinIO adapter behind the optional lab profile. | STOR-004A | Adapter contract tests pass; MinIO remains optional and is not wired into app/worker runtime. |
 | API-003A | `feature/api-ingestion-contract` | feature | API | Request/response contract for stored references. | STOR-004A, QUEUE-003, DB-005, CACHE-002 | Tests reject raw XML/ZIP/secrets and accept storage refs only after all Phase 1 runtime contracts are stable. |
 | API-003B | `feature/api-ingestion-endpoint` | feature | API | FastAPI endpoint validates refs and enqueues `cfdi.parse.xml`. | API-003A, QUEUE-004, CACHE-003 | Endpoint tests prove no inline parser/bulk DB load. |
-| PARSER-001 | `feature/parser-version-matrix` | feature | Parser | Matrix for CFDI 3.2/3.3/4.0, unknown, payments, payroll. | ARCH-EXEC-001 | Fixture matrix docs/tests define complete vs partial. |
-| PARSER-002 | `feature/cfdi-version-extractors` | feature | Parser | Version-specific extractors and complement registry behavior. | PARSER-001, DB-005 | Parser tests store version/status/accounting payload. |
+| PARSER-005A | `feature/parser-version-matrix` | feature | Parser | Matrix for CFDI 3.2/3.3/4.0, unknown, payments, payroll. | ARCH-EXEC-001 | Fixture matrix docs/tests define complete vs partial. |
+| PARSER-005B | `feature/cfdi-version-detector` | feature | Parser | Version detector, extractors, complement registry, and partial/unknown behavior. | PARSER-005A, DB-005 | Parser tests store version/status/accounting payload. |
 | LIB-001 | `feature/sat-v15-public-api-contract` | feature/docs | Library | Supported imports, errors, ports, result models. | ARCH-EXEC-001 | Import smoke and public API docs list supported names. |
 | LIB-002 | `feature/sat-v15-library-facade` | feature | Library | `cfdi_vault.sat_download` facade over injected ports. | LIB-001 | Facade works with fake/offline adapters, no runtime dependency. |
-| PIPE-003 | `feature/fake-sat-ingestion-e2e` | feature | Application | Fake SAT package to storage to API/queue to parser to DB to reconciliation. | STOR-004B, QUEUE-004, CACHE-003, DB-005, API-003B, PARSER-002 | E2E proves reprocessability and operator-visible status after every runtime gate is stable. |
+| PIPE-003 | `feature/fake-sat-ingestion-e2e` | feature | Application | Fake SAT package to storage to API/queue to parser to DB to reconciliation. | STOR-004A, QUEUE-004, CACHE-003, DB-005, API-003B, PARSER-005B | E2E proves reprocessability and operator-visible status after every runtime gate is stable. |
 | CLI-005 | `feature/cli-progress-search-show` | feature | CLI/UX | Progress dashboard, storage locate, search/show status. | PIPE-003 | CLI tests show status without sensitive leakage. |
 
 ## Worktree plan
@@ -105,10 +105,12 @@ Keep at most three active implementation worktrees unless a final audit justifie
 | Wave | Worktrees allowed | Branches |
 |---|---:|---|
 | Wave 1 | 3 | `feature/rabbitmq-retry-dlq-worker`, `feature/redis-progress-locks-heartbeat`, `feature/postgres-evidence-indexes` |
-| Wave 2 | 3 | `feature/storage-object-key-contract`, `feature/api-ingestion-contract`, `feature/parser-version-matrix` |
-| Wave 3 | 3 | `feature/storage-object-minio-adapter`, `feature/api-ingestion-endpoint`, `feature/cfdi-version-extractors` |
-| Wave 4 | 2 | `feature/sat-v15-library-facade`, `feature/fake-sat-ingestion-e2e` |
-| Wave 5 | 1 | `feature/cli-progress-search-show` |
+| Wave 2 | 3 | `feature/worker-job-envelope`, `feature/storage-object-key-contract`, `feature/parser-version-matrix` |
+| Wave 3 | 3 | `feature/worker-progress-read-model`, `feature/cfdi-version-detector`, `feature/sat-v15-public-api-contract` |
+| Wave 4 | 2 | `feature/api-ingestion-contract`, `feature/sat-v15-library-facade` |
+| Wave 5 | 1 | `feature/api-ingestion-endpoint` |
+| Wave 6 | 2 | `feature/fake-sat-ingestion-e2e`, `feature/storage-object-minio-adapter` |
+| Wave 7 | 1 | `feature/cli-progress-search-show` |
 
 Each worktree report must include branch, base, files changed, tests, merge status, and cleanup recommendation.
 

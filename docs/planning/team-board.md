@@ -83,8 +83,9 @@ During sprint planning, replace candidate rows with the actual committed sprint 
 | Ready | CACHE-002 | Implement Redis progress, locks, and heartbeat | Queue / Worker | Can run in parallel with QUEUE-003 after architecture docs. |
 | Ready | DB-005 | Add PostgreSQL evidence metadata and indexes | Data | Can run in parallel after architecture docs; evidence references must be queryable before API ingestion. |
 | Ready | STOR-004A | Define object-key storage contract | Storage | Prove filesystem adapter parity before API ingestion; MinIO remains outside app/worker runtime. |
-| Ready | PARSER-005 | Implement version-specific CFDI extraction plan | Parser | Can run in parallel after architecture docs. |
+| Ready | PARSER-005A | Define CFDI parser version matrix | Parser | Can run in parallel after architecture docs; PARSER-005B rollout waits for this matrix. |
 | Ready | LIB-005 | Define SAT v1.5 Python library facade plan | Release / SAT | Can run in parallel after architecture docs; do not promote live modules. |
 | Blocked | STOR-004B | Implement optional MinIO storage adapter | Storage | Phase 2: wait for STOR-004A contract tests; do not wire MinIO into app/worker runtime. |
+| Blocked | PARSER-005B | Implement version-specific CFDI parser rollout | Parser | Wait for PARSER-005A and DB-005; cover detector, extractors, complements, and partial/unknown behavior. |
 | Blocked | API-003A | Define stored-reference ingestion API contract | API / Queue | Wait for STOR-004A filesystem parity, QUEUE-003 reliability, DB-005 evidence indexes, and CACHE-002 progress/lock/heartbeat semantics. |
-| Blocked | PIPE-003 | Prove fake SAT package-to-ingestion E2E | Architecture | Wait for the same storage, queue, PostgreSQL, and Redis gates plus API-003B and the parser baseline. |
+| Blocked | PIPE-003 | Prove fake SAT package-to-ingestion E2E | Architecture | Wait for STOR-004A, queue, PostgreSQL, Redis, API-003B, and PARSER-005B; optional MinIO is not a prerequisite. |
