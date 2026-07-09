@@ -8,6 +8,22 @@ Completed, tested work must be integrated into `dev` before the worktree is cons
 
 `dev` is the local integration branch for reviewed agent work. Feature branches may exist while work is in progress, but they must not become a permanent substitute for integration.
 
+## Branch lineage guardrails
+
+Use `dev` as the default base for new work.
+
+| Situation | Rule |
+|---|---|
+| Independent feature, fix, test, or docs slice | Branch from `dev`. |
+| Branch must start from another feature branch | Declare the parent dependency in the branch notes, PR body, or integration report. |
+| Parent branch is still unmerged | Integrate and validate the parent first, or keep the child blocked. |
+| Refactor work | Keep it small and do not mix behavior changes into the same branch. |
+| Feature behavior | Integrate only with relevant tests and scanner evidence. |
+| CLI/SAT work | Preserve domain, port, adapter, and infrastructure boundaries; do not put command logic back into `src/cfdi_vault/cli.py`. |
+| Sensitive evidence | Never commit real SAT/CFDI data, RFCs, secrets, certificates, tokens, raw SOAP, ZIPs, XML, logs, or local paths. |
+
+If a branch cannot satisfy these rules, do not merge it as-is. Extract the safe part manually or leave it blocked with a clear plan.
+
 ## Quick path
 
 1. Finish the feature work in its own branch or worktree.
@@ -71,6 +87,7 @@ Resolve conflicts by ownership:
 - Keep tests pointed at the module that owns the behavior.
 - Do not resurrect large legacy files just because that makes Git conflict resolution easier.
 - Keep docs indexes additive unless two entries say contradictory things.
+- Keep SAT/CLI changes separated by layer: domain/application decisions in core modules, user input/output in CLI adapters, external I/O behind ports/adapters.
 
 ## Cleanup
 
@@ -88,8 +105,12 @@ Never delete dirty worktrees, force-delete branches, or reset someone else's WIP
 
 - [ ] Source branch and worktree path.
 - [ ] `dev` start point.
+- [ ] Parent branch or dependency chain, if any.
 - [ ] Merge commit or fast-forward result.
 - [ ] Tests and scanner evidence.
 - [ ] Conflicts and how they were resolved.
+- [ ] Whether any branch was superseded, manually extracted, discarded, or blocked.
+- [ ] Confirmation that `src/cfdi_vault/cli.py` stayed a shim.
+- [ ] Confirmation that no sensitive fiscal data or live SAT evidence was introduced.
 - [ ] Worktrees kept or removed, with reasons.
 - [ ] Branches kept or deleted, with reasons.

@@ -33,8 +33,9 @@ This folder turns SAT Descarga Masiva work into small, reviewable documents. The
 10. Implement around [Statuses, limits, and errors](statuses-limits-errors.md).
 11. Run the fake/offline local path with [Offline/local SAT download operations](offline-local-operations.md).
 12. Use [SAT async verify scheduler](async-verify-scheduler.md) for one-shot persisted verification work.
-13. Review [MANUAL-SAT-001](manual-sat-runbook.md) before requesting any human-gated live smoke.
-14. Use [Implementation plan](implementation-plan.md) to split future work into reviewable units.
+13. Use [Verify POST transport probe](verify-post-probe.md) only for guarded, redacted verify POST diagnostics.
+14. Review [MANUAL-SAT-001](manual-sat-runbook.md) before requesting any human-gated live smoke.
+15. Use [Implementation plan](implementation-plan.md) to split future work into reviewable units.
 
 ## What the library is expected to do
 

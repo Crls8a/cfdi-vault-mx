@@ -34,6 +34,7 @@ VERIFY_FINISHED = "VERIFY_FINISHED"
 VERIFY_NO_DATA = "VERIFY_NO_DATA"
 VERIFY_REJECTED = "VERIFY_REJECTED"
 VERIFY_EXPIRED = "VERIFY_EXPIRED"
+VERIFY_MANUAL_REVIEW = "VERIFY_MANUAL_REVIEW"
 VERIFY_FAILED_RETRYABLE = "VERIFY_FAILED_RETRYABLE"
 VERIFY_FAILED_PERMANENT = "VERIFY_FAILED_PERMANENT"
 PACKAGE_READY = "PACKAGE_READY"
@@ -56,6 +57,7 @@ TERMINAL_VERIFY_STATUSES = frozenset(
         VERIFY_NO_DATA,
         VERIFY_REJECTED,
         VERIFY_EXPIRED,
+        VERIFY_MANUAL_REVIEW,
         VERIFY_FAILED_PERMANENT,
         PACKAGE_READY,
         PACKAGE_DOWNLOAD_SCHEDULED,
@@ -304,7 +306,11 @@ def summarize_live_metadata_requests(
     pending = tuple(record for record in records if record.status in PENDING_VERIFY_STATUSES)
     due = tuple(record for record in pending if _is_due(record, current))
     scheduled = sorted((record.next_check_at for record in pending if record.next_check_at), key=str)
-    failed = tuple(record for record in records if record.status in {VERIFY_FAILED_PERMANENT, VERIFY_REJECTED, VERIFY_EXPIRED})
+    failed = tuple(
+        record
+        for record in records
+        if record.status in {VERIFY_FAILED_PERMANENT, VERIFY_REJECTED, VERIFY_EXPIRED, VERIFY_MANUAL_REVIEW}
+    )
     finished = tuple(record for record in records if record.status in {VERIFY_FINISHED, PACKAGE_READY})
     package_ready = tuple(record for record in records if record.status == PACKAGE_READY)
     return LiveMetadataRequestSummary(
