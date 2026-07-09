@@ -13,22 +13,23 @@ This repository is split into the current PostgreSQL-backed CFDI recovery refere
 7. Read [Library quality contract](release/library-quality-contract.md) before promoting modules, classes, functions, methods, or CLI commands as public API.
 8. Read [Developer CLI invocation](devx.md) before documenting local commands or `PYTHONPATH=src` fallbacks.
 9. Read [Architecture](architecture.md) to understand the PostgreSQL-backed parser/storage boundaries.
-10. Read [CLI family refactor plan](planning/cli-family-refactor-plan.md) before changing CLI adapter ownership or resolving CLI merge conflicts.
-11. Read [Security model](security-model.md) before touching real CFDI data or certificates.
-12. Read [Foundation-first plan](foundation/README.md) before adding more recovery features.
-13. Read [Living system plan](planning/living-system-plan.md) before changing objectives, architecture, security, source-of-truth docs, or release promises.
-14. Read [Agile planning workspace](planning/README.md) and [Lightweight governance policy](planning/governance.md) before assigning sprint work.
-15. Read [Safe RFC profile configuration](config/README.md) before adding local profile settings.
-16. Read [Local RFC setup and credential intake](setup.md) before changing AppData setup or credential import.
-17. Read [First-run onboarding](installer/onboarding.md) before changing installer or profile setup.
-18. Read [Local installer alpha](installer/local-installer-alpha.md) before changing editable install or bootstrap behavior.
-19. Read [Idempotent local storage](storage-design.md) before writing package, metadata, or XML evidence.
-20. Read [Infrastructure boundary](foundation/infrastructure-boundary.md) before changing PostgreSQL, RabbitMQ, Redis, Docker, workers, or future FastAPI ingestion behavior.
-21. Read [Database, queue, and API contract](foundation/database-queue-api-contract.md) before changing Flyway migrations, queue names, or ingestion event flow.
-22. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
-23. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
-24. Read [Offline/local SAT download operations](sat-download/offline-local-operations.md) before validating issue #51.
-25. Read [MANUAL-SAT-001](sat-download/manual-sat-runbook.md) before requesting any human-gated live SAT smoke.
+10. Read [CFDI parser compatibility matrix](parser-version-matrix.md) before claiming version or complement support.
+11. Read [CLI family refactor plan](planning/cli-family-refactor-plan.md) before changing CLI adapter ownership or resolving CLI merge conflicts.
+12. Read [Security model](security-model.md) before touching real CFDI data or certificates.
+13. Read [Foundation-first plan](foundation/README.md) before adding more recovery features.
+14. Read [Living system plan](planning/living-system-plan.md) before changing objectives, architecture, security, source-of-truth docs, or release promises.
+15. Read [Agile planning workspace](planning/README.md) and [Lightweight governance policy](planning/governance.md) before assigning sprint work.
+16. Read [Safe RFC profile configuration](config/README.md) before adding local profile settings.
+17. Read [Local RFC setup and credential intake](setup.md) before changing AppData setup or credential import.
+18. Read [First-run onboarding](installer/onboarding.md) before changing installer or profile setup.
+19. Read [Local installer alpha](installer/local-installer-alpha.md) before changing editable install or bootstrap behavior.
+20. Read [Idempotent local storage](storage-design.md) before writing package, metadata, or XML evidence.
+21. Read [Infrastructure boundary](foundation/infrastructure-boundary.md) before changing PostgreSQL, RabbitMQ, Redis, Docker, workers, or future FastAPI ingestion behavior.
+22. Read [Database, queue, and API contract](foundation/database-queue-api-contract.md) before changing Flyway migrations, queue names, or ingestion event flow.
+23. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
+24. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
+25. Read [Offline/local SAT download operations](sat-download/offline-local-operations.md) before validating issue #51.
+26. Read [MANUAL-SAT-001](sat-download/manual-sat-runbook.md) before requesting any human-gated live SAT smoke.
 
 ## Documentation map
 
