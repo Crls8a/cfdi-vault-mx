@@ -19,6 +19,9 @@ parallel or risky, a dedicated git worktree. Dependent work waits for its base b
 5. Run targeted tests, full tests when runtime changes, scanners, and `git diff --check`.
 6. Open/merge PR to `dev`, then remove the worktree only when safe.
 
+Use [Implementation master plan](implementation-master-plan.md) for the detailed agent roster,
+phase-by-phase sprint plan, fix lane, integration rhythm, and library/package track.
+
 ## Gantt-style dependency map
 
 ```mermaid
@@ -74,6 +77,7 @@ gantt
 | ID | Branch | Type | Owner role | Scope | Depends on | Acceptance |
 |---|---|---|---|---|---|---|
 | ARCH-EXEC-001 | `docs/architecture-execution-map` | docs/infra | Architecture | Module responsibilities, MinIO boundary/profile, Gantt/worktree plan. | `dev` | Docs scanners, Compose config, and markdown diff check pass. |
+| PLAN-EXEC-001 | `docs/architecture-execution-map` | docs | Architecture / PM | Implementation master plan with agent roster, sprint phases, feature/fix lanes, integration gates, and library/package track. | ARCH-EXEC-001 | Plan links from planning README and can be used as the next-session execution checklist. |
 | QUEUE-003 | `feature/rabbitmq-retry-dlq-worker` | feature | Queue/Worker | Exchanges/routing, retry count, DLQ, worker retry events. | ARCH-EXEC-001 | Queue tests prove retry and DLQ without raw payloads. |
 | CACHE-002 | `feature/redis-progress-locks-heartbeat` | feature | Queue/Worker | Progress keys, locks, heartbeat, stale worker reporting. | ARCH-EXEC-001 | Redis adapter tests and worker status tests pass. |
 | DB-005 | `feature/postgres-evidence-indexes` | feature | Data | Evidence metadata, parser status, search indexes as Flyway migrations. | ARCH-EXEC-001 | Migration/repository tests pass; no runtime create-all shortcut. |

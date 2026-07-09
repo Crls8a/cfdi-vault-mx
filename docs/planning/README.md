@@ -11,13 +11,14 @@ The planning source of truth is Markdown in this repository. This keeps the plan
 1. Read [Agile operating model](agile-operating-model.md) to understand cadence, roles, and quality gates.
 2. Read [Lightweight governance policy](governance.md) before deciding whether an issue is required.
 3. Read [Living system plan](living-system-plan.md) before changing objectives, architecture, security, source-of-truth docs, or release promises.
-4. Read [Sprint roadmap](sprint-roadmap.md) to see the recommended execution order.
-5. Use [Sprint 0 execution plan](sprint-0-execution.md) to start the first sprint safely.
-6. Use [Backlog](backlog.md) to create Sprint Packets, issues, or assign work.
-7. Use [Team board](team-board.md) to track the current sprint.
-8. Use [CLI family refactor plan](cli-family-refactor-plan.md) before changing CLI adapter ownership or resolving CLI merge conflicts.
-9. Use [CLI refactor merge synchronization plan](cli-refactor-merge-synchronization-plan.md) before merging the CLI refactor with SAT/live-gate or other branches that still touch `src/cfdi_vault/cli.py`.
-10. Use [Architecture execution plan](architecture-execution-plan.md) to decide what can run in parallel, what must be sequential, and which worktree owns each stream.
+4. Read [Implementation master plan](implementation-master-plan.md) to assign agents, branches, phases, and library/package work.
+5. Read [Sprint roadmap](sprint-roadmap.md) to see the recommended execution order.
+6. Use [Sprint 0 execution plan](sprint-0-execution.md) to start the first sprint safely.
+7. Use [Backlog](backlog.md) to create Sprint Packets, issues, or assign work.
+8. Use [Team board](team-board.md) to track the current sprint.
+9. Use [CLI family refactor plan](cli-family-refactor-plan.md) before changing CLI adapter ownership or resolving CLI merge conflicts.
+10. Use [CLI refactor merge synchronization plan](cli-refactor-merge-synchronization-plan.md) before merging the CLI refactor with SAT/live-gate or other branches that still touch `src/cfdi_vault/cli.py`.
+11. Use [Architecture execution plan](architecture-execution-plan.md) to decide what can run in parallel, what must be sequential, and which worktree owns each stream.
 
 ## Planning map
 
@@ -26,6 +27,7 @@ The planning source of truth is Markdown in this repository. This keeps the plan
 | [Agile operating model](agile-operating-model.md) | Team rules, roles, ceremonies, Definition of Ready, Definition of Done. |
 | [Lightweight governance policy](governance.md) | Solo-maintainer issue policy, PR/CI requirements, and mandatory security gates. |
 | [Living system plan](living-system-plan.md) | Source-of-truth hierarchy, security workstream, architecture/doc gaps, and next work units for the case study. |
+| [Implementation master plan](implementation-master-plan.md) | Senior-level delivery presentation: agents, phases, features, fixes, integrations, merge gates, and library/package track. |
 | [Sprint roadmap](sprint-roadmap.md) | Sequencing, sprint goals, parallel tracks, blockers, exit criteria. |
 | [Sprint 0 execution plan](sprint-0-execution.md) | First sprint scope, agent assignments, handoff prompts, acceptance gate. |
 | [Sprint 0 review findings](sprint-0-review-findings.md) | Agent review results and Sprint 0 acceptance evidence. |
