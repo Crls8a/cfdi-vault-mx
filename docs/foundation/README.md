@@ -26,14 +26,15 @@ No more live SAT, parser-depth, queue-retry, or installer expansion should be im
 8. [XML storage and retention design](storage-and-retention.md)
 9. [Infrastructure boundary](infrastructure-boundary.md)
 10. [Database, queue, and API contract](database-queue-api-contract.md)
-11. [Architecture blueprint](architecture-blueprint.md)
-12. [Module responsibilities and execution boundaries](module-responsibilities.md)
-13. [Flows and states](flows-and-states.md)
-14. [Data and accounting model](data-and-accounting-model.md)
-15. [Open questions](open-questions.md)
-16. [Delegation plan](delegation-plan.md)
-17. [Workstream ownership](workstream-ownership.md)
-18. [Agile planning workspace](../planning/README.md)
+11. [Cache coordination contract](cache-coordination-contract.md)
+12. [Architecture blueprint](architecture-blueprint.md)
+13. [Module responsibilities and execution boundaries](module-responsibilities.md)
+14. [Flows and states](flows-and-states.md)
+15. [Data and accounting model](data-and-accounting-model.md)
+16. [Open questions](open-questions.md)
+17. [Delegation plan](delegation-plan.md)
+18. [Workstream ownership](workstream-ownership.md)
+19. [Agile planning workspace](../planning/README.md)
 
 ## Architecture gate checklist
 
