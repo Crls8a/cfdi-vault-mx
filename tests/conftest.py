@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
+from typing import Callable
 
 import pytest
 
@@ -10,7 +12,13 @@ from sqlalchemy.engine import Engine, make_url
 from cfdi_vault.db import create_engine_from_url
 import cfdi_vault.recovery_db  # noqa: F401
 
-MIGRATION_SQL = Path(__file__).resolve().parents[1] / "db" / "migration" / "V1__initial_postgresql_schema.sql"
+MIGRATION_DIR = Path(__file__).resolve().parents[1] / "db" / "migration"
+MIGRATION_NAME = re.compile(r"^V(?P<version>\d+)__.+\.sql$")
+
+
+@pytest.fixture
+def migration_paths() -> Callable[[Path], tuple[Path, ...]]:
+    return _migration_paths
 
 
 @pytest.fixture
@@ -49,11 +57,21 @@ def _assert_safe_test_database_url(database_url: str) -> None:
 
 
 def _reset_postgres_schema_from_flyway(engine: Engine) -> None:
-    migration_sql = MIGRATION_SQL.read_text(encoding="utf-8").lstrip("\ufeff")
     with engine.begin() as connection:
         connection.exec_driver_sql("DROP SCHEMA IF EXISTS public CASCADE")
         connection.exec_driver_sql("CREATE SCHEMA public")
-        connection.exec_driver_sql(migration_sql)
+        for migration_path in _migration_paths(MIGRATION_DIR):
+            migration_sql = migration_path.read_text(encoding="utf-8").lstrip("\ufeff")
+            connection.exec_driver_sql(migration_sql)
+
+
+def _migration_paths(directory: Path) -> tuple[Path, ...]:
+    migrations: list[tuple[int, str, Path]] = []
+    for path in directory.iterdir():
+        match = MIGRATION_NAME.fullmatch(path.name)
+        if path.is_file() and match:
+            migrations.append((int(match.group("version")), path.name, path))
+    return tuple(item[2] for item in sorted(migrations))
 
 
 def _drop_postgres_schema(engine: Engine) -> None:

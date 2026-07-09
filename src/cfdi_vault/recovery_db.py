@@ -56,7 +56,15 @@ class DownloadJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
-    __table_args__ = (UniqueConstraint("tenant_id", "criteria_hash", name="uq_download_jobs_tenant_hash"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "criteria_hash", name="uq_download_jobs_tenant_hash"),
+        Index(
+            "ix_download_jobs_tenant_status_updated",
+            "tenant_id",
+            "status",
+            "updated_at",
+        ),
+    )
 
 
 class SatRequestRecord(Base):
@@ -116,6 +124,8 @@ class QueueJobEvent(Base):
     message: Mapped[str | None] = mapped_column(String(512), nullable=True)
     payload: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (Index("ix_queue_job_events_job_created", "job_id", "created_at"),)
 
 
 class SignerAudit(Base):
@@ -181,6 +191,12 @@ class CfdiDocument(Base):
     __table_args__ = (
         UniqueConstraint("tenant_id", "uuid", name="uq_cfdi_documents_tenant_uuid"),
         Index("ix_cfdi_documents_tenant_issue_date", "tenant_id", "issue_date"),
+        Index(
+            "ix_cfdi_documents_tenant_parser_updated",
+            "tenant_id",
+            "parser_status",
+            "updated_at",
+        ),
     )
 
     concepts: Mapped[list["CfdiConcept"]] = relationship(back_populates="document")
@@ -299,7 +315,15 @@ class CfdiMetadataLedger(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     raw_payload: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, nullable=False)
 
-    __table_args__ = (UniqueConstraint("tenant_id", "uuid", "direction", name="uq_metadata_ledger_uuid_direction"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "uuid", "direction", name="uq_metadata_ledger_uuid_direction"),
+        Index(
+            "ix_cfdi_metadata_ledger_tenant_reconciliation_last_seen",
+            "tenant_id",
+            "reconciliation_state",
+            "last_seen_at",
+        ),
+    )
 
 
 class XmlEvidence(Base):
@@ -318,7 +342,17 @@ class XmlEvidence(Base):
     parser_status: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
-    __table_args__ = (UniqueConstraint("tenant_id", "uuid", "xml_sha256", name="uq_xml_evidence_hash"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "uuid", "xml_sha256", name="uq_xml_evidence_hash"),
+        Index("ix_xml_evidence_tenant_storage_key", "tenant_id", "storage_key"),
+        Index("ix_xml_evidence_tenant_sha256", "tenant_id", "xml_sha256"),
+        Index(
+            "ix_xml_evidence_tenant_parser_created",
+            "tenant_id",
+            "parser_status",
+            "created_at",
+        ),
+    )
 
 
 def init_recovery_schema(engine: Engine) -> None:
