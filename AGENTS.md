@@ -21,6 +21,21 @@ Formal GitHub review approval is not required for routine PRs if:
 - no sensitive fiscal data is introduced;
 - no irreversible architecture, security, storage, or schema decision is made.
 
+## Branch source of truth
+
+`origin/dev` is the canonical development base. New feature, fix, test, and
+documentation work starts from `dev` and returns to `dev`. `main` is reserved
+for releases.
+
+Historical branches are reference snapshots, not development bases. If an old
+branch still has useful work, create a new branch from `dev` and migrate the
+useful change manually. Do not merge old branches just because they have recent
+commits or large triple-dot diffs; first compare their real unique patches
+against `origin/dev`.
+
+Do not reuse `integration/dev-sync-local` as a base. It was a temporary
+reconciliation branch and has been absorbed into `dev`.
+
 
 ## Architecture discipline
 

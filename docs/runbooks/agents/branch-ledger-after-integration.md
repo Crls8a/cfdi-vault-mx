@@ -83,12 +83,15 @@ When reviewing old work, separate:
 
 These branches may still show large diffs or non-equivalent commits because their merge bases are old. Do not merge them. Their useful behavior was covered by extraction, patch-equivalence, squash/cherry-pick, or current implementation.
 
-## Manual migration pending
+## Seguimiento posterior
 
-| Branch | Useful material | Safe path |
-| --- | --- | --- |
-| `codex/cli-refactor-pr-governance` | CLI refactor governance documentation. | Extract compatible guidance into current docs from a new branch based on `dev`. |
-| `codex/gov-001-lightweight-governance` | Lightweight governance documentation. | Extract only rules compatible with `dev -> feature/* -> dev`. |
+- `codex/cli-refactor-pr-governance`: useful documentation was migrated manually in `feature/migrate-governance-docs-from-old-branches`.
+- `codex/gov-001-lightweight-governance`: useful documentation was migrated manually in `feature/migrate-governance-docs-from-old-branches`.
+- The migration was docs-only.
+- No merge or cherry-pick was performed from historical branches.
+- Both branches remain historical references; they are not live development bases.
+- `codex/sprint-3-sat-contract-orchestration` remains blocked by risk and requires a separate design review before touching code.
+- Branch archiving still requires separate explicit authorization.
 
 ## Blocked branches
 
