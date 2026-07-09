@@ -99,3 +99,37 @@ jobs:
       - name: Run RabbitMQ integration tests
         run: |
           python -m pytest tests/test_rabbitmq_integration.py -q
+
+  redis-integration:
+    name: Redis integration
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      CFDI_VAULT_TEST_REDIS_URL: redis://localhost:6379/15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package with infrastructure extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,infra]"
+
+      - name: Run Redis integration tests
+        run: |
+          python -m pytest tests/test_redis_integration.py -q
