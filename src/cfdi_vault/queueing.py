@@ -136,18 +136,29 @@ class RabbitMqQueue:
         try:
             channel = connection.channel()
             _declare_queue(channel, message.queue.value)
+            if self.exchange:
+                channel.exchange_declare(exchange=self.exchange, exchange_type="direct", durable=True)
+                channel.queue_bind(
+                    exchange=self.exchange,
+                    queue=message.queue.value,
+                    routing_key=message.queue.value,
+                )
             body = json.dumps(message.as_dict(), sort_keys=True).encode("utf-8")
-            channel.basic_publish(
-                exchange=self.exchange,
-                routing_key=message.queue.value,
-                body=body,
-                properties=pika.BasicProperties(
-                    content_type="application/json",
-                    delivery_mode=2,
-                    correlation_id=message.correlation_id,
-                    message_id=message.job_id,
-                ),
-            )
+            channel.confirm_delivery()
+            try:
+                confirmed = channel.basic_publish(
+                    exchange=self.exchange,
+                    routing_key=message.queue.value,
+                    body=body,
+                    properties=self._message_properties(pika, message),
+                    mandatory=True,
+                )
+                if confirmed is False:
+                    raise RuntimeError("queue initial publish was not confirmed")
+            except RuntimeError:
+                raise
+            except Exception:
+                raise RuntimeError("queue initial publish failed") from None
         finally:
             connection.close()
 
@@ -210,6 +221,27 @@ class RabbitMqQueue:
             return result
         finally:
             connection.close()
+
+
+    @staticmethod
+    def _message_properties(
+        pika: object,
+        message: QueueMessage,
+        *,
+        expiration: str | None = None,
+    ) -> object:
+        return pika.BasicProperties(
+            content_type="application/json",
+            delivery_mode=2,
+            correlation_id=message.correlation_id,
+            message_id=message.message_id,
+            expiration=expiration,
+            headers={
+                "envelope_version": message.envelope_version,
+                "idempotency_key": message.idempotency_key,
+                "attempt": message.attempt,
+            },
+        )
 
 
 def _declare_queue(channel: object, queue_name: str) -> object:
