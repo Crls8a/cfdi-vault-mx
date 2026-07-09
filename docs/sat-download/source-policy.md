@@ -5,6 +5,11 @@ SAT Descarga Masiva CFDI y CFDI de Retenciones v1.5, mayo 2025.
 
 This policy is the source-selection gate for SAT Download work. If any older document, prompt, or note contradicts this file, this file wins until Carlos explicitly changes the policy.
 
+Public import stability is a separate gate. The
+[SAT v1.5 public API contract](../api/sat-v15-public-api.md) classifies package
+surfaces, but it cannot promote a source, probe, oracle, or live diagnostic into
+operational authority. This source policy continues to win for SAT behavior.
+
 ## Quick path
 
 1. Build current behavior from `V1_5_CONTRACT`.
