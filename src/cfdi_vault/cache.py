@@ -15,6 +15,21 @@ from typing import Any
 
 from cfdi_vault.cache_contract import CacheKeys, ProgressObservation, WorkerHeartbeat
 
+
+_RELEASE_LOCK_SCRIPT = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+  return redis.call('del', KEYS[1])
+end
+return 0
+"""
+_RENEW_LOCK_SCRIPT = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+  return redis.call('expire', KEYS[1], ARGV[2])
+end
+return 0
+"""
+
+
 @dataclass(frozen=True)
 class _CacheItem:
     value: dict[str, object]
@@ -131,21 +146,83 @@ class RedisCache:
         self.prefix = prefix.rstrip(":")
 
     def set_json(self, key: str, value: dict[str, object], ttl_seconds: int | None = None) -> None:
-        payload = json.dumps(value, sort_keys=True, default=str)
+        """Store a JSON object with an optional validated TTL."""
+
+        payload = json.dumps(value, sort_keys=True)
         redis_key = self._key(key)
         if ttl_seconds is None:
             self.client.set(redis_key, payload)
         else:
+            _positive_ttl(ttl_seconds)
             self.client.setex(redis_key, ttl_seconds, payload)
 
     def get_json(self, key: str) -> dict[str, object] | None:
+        """Return a JSON object, or None when absent/expired/malformed."""
+
         payload = self.client.get(self._key(key))
         if payload is None:
             return None
-        data: Any = json.loads(payload)
+        try:
+            data: Any = json.loads(payload)
+        except (json.JSONDecodeError, TypeError):
+            return None
         if not isinstance(data, dict):
             return None
         return data
+
+    def acquire_lock(self, key: str, owner_id: str, ttl_seconds: int) -> bool:
+        """Atomically acquire an expiring Redis lease using SET NX EX."""
+
+        owner = _owner_id(owner_id)
+        _positive_ttl(ttl_seconds)
+        return bool(self.client.set(self._key(key), owner, nx=True, ex=ttl_seconds))
+
+    def renew_lock(self, key: str, owner_id: str, ttl_seconds: int) -> bool:
+        """Atomically renew a Redis lease only for its current owner."""
+
+        owner = _owner_id(owner_id)
+        _positive_ttl(ttl_seconds)
+        return bool(
+            self.client.eval(
+                _RENEW_LOCK_SCRIPT,
+                1,
+                self._key(key),
+                owner,
+                ttl_seconds,
+            )
+        )
+
+    def release_lock(self, key: str, owner_id: str) -> bool:
+        """Atomically delete a Redis lease only for its current owner."""
+
+        owner = _owner_id(owner_id)
+        return bool(self.client.eval(_RELEASE_LOCK_SCRIPT, 1, self._key(key), owner))
+
+    def set_progress(self, observation: ProgressObservation, ttl_seconds: int) -> None:
+        """Store one validated transient progress observation."""
+
+        self.set_json(
+            CacheKeys.progress(observation.tenant_id, observation.job_id),
+            observation.as_dict(),
+            ttl_seconds,
+        )
+
+    def get_progress(self, tenant_id: str, job_id: str) -> ProgressObservation | None:
+        """Return typed transient progress, or None when absent/expired."""
+
+        value = self.get_json(CacheKeys.progress(tenant_id, job_id))
+        return ProgressObservation.from_dict(value) if value is not None else None
+
+    def record_heartbeat(self, heartbeat: WorkerHeartbeat, ttl_seconds: int) -> None:
+        """Store one validated worker heartbeat with a finite TTL."""
+
+        self.set_json(CacheKeys.heartbeat(heartbeat.worker_id), heartbeat.as_dict(), ttl_seconds)
+
+    def get_heartbeat(self, worker_id: str) -> WorkerHeartbeat | None:
+        """Return a typed heartbeat, or None when absent/expired."""
+
+        value = self.get_json(CacheKeys.heartbeat(worker_id))
+        return WorkerHeartbeat.from_dict(value) if value is not None else None
 
     def _key(self, key: str) -> str:
         return f"{self.prefix}:{key}"
