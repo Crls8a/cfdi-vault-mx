@@ -99,4 +99,4 @@ def test_in_memory_exposes_no_destructive_consume_without_handler() -> None:
     queue = InMemoryQueue()
 
     assert not hasattr(queue, "consume_one")
-    assert hasattr(queue, "consume_one_with_handler")  # handler-safe bridge until the reliable worker slice
+    assert not hasattr(queue, "consume_one_with_handler")

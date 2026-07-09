@@ -88,18 +88,6 @@ class InMemoryQueue:
         queue.popleft()
         return DeliveryOutcome(DeliveryAction.ACK, message, result=result)
 
-    def consume_one_with_handler(
-        self,
-        queue_name: str,
-        handler: Callable[[QueueMessage], object],
-    ) -> object | None:
-        """Compatibility bridge that still uses reliable handler ordering."""
-
-        outcome = self.consume_one_reliably(queue_name, handler)
-        if outcome is None or outcome.action is not DeliveryAction.ACK:
-            return None
-        return outcome.result
-
     def dead_letters(self) -> tuple[DeadLetterRecord, ...]:
         """Return redacted dead-letter records for tests/operator adapters."""
 
