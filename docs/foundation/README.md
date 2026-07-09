@@ -27,12 +27,13 @@ No more live SAT, parser-depth, queue-retry, or installer expansion should be im
 9. [Infrastructure boundary](infrastructure-boundary.md)
 10. [Database, queue, and API contract](database-queue-api-contract.md)
 11. [Architecture blueprint](architecture-blueprint.md)
-12. [Flows and states](flows-and-states.md)
-13. [Data and accounting model](data-and-accounting-model.md)
-14. [Open questions](open-questions.md)
-15. [Delegation plan](delegation-plan.md)
-16. [Workstream ownership](workstream-ownership.md)
-17. [Agile planning workspace](../planning/README.md)
+12. [Module responsibilities and execution boundaries](module-responsibilities.md)
+13. [Flows and states](flows-and-states.md)
+14. [Data and accounting model](data-and-accounting-model.md)
+15. [Open questions](open-questions.md)
+16. [Delegation plan](delegation-plan.md)
+17. [Workstream ownership](workstream-ownership.md)
+18. [Agile planning workspace](../planning/README.md)
 
 ## Architecture gate checklist
 
@@ -44,6 +45,7 @@ No more live SAT, parser-depth, queue-retry, or installer expansion should be im
 - [ ] The command appears in the CLI help catalog when user-facing.
 - [ ] Installer/setup impact is documented when local dependencies change.
 - [ ] Download, extraction, database load, and local storage registration are treated as one auditable pipeline.
+- [ ] Module responsibilities match [Module responsibilities and execution boundaries](module-responsibilities.md).
 - [ ] Recovery and synthetic import runtime data use PostgreSQL only.
 - [ ] PostgreSQL schema changes are represented as Flyway migrations.
 - [ ] Slow XML ingestion and normalization cross the FastAPI/queue/worker boundary instead of becoming one direct CLI bulk load.

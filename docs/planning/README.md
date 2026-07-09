@@ -17,6 +17,7 @@ The planning source of truth is Markdown in this repository. This keeps the plan
 7. Use [Team board](team-board.md) to track the current sprint.
 8. Use [CLI family refactor plan](cli-family-refactor-plan.md) before changing CLI adapter ownership or resolving CLI merge conflicts.
 9. Use [CLI refactor merge synchronization plan](cli-refactor-merge-synchronization-plan.md) before merging the CLI refactor with SAT/live-gate or other branches that still touch `src/cfdi_vault/cli.py`.
+10. Use [Architecture execution plan](architecture-execution-plan.md) to decide what can run in parallel, what must be sequential, and which worktree owns each stream.
 
 ## Planning map
 
@@ -32,6 +33,7 @@ The planning source of truth is Markdown in this repository. This keeps the plan
 | [Team board](team-board.md) | Current sprint execution, status, blocked work, handoff notes. |
 | [CLI family refactor plan](cli-family-refactor-plan.md) | Source of truth for CLI family ownership, merge conflict handling, and follow-up task slices. |
 | [CLI refactor merge synchronization plan](cli-refactor-merge-synchronization-plan.md) | Branch inventory, merge topology, conflict-routing rules, and validation gates for synchronizing the CLI split with active WIP branches. |
+| [Architecture execution plan](architecture-execution-plan.md) | Gantt-style dependency plan, worktree waves, branch names, and merge gates for the next implementation streams. |
 
 ## Editing workflow
 

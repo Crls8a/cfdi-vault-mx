@@ -45,6 +45,7 @@ flowchart TD
 | Download | `sat_requests`, `sat_packages`, raw ZIP file | Package id, request id, local ZIP path |
 | Extraction | XML files, XML hashes, `xml_evidence` rows | UUID-to-file location |
 | Ingestion handoff | RabbitMQ message with storage key, tenant, job id, and idempotency key | Work is visible and retryable instead of hidden inside one CLI process |
+| Version extraction | Parser version/status metadata on `xml_evidence` and accounting payload rows | Future parsers can reprocess stored XML evidence |
 | Data loading | `cfdi_documents`, parties, concepts, taxes, JSON payloads | Searchable accounting data |
 | Reconciliation | metadata ledger and reconciliation events | Pending/downloaded/manual-review state |
 | Access | search/show/print/export/storage commands | User can find the XML and extracted data |

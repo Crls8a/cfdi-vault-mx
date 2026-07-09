@@ -56,6 +56,14 @@ This backlog is the shared task source for the CFDI recovery library. Each item 
 | REL-004 | 8 | Release / Packaging | Publish alpha through TestPyPI and PyPI Trusted Publishing | REL-003 | Release | Build artifacts pass scanner, tests, `twine check`, clean-wheel install, TestPyPI smoke, and PyPI Trusted Publishing without long-lived tokens. |
 | GOV-001 | Follow-up | Governance | Clarify solo-maintainer lightweight governance policy | None | Product / PM | Documentation explains when issues are required, when Sprint Packets are enough, and which PR/CI/security gates are always mandatory. |
 | DEVX-001 | Follow-up | DevEx | Normalize repository line endings | None | DevEx | CRLF/LF warnings are resolved with a dedicated `.gitattributes`/formatting pass, without mixing into feature commits. |
+| ARCH-EXEC-001 | Next | Architecture | Document module responsibilities and execution map | None | Architecture | Module responsibilities, Gantt/worktree execution plan, storage/MinIO boundary, parser ownership, and merge gates are documented. |
+| STOR-004 | Next | Storage | Define object-key storage and optional MinIO adapter | ARCH-EXEC-001 | Storage | Storage port supports filesystem parity and optional S3-compatible MinIO practice without becoming a library runtime dependency. |
+| QUEUE-003 | Next | Queue/Worker | Implement RabbitMQ retry and DLQ policy | ARCH-EXEC-001 | Queue / Worker | Retry attempts, routing, dead-letter state, and PostgreSQL audit events are tested. |
+| CACHE-002 | Next | Cache / Worker | Implement Redis progress, locks, and heartbeat | ARCH-EXEC-001 | Queue / Worker | Progress, lock, heartbeat, and stale-worker behavior are observable and tested. |
+| API-003 | Next | API / Ingestion | Implement stored-reference ingestion API path | STOR-004, QUEUE-003 | API / Queue | FastAPI accepts storage references, rejects raw XML/ZIP/secrets, and enqueues `cfdi.parse.xml`. |
+| PARSER-005 | Next | Parser | Implement version-specific CFDI extraction plan | ARCH-EXEC-001 | Parser | CFDI 3.2, 3.3, 4.0, unknown, payments, payroll, and partial parser behavior are covered by fixtures/tests. |
+| LIB-005 | Next | Release / Library | Define SAT v1.5 Python library facade plan | ARCH-EXEC-001 | Release / SAT | Supported imports, errors, ports, fake adapters, and future `cfdi_vault.sat_download` facade are documented and import-smoked. |
+| PIPE-003 | Next | Recovery Pipeline | Prove fake SAT package-to-ingestion E2E | STOR-004, QUEUE-003, CACHE-002, API-003, PARSER-005 | Architecture | Fake SAT flow stores evidence, enqueues parsing, loads PostgreSQL, reconciles, and exposes operator status. |
 
 ## Backlog hygiene
 

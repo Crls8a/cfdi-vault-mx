@@ -2,6 +2,8 @@
 
 The system uses Clean Architecture: domain rules do not know about RabbitMQ, Redis, PostgreSQL, FastAPI, Typer, or SAT SOAP. Infrastructure adapters satisfy ports.
 
+For concrete module obligations, data ownership, MinIO/storage tradeoffs, parser responsibilities, and worktree execution rules, read [Module responsibilities and execution boundaries](module-responsibilities.md).
+
 ## System context
 
 ```mermaid
@@ -73,6 +75,7 @@ Outer layers depend inward. Inner layers never import outer adapters.
 | Database | PostgreSQL as source of truth. |
 | API boundary | FastAPI will mediate ingestion requests once API code exists; Docker Compose should only add an API service with that implementation. |
 | XML ingestion | Stored XML/package references move through API/queue/worker before normalized PostgreSQL loading. |
+| Storage adapter path | Filesystem remains the default reference-system store; MinIO can be introduced as an optional object-storage adapter behind the storage port. |
 | Flexible CFDI data | PostgreSQL JSONB-compatible payloads, not MongoDB. |
 | Search | PostgreSQL full-text/trigram first; OpenSearch later only if volume requires it. |
 | Local/dev | Docker Compose. |
