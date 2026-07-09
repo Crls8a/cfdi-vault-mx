@@ -14,10 +14,12 @@ import xml.etree.ElementTree as ET
 from uuid import uuid4
 from zipfile import ZipFile
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import SQLAlchemyError
 
 from cfdi_vault.cache import InMemoryCache
+from cfdi_vault.cache_contract import ProgressObservation, ProgressStatus
+from cfdi_vault.cache_recovery import AbandonedJobObservation
 from cfdi_vault.cfdi_parser import CfdiVersionDetector, parser_for_version
 from cfdi_vault.db import create_engine_from_url, create_session_factory
 from cfdi_vault.domain import (
@@ -310,10 +312,13 @@ class RecoveryService:
             )
             session.commit()
 
-        self.cache.set_json(
-            f"progress:{job_id}",
-            {"status": JobStatus.PENDING.value if enqueue else "requesting", "metadata_count": 0},
-            ttl_seconds=3600,
+        self._set_progress(
+            job_id=job_id,
+            tenant_id=query.tenant_id,
+            worker_ref="unassigned" if enqueue else "inline",
+            status=ProgressStatus.PENDING if enqueue else ProgressStatus.RUNNING,
+            percent=0,
+            ttl_seconds=3_600,
         )
         if enqueue:
             self.queue.publish(
@@ -325,10 +330,20 @@ class RecoveryService:
             )
             return SyncResult(job_id=job_id, request_id="", packages=(), metadata_count=0, status=JobStatus.PENDING.value)
 
-        return self._process_sat_request_job(query, job_id=job_id)
+        return self._process_sat_request_job(query, job_id=job_id, worker_ref="inline")
 
     def process_queue_message(self, message: QueueMessage) -> SyncResult:
         """Hydrate one reference-only queue message from durable job state."""
+
+        return self.process_queue_message_for_worker(message, worker_ref="worker-unassigned")
+
+    def process_queue_message_for_worker(
+        self,
+        message: QueueMessage,
+        *,
+        worker_ref: str,
+    ) -> SyncResult:
+        """Hydrate a durable job and correlate transient progress to a worker."""
 
         with self.session_factory() as session:
             job = session.get(DownloadJob, message.job_id)
@@ -337,7 +352,11 @@ class RecoveryService:
             if not isinstance(job.payload, dict):
                 raise TerminalQueueError("job_reference_invalid")
             query = _query_from_payload(job.payload)
-        return self._process_sat_request_job(query, job_id=message.job_id)
+        return self._process_sat_request_job(
+            query,
+            job_id=message.job_id,
+            worker_ref=worker_ref,
+        )
 
     def ingest_metadata_file(
         self,
@@ -374,10 +393,24 @@ class RecoveryService:
             storage_key=str(metadata_file.path),
         )
 
-    def _process_sat_request_job(self, query: DownloadQuery, *, job_id: str) -> SyncResult:
+    def _process_sat_request_job(
+        self,
+        query: DownloadQuery,
+        *,
+        job_id: str,
+        worker_ref: str,
+    ) -> SyncResult:
         now = _now()
         criteria_hash = query.criteria_hash()
-        self.cache.set_json(f"progress:{job_id}", {"status": "requesting", "metadata_count": 0}, ttl_seconds=3600)
+        self._set_progress(
+            job_id=job_id,
+            tenant_id=query.tenant_id,
+            worker_ref=worker_ref,
+            status=ProgressStatus.RUNNING,
+            percent=10,
+            ttl_seconds=3_600,
+            updated_at=now,
+        )
         with self.session_factory() as session:
             job = session.get(DownloadJob, job_id)
             if job is not None:
@@ -497,10 +530,13 @@ class RecoveryService:
                 job.updated_at = _now()
             session.commit()
 
-        self.cache.set_json(
-            f"progress:{job_id}",
-            {"status": JobStatus.SUCCEEDED.value, "metadata_count": len(metadata), "packages": list(packages)},
-            ttl_seconds=86400,
+        self._set_progress(
+            job_id=job_id,
+            tenant_id=query.tenant_id,
+            worker_ref=worker_ref,
+            status=ProgressStatus.SUCCEEDED,
+            percent=100,
+            ttl_seconds=86_400,
         )
         return SyncResult(job_id=job_id, request_id=request_id, packages=packages, metadata_count=len(metadata), status=JobStatus.SUCCEEDED.value)
 
@@ -541,7 +577,73 @@ class RecoveryService:
         return tuple({"queue": queue, "status": status, "count": int(count)} for queue, status, count in rows)
 
     def progress(self, job_id: str) -> dict[str, object] | None:
-        return self.cache.get_json(f"progress:{job_id}")
+        with self.session_factory() as session:
+            job = session.get(DownloadJob, job_id)
+            if job is None:
+                return None
+            observation = self.cache.get_progress(job.tenant_id, job_id)
+        return observation.as_dict() if observation is not None else None
+
+    def _set_progress(
+        self,
+        *,
+        job_id: str,
+        tenant_id: str,
+        worker_ref: str,
+        status: ProgressStatus,
+        percent: float,
+        ttl_seconds: int,
+        updated_at: datetime | None = None,
+    ) -> None:
+        self.cache.set_progress(
+            ProgressObservation(
+                job_id=job_id,
+                tenant_id=tenant_id,
+                worker_ref=worker_ref,
+                status=status,
+                percent=percent,
+                updated_at=updated_at or _now(),
+            ),
+            ttl_seconds,
+        )
+
+    def mark_job_abandoned(self, observation: AbandonedJobObservation) -> bool:
+        """Conditionally persist a stale-worker transition in durable job state.
+
+        Redis observations are advisory. This method transitions only a matching
+        running PostgreSQL job and records a payload-free audit event.
+        """
+
+        with self.session_factory() as session:
+            transitioned_job_id = session.scalar(
+                update(DownloadJob)
+                .where(
+                    DownloadJob.id == observation.job_id,
+                    DownloadJob.tenant_id == observation.tenant_id,
+                    DownloadJob.status == JobStatus.RUNNING.value,
+                )
+                .values(
+                    status=JobStatus.RETRY_SCHEDULED.value,
+                    updated_at=observation.observed_at,
+                )
+                .returning(DownloadJob.id)
+            )
+            if transitioned_job_id is None:
+                return False
+            session.add(
+                QueueJobEvent(
+                    job_id=transitioned_job_id,
+                    queue_name=QueueName.SAT_REQUEST.value,
+                    status=JobStatus.RETRY_SCHEDULED.value,
+                    correlation_id=transitioned_job_id,
+                    attempt=0,
+                    message=observation.reason_code,
+                    payload={},
+                    created_at=observation.observed_at,
+                )
+            )
+            session.commit()
+        return True
 
     def search(self, text: str = "", *, tenant_id: str | None = None, limit: int = 20) -> tuple[dict[str, object], ...]:
         with self.session_factory() as session:
