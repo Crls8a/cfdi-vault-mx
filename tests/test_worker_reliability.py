@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from cfdi_vault.domain import QueueMessage, QueueName
-from cfdi_vault.queue_contract import RetryableQueueError, WorkerJobEnvelope
+from cfdi_vault.queue_contract import DeliveryAction, DeliveryOutcome, RetryableQueueError, WorkerJobEnvelope
 from cfdi_vault.queueing import InMemoryQueue
 from cfdi_vault.worker import InMemoryIdempotencyStore, RecoveryWorker
 
@@ -141,3 +141,24 @@ def test_worker_reports_safe_retry_reason() -> None:
 
     assert report.processed == 0
     assert report.detail == "Retry scheduled after classified reason: storage_temporarily_unavailable."
+
+
+class _UnsafeReasonQueue:
+    def consume_one_reliably(self, queue_name: str, handler: object) -> object:
+        return DeliveryOutcome(
+            DeliveryAction.RETRY,
+            _message("message-unsafe"),
+            reason_code="<soap:Envelope>must-not-enter</soap:Envelope>",
+        )
+
+
+def test_worker_cannot_echo_unsafe_adapter_reason_code() -> None:
+    service = _Service(_UnsafeReasonQueue())  # type: ignore[arg-type]
+    worker = RecoveryWorker(service)  # type: ignore[arg-type]
+
+    try:
+        worker.run_once(queue_name=QueueName.CFDI_PARSE_XML.value)
+    except ValueError as exc:
+        assert "reason_code" in str(exc)
+    else:
+        raise AssertionError("worker echoed an unsafe adapter-provided reason code")

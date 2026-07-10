@@ -5,7 +5,15 @@ from datetime import datetime, timezone
 import pytest
 
 from cfdi_vault.domain import QueueMessage, QueueName
-from cfdi_vault.queue_contract import DeliveryAction, QueueAuditEvent, RetryPolicy, WorkerJobEnvelope, WorkerJobType
+from cfdi_vault.queue_contract import (
+    DeadLetterRecord,
+    DeliveryAction,
+    DeliveryOutcome,
+    QueueAuditEvent,
+    RetryPolicy,
+    WorkerJobEnvelope,
+    WorkerJobType,
+)
 
 
 NOW = datetime(2026, 7, 9, tzinfo=timezone.utc)
@@ -121,6 +129,66 @@ def test_worker_job_envelope_from_dict_rejects_non_reference_fields(forbidden: s
 
     with pytest.raises(ValueError, match="unsupported worker envelope fields"):
         WorkerJobEnvelope.from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("job_id", "<soap:Envelope>must-not-enter</soap:Envelope>"),
+        ("message_id", "<?xml version='1.0'?><cfdi:Comprobante />"),
+        ("correlation_id", "UEsDBBQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
+        ("tenant_id", "XAXX010101000"),
+        ("idempotency_key", "Bearer credential-must-not-enter"),
+        ("profile_id", '{"criteria":{"requester_rfc":"XAXX010101000"}}'),
+    ],
+)
+def test_worker_job_envelope_rejects_sensitive_content_inside_allowed_reference_fields(
+    field: str, value: str
+) -> None:
+    payload = WorkerJobEnvelope.from_message(_message()).as_dict()
+    payload[field] = value
+
+    with pytest.raises(ValueError, match="worker .* must"):
+        WorkerJobEnvelope.from_dict(payload)
+
+
+def test_worker_job_envelope_constructor_rejects_sensitive_reference_content() -> None:
+    message = _message()
+
+    with pytest.raises(ValueError, match="raw XML/SOAP"):
+        WorkerJobEnvelope.from_message(
+            message.__class__(
+                queue=message.queue,
+                tenant_id=message.tenant_id,
+                profile_id=message.profile_id,
+                job_id="<soap:Envelope>must-not-enter</soap:Envelope>",
+                correlation_id=message.correlation_id,
+                created_at=message.created_at,
+                message_id=message.message_id,
+                idempotency_key=message.idempotency_key,
+            )
+        )
+
+
+@pytest.mark.parametrize("reason_code", ["<soap:Envelope />", "BAD_REASON", "reason with spaces"])
+def test_reason_codes_are_centrally_restricted(reason_code: str) -> None:
+    message = _message()
+
+    with pytest.raises(ValueError, match="reason_code"):
+        QueueAuditEvent.from_delivery(message, DeliveryAction.DEAD_LETTER, reason_code=reason_code)
+    with pytest.raises(ValueError, match="reason_code"):
+        DeadLetterRecord(
+            original_queue=message.queue.value,
+            job_id=message.job_id,
+            tenant_id=message.tenant_id,
+            message_id=message.message_id,
+            correlation_id=message.correlation_id,
+            idempotency_key=message.idempotency_key,
+            attempt=message.attempt,
+            reason_code=reason_code,
+        )
+    with pytest.raises(ValueError, match="reason_code"):
+        DeliveryOutcome(DeliveryAction.DEAD_LETTER, message, reason_code=reason_code)
 
 
 def test_worker_job_envelope_rejects_queue_type_mismatch() -> None:

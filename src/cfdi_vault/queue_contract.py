@@ -5,15 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
-import re
 from typing import Any, Protocol
 
 from cfdi_vault.domain import QueueMessage, QueueName
-
-
-_REASON_CODE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
-
-
+from cfdi_vault.queue_safety import validate_reason_code, validate_reference_string
 
 
 class WorkerJobType(StrEnum):
@@ -76,12 +71,9 @@ class WorkerJobEnvelope:
             ("correlation_id", self.correlation_id),
             ("idempotency_key", self.idempotency_key),
         ):
-            if not isinstance(value, str):
-                raise TypeError(f"worker {name} must be a string")
-            if not value.strip():
-                raise ValueError(f"worker {name} cannot be empty")
-        if self.profile_id is not None and (not isinstance(self.profile_id, str) or not self.profile_id.strip()):
-            raise ValueError("worker profile_id must be a non-empty string or null")
+            validate_reference_string(name, value)
+        if self.profile_id is not None:
+            validate_reference_string("profile_id", self.profile_id)
         if not isinstance(self.created_at, datetime) or (
             self.not_before is not None and not isinstance(self.not_before, datetime)
         ):
@@ -207,9 +199,7 @@ class QueueHandlerError(RuntimeError):
     """Classified worker failure with a safe, non-sensitive reason code."""
 
     def __init__(self, reason_code: str) -> None:
-        if not _REASON_CODE.fullmatch(reason_code):
-            raise ValueError("queue reason_code must be a safe machine identifier")
-        self.reason_code = reason_code
+        self.reason_code = validate_reason_code(reason_code)
         super().__init__(reason_code)
 
 
@@ -273,6 +263,9 @@ class DeadLetterRecord:
     attempt: int
     reason_code: str
 
+    def __post_init__(self) -> None:
+        validate_reason_code(self.reason_code)
+
     def as_dict(self) -> dict[str, str | int]:
         return {
             "original_queue": self.original_queue,
@@ -296,6 +289,10 @@ class DeliveryOutcome:
     reason_code: str | None = None
     delay_seconds: int | None = None
 
+    def __post_init__(self) -> None:
+        if self.reason_code is not None:
+            validate_reason_code(self.reason_code)
+
 
 @dataclass(frozen=True)
 class QueueAuditEvent:
@@ -312,6 +309,10 @@ class QueueAuditEvent:
     reason_code: str | None
     occurred_at: datetime
 
+    def __post_init__(self) -> None:
+        if self.reason_code is not None:
+            validate_reason_code(self.reason_code)
+
     @classmethod
     def from_delivery(
         cls,
@@ -321,8 +322,6 @@ class QueueAuditEvent:
         reason_code: str | None = None,
         occurred_at: datetime | None = None,
     ) -> "QueueAuditEvent":
-        if reason_code is not None and not _REASON_CODE.fullmatch(reason_code):
-            raise ValueError("queue reason_code must be a safe machine identifier")
         return cls(
             job_id=message.job_id,
             tenant_id=message.tenant_id,
