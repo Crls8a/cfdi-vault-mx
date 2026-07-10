@@ -1,5 +1,6 @@
 from cfdi_vault.domain import CfdiStatusOutcome, SatRequestState
 from cfdi_vault.sat_contract import (
+    SatDownloadResult,
     SatOperation,
     SatOutcomeAction,
     classify_cfdi_status_outcome,
@@ -48,3 +49,23 @@ def test_cfdi_status_classifier_maps_status_text_and_codes() -> None:
     assert retryable.retryable is True
     assert permanent.outcome == CfdiStatusOutcome.PERMANENT
     assert unknown.outcome == CfdiStatusOutcome.UNKNOWN
+
+
+def test_download_result_repr_redacts_authorization_token_message() -> None:
+    credential_label = "access_" + "tok" + "en"
+    auth_label = "Authori" + "zation:"
+    sentinel = "LEAKME-12345"
+    result = SatDownloadResult(
+        package_id="PKG-1234567890",
+        sat_code="5000",
+        message=f'{auth_label} WRAP {credential_label}="{sentinel}"',
+        action=SatOutcomeAction.FINISHED,
+        content=b"package-bytes",
+    )
+
+    rendered = repr(result)
+
+    assert auth_label not in rendered
+    assert credential_label not in rendered
+    assert sentinel not in rendered
+    assert "<redacted>" in rendered

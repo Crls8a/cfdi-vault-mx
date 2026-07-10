@@ -279,7 +279,7 @@ class SatDownloadResult:
             "SatDownloadResult("
             f"package_id={_redact_identifier(self.package_id)!r}, "
             f"sat_code={self.sat_code!r}, "
-            f"message={self.message!r}, "
+            f"message={_safe_text(self.message)!r}, "
             f"action={self.action!r}, "
             "content=<redacted>, "
             "raw_response=<redacted>"
