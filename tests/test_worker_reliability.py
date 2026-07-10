@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from cfdi_vault.domain import QueueMessage, QueueName
+from cfdi_vault.queue_contract import RetryableQueueError, WorkerJobEnvelope
 from cfdi_vault.queueing import InMemoryQueue
 from cfdi_vault.worker import InMemoryIdempotencyStore, RecoveryWorker
 
@@ -29,6 +30,12 @@ class _Service:
     def __init__(self, queue: InMemoryQueue) -> None:
         self.queue = queue
         self.calls = 0
+        self.envelopes: list[WorkerJobEnvelope] = []
+
+    def process_worker_job_envelope(self, envelope: WorkerJobEnvelope, *, worker_ref: str) -> _Result:
+        self.calls += 1
+        self.envelopes.append(envelope)
+        return _Result(job_id=envelope.job_id)
 
     def process_queue_message(self, message: QueueMessage) -> _Result:
         self.calls += 1
@@ -104,3 +111,33 @@ def test_worker_requires_reliable_queue_consumption() -> None:
         assert str(exc) == "Queue adapter does not support reliable consumption."
     else:
         raise AssertionError("worker accepted an unsafe queue adapter")
+
+
+def test_worker_passes_typed_envelope_to_services_that_support_it() -> None:
+    queue = InMemoryQueue()
+    service = _Service(queue)
+    worker = RecoveryWorker(service, worker_id="worker-001")  # type: ignore[arg-type]
+    queue.publish(_message("message-001"))
+
+    report = worker.run_once(queue_name=QueueName.CFDI_PARSE_XML.value)
+
+    assert report.processed == 1
+    assert service.envelopes[0].job_id == "job-001"
+    assert service.envelopes[0].queue is QueueName.CFDI_PARSE_XML
+    assert service.envelopes[0].idempotency_key == "idem-001"
+
+
+def test_worker_reports_safe_retry_reason() -> None:
+    class _RetryService(_Service):
+        def process_worker_job_envelope(self, envelope: WorkerJobEnvelope, *, worker_ref: str) -> _Result:
+            raise RetryableQueueError("storage_temporarily_unavailable")
+
+    queue = InMemoryQueue()
+    service = _RetryService(queue)
+    worker = RecoveryWorker(service)  # type: ignore[arg-type]
+    queue.publish(_message("message-001"))
+
+    report = worker.run_once(queue_name=QueueName.CFDI_PARSE_XML.value)
+
+    assert report.processed == 0
+    assert report.detail == "Retry scheduled after classified reason: storage_temporarily_unavailable."

@@ -12,7 +12,13 @@ from uuid import uuid4
 
 from cfdi_vault.cache_contract import CacheKeys, WorkerHeartbeat
 from cfdi_vault.domain import QueueMessage, QueueName
-from cfdi_vault.queue_contract import DeliveryAction, IdempotencyPort, QueueHandlerError, TerminalQueueError
+from cfdi_vault.queue_contract import (
+    DeliveryAction,
+    IdempotencyPort,
+    QueueHandlerError,
+    TerminalQueueError,
+    WorkerJobEnvelope,
+)
 from cfdi_vault.recovery_service import RecoveryService
 
 
@@ -128,12 +134,15 @@ class RecoveryWorker:
             if outcome.action is DeliveryAction.ACK:
                 return outcome.result  # type: ignore[return-value]
             if outcome.action is DeliveryAction.RETRY:
-                return WorkerReport(processed=0, detail="Retry scheduled after a classified transient failure.")
-            return WorkerReport(processed=0, detail="Delivery moved to dead letter with a redacted reason.")
+                reason = outcome.reason_code or "classified_transient_failure"
+                return WorkerReport(processed=0, detail=f"Retry scheduled after classified reason: {reason}.")
+            reason = outcome.reason_code or "unclassified_failure"
+            return WorkerReport(processed=0, detail=f"Delivery moved to dead letter with redacted reason: {reason}.")
         raise RuntimeError("Queue adapter does not support reliable consumption.")
 
     def _handle(self, message: QueueMessage) -> WorkerReport:
-        if not self.idempotency.acquire(message.idempotency_key):
+        envelope = WorkerJobEnvelope.from_message(message)
+        if not self.idempotency.acquire(envelope.idempotency_key):
             return WorkerReport(processed=0, detail="Duplicate delivery acknowledged; durable idempotency is not configured.")
         heartbeat_stop = Event()
         heartbeat_errors: list[Exception] = []
@@ -145,23 +154,27 @@ class RecoveryWorker:
         heartbeat_thread.start()
         try:
             try:
-                process_for_worker = getattr(self.service, "process_queue_message_for_worker", None)
-                if process_for_worker is None:
-                    result = self.service.process_queue_message(message)
+                process_envelope = getattr(self.service, "process_worker_job_envelope", None)
+                if process_envelope is not None:
+                    result = process_envelope(envelope, worker_ref=self.worker_id)
                 else:
-                    result = process_for_worker(message, worker_ref=self.worker_id)
+                    process_for_worker = getattr(self.service, "process_queue_message_for_worker", None)
+                    if process_for_worker is None:
+                        result = self.service.process_queue_message(message)
+                    else:
+                        result = process_for_worker(message, worker_ref=self.worker_id)
             finally:
                 heartbeat_stop.set()
                 heartbeat_thread.join()
             if heartbeat_errors:
                 raise RuntimeError("worker heartbeat renewal failed") from heartbeat_errors[0]
         except QueueHandlerError:
-            self.idempotency.release(message.idempotency_key)
+            self.idempotency.release(envelope.idempotency_key)
             raise
         except Exception as exc:
-            self.idempotency.release(message.idempotency_key)
+            self.idempotency.release(envelope.idempotency_key)
             raise self.classify_failure(exc) from None
-        self.idempotency.complete(message.idempotency_key)
+        self.idempotency.complete(envelope.idempotency_key)
         return WorkerReport(processed=1, detail=f"Processed job {result.job_id} with status {result.status}.")
 
     def _renew_heartbeat_until_stopped(self, stop: Event, errors: list[Exception]) -> None:

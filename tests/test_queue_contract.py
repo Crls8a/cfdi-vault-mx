@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from cfdi_vault.domain import QueueMessage, QueueName
-from cfdi_vault.queue_contract import DeliveryAction, QueueAuditEvent, RetryPolicy
+from cfdi_vault.queue_contract import DeliveryAction, QueueAuditEvent, RetryPolicy, WorkerJobEnvelope, WorkerJobType
 
 
 NOW = datetime(2026, 7, 9, tzinfo=timezone.utc)
@@ -85,3 +85,47 @@ def test_queue_audit_event_is_correlatable_and_redacted() -> None:
         "occurred_at": NOW.isoformat(),
     }
     assert all(key not in event.as_dict() for key in ("payload", "rfc", "uuid", "criteria"))
+
+
+def test_worker_job_envelope_is_typed_reference_only_and_auditable() -> None:
+    envelope = WorkerJobEnvelope.from_message(_message())
+
+    assert envelope.job_type is WorkerJobType.CFDI_PARSE_XML
+    assert envelope.queue is QueueName.CFDI_PARSE_XML
+    assert envelope.idempotency_key == "idem-001"
+    assert envelope.as_dict() == {
+        "job_type": QueueName.CFDI_PARSE_XML.value,
+        "queue": QueueName.CFDI_PARSE_XML.value,
+        "tenant_id": "synthetic-tenant",
+        "job_id": "job-001",
+        "profile_id": "profile-ref-001",
+        "message_id": "message-001",
+        "correlation_id": "correlation-001",
+        "idempotency_key": "idem-001",
+        "attempt": 0,
+        "envelope_version": 1,
+        "created_at": NOW.isoformat(),
+        "not_before": None,
+    }
+
+    audit = envelope.audit_event(DeliveryAction.RETRY, reason_code="transport_unavailable", occurred_at=NOW)
+
+    assert audit.as_dict()["reason_code"] == "transport_unavailable"
+    assert all(key not in envelope.as_dict() for key in ("payload", "rfc", "uuid", "criteria", "xml", "zip", "soap", "secret"))
+
+
+@pytest.mark.parametrize("forbidden", ["rfc", "uuid", "criteria", "payload", "xml", "zip", "soap", "token", "secret"])
+def test_worker_job_envelope_from_dict_rejects_non_reference_fields(forbidden: str) -> None:
+    payload = WorkerJobEnvelope.from_message(_message()).as_dict()
+    payload[forbidden] = "must-not-enter-worker-envelope"
+
+    with pytest.raises(ValueError, match="unsupported worker envelope fields"):
+        WorkerJobEnvelope.from_dict(payload)
+
+
+def test_worker_job_envelope_rejects_queue_type_mismatch() -> None:
+    payload = WorkerJobEnvelope.from_message(_message()).as_dict()
+    payload["job_type"] = WorkerJobType.SAT_REQUEST.value
+
+    with pytest.raises(ValueError, match="job_type must match queue"):
+        WorkerJobEnvelope.from_dict(payload)

@@ -229,7 +229,7 @@ def test_heartbeat_renewal_failure_is_classified_and_releases_idempotency(
     report = worker.run_once()
 
     assert report.processed == 0
-    assert report.detail == "Retry scheduled after a classified transient failure."
+    assert report.detail == "Retry scheduled after classified reason: heartbeat_renewal_failed."
     assert str(classified[0]) == "worker heartbeat renewal failed"
     assert service.queue.pending_count(QueueName.SAT_REQUEST.value) == 1
     assert worker.idempotency.acquire(message.idempotency_key) is True
