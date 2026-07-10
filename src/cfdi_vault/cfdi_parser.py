@@ -1,7 +1,8 @@
 """Version-aware CFDI parser scaffolding.
 
-This module keeps the current common-field parser usable while making the next
-extension point explicit: version-specific parsers plus complement registry.
+This module keeps the common-field parser usable while making parser outcomes
+explicit for supported CFDI versions, unknown versions, and business
+complements that still need dedicated normalization.
 """
 
 from __future__ import annotations
@@ -10,7 +11,14 @@ from dataclasses import dataclass
 import xml.etree.ElementTree as ET
 from typing import Protocol
 
-from cfdi_vault.parser import ParsedCfdi, parse_cfdi_xml
+from cfdi_vault.parser import CfdiParseError, ParsedCfdi, parse_cfdi_xml
+
+
+PARSER_STATUS_COMPLETE = "complete"
+PARSER_STATUS_PARTIAL = "partial"
+PARSER_STATUS_UNSUPPORTED_ERROR = "unsupported-error"
+SUPPORTED_CFDI_VERSIONS = frozenset({"3.2", "3.3", "4.0"})
+STAMP_COMPLEMENT = "TimbreFiscalDigital"
 
 
 class CfdiParserPort(Protocol):
@@ -24,7 +32,7 @@ class CfdiParserPort(Protocol):
 class VersionedParsedCfdi:
     """Common parse result enriched with version/complement metadata."""
 
-    parsed: ParsedCfdi
+    parsed: ParsedCfdi | None
     version: str
     complements: tuple[str, ...]
     parser_status: str
@@ -34,20 +42,27 @@ class CfdiVersionDetector:
     """Detects CFDI version without validating the full document."""
 
     def detect(self, xml_bytes: bytes) -> str:
-        root = ET.fromstring(xml_bytes)
-        return root.attrib.get("Version") or root.attrib.get("version") or "unknown"
+        """Return the declared CFDI version or ``unknown`` when absent.
+
+        Detection is namespace and prefix tolerant, but it still requires a
+        ``Comprobante`` root so arbitrary XML is not misclassified as CFDI.
+        """
+
+        root = _parse_root(xml_bytes)
+        if _local_name(root.tag) != "Comprobante":
+            raise CfdiParseError("Expected CFDI Comprobante root element")
+        return _declared_version(root)
 
     def complements(self, xml_bytes: bytes) -> tuple[str, ...]:
-        root = ET.fromstring(xml_bytes)
+        """Return direct business complement roots, excluding the CFDI stamp."""
+
+        root = _parse_root(xml_bytes)
         names: list[str] = []
-        in_complement = False
-        for element in root.iter():
-            local = _local_name(element.tag)
-            if local == "Complemento":
-                in_complement = True
-                continue
-            if in_complement and local != "TimbreFiscalDigital":
-                names.append(local)
+        for complemento in _direct_children(root, "Complemento"):
+            for element in complemento:
+                local = _local_name(element.tag)
+                if local != STAMP_COMPLEMENT:
+                    names.append(local)
         return tuple(dict.fromkeys(names))
 
 
@@ -56,19 +71,43 @@ class CommonCfdiParser:
 
     supported_versions: tuple[str, ...] = ()
 
-    def __init__(self, detector: CfdiVersionDetector | None = None) -> None:
+    def __init__(
+        self,
+        detector: CfdiVersionDetector | None = None,
+        complement_registry: "ComplementParserRegistry | None" = None,
+    ) -> None:
         self.detector = detector or CfdiVersionDetector()
+        self.complement_registry = complement_registry or ComplementParserRegistry()
 
     def parse(self, xml_bytes: bytes) -> VersionedParsedCfdi:
         version = self.detector.detect(xml_bytes)
+        complements = self.detector.complements(xml_bytes)
+        if version not in SUPPORTED_CFDI_VERSIONS:
+            return VersionedParsedCfdi(
+                parsed=None,
+                version=version,
+                complements=complements,
+                parser_status=PARSER_STATUS_UNSUPPORTED_ERROR,
+            )
+
         parsed = parse_cfdi_xml(xml_bytes)
-        status = "complete" if not self.supported_versions or version in self.supported_versions else "partial"
+        status = (
+            PARSER_STATUS_COMPLETE
+            if self._supports_version(version) and self._all_complements_registered(complements)
+            else PARSER_STATUS_PARTIAL
+        )
         return VersionedParsedCfdi(
             parsed=parsed,
             version=version,
-            complements=self.detector.complements(xml_bytes),
+            complements=complements,
             parser_status=status,
         )
+
+    def _supports_version(self, version: str) -> bool:
+        return not self.supported_versions or version in self.supported_versions
+
+    def _all_complements_registered(self, complements: tuple[str, ...]) -> bool:
+        return all(self.complement_registry.get(name) is not None for name in complements)
 
 
 class CfdiParserV32(CommonCfdiParser):
@@ -104,6 +143,8 @@ class ComplementParserRegistry:
 
 
 def parser_for_version(version: str) -> CommonCfdiParser:
+    """Return the parser scaffold for a declared CFDI version."""
+
     if version == "3.2":
         return CfdiParserV32()
     if version == "3.3":
@@ -117,3 +158,18 @@ def _local_name(tag: str) -> str:
     if "}" in tag:
         return tag.rsplit("}", 1)[1]
     return tag
+
+
+def _parse_root(xml_bytes: bytes) -> ET.Element:
+    try:
+        return ET.fromstring(xml_bytes)
+    except ET.ParseError as exc:
+        raise CfdiParseError(f"Invalid XML: {exc}") from exc
+
+
+def _declared_version(root: ET.Element) -> str:
+    return root.attrib.get("Version") or root.attrib.get("version") or "unknown"
+
+
+def _direct_children(element: ET.Element, local_name: str) -> tuple[ET.Element, ...]:
+    return tuple(child for child in element if _local_name(child.tag) == local_name)

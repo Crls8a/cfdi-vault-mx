@@ -1,9 +1,10 @@
 # CFDI parser version and fixture matrix
 
-PARSER-005A defines acceptance inputs for PARSER-005B. It does **not** change
-the current detector, routing, extractors, complement registry, or runtime
-statuses. Every fixture is synthetic and offline; none proves fiscal validity,
-authenticity, certificate trust, tax correctness, or SAT status.
+PARSER-005A defined acceptance inputs for PARSER-005B. PARSER-005B now starts
+the runtime rollout with deterministic version detection, supported-version
+routing, and explicit unknown/partial parser statuses. Every fixture is
+synthetic and offline; none proves fiscal validity, authenticity, certificate
+trust, tax correctness, or SAT status.
 
 ## Status contract for PARSER-005B
 
@@ -44,21 +45,22 @@ before promoting a scenario.
 
 | Scenario | Synthetic fixture | Current observation | Target parser result | Target workflow | Exact target condition | Minimum accounting fields | Minimum evidence fields |
 |---|---|---|---|---|---|---|---|
-| `cfdi-32-income` | Declared `3.2`, type `I`, legacy-shaped basic invoice | `unsupported-error`; current common extractor does not prove 3.2 legacy attributes | `complete` | `completed` | Only after a dedicated 3.2 extractor passes the accepted fixture; until then keep `unsupported-error` and route to `manual-review` | TARGET: COMMON; current: version/status only, with no completeness claim | EVIDENCE, including the original XML |
-| `cfdi-33-income` | Declared `3.3`, type `I`, no business complement | Scaffold can emit `complete`, but 3.3 has no accepted fixture contract yet | `complete` | `completed` | Dedicated 3.3 extractor returns COMMON and no business complement is pending | COMMON | EVIDENCE |
-| `cfdi-40-income` | Declared `4.0`, type `I`, no business complement | Existing common-field 4.0 test reports `complete` | `complete` | `completed` | Dedicated 4.0 extractor returns COMMON and no business complement is pending | COMMON | EVIDENCE |
-| `cfdi-40-expense` | Declared `4.0`, type `E`, no business complement | Scaffold can read the type, but expense coverage is not an accepted extractor contract | `complete` | `completed` | Dedicated 4.0 extractor returns COMMON while preserving `TipoDeComprobante=E` | COMMON | EVIDENCE |
-| `payments` | Supported base CFDI with a synthetic `Pagos` root | Current registry is not wired; scaffold status is not proof of payment normalization | `complete` | `completed` | Registered payments extractor succeeds and returns PAYMENTS; absent or failed extractor must return `partial` instead | PAYMENTS | EVIDENCE plus raw payments payload |
-| `payroll` | Supported base CFDI with a synthetic `Nomina` root | Current registry is not wired; scaffold status is not proof of payroll normalization | `complete` | `completed` | Registered payroll extractor succeeds and returns PAYROLL; absent or failed extractor must return `partial` instead | PAYROLL | EVIDENCE plus raw payroll payload |
-| `unknown-complement` | Supported base CFDI with an unregistered synthetic complement root | Current scaffold may report `complete`; this is a known gap, not accepted behavior | `partial` | `partial` | COMMON is safe, complement root/payload is retained, and no registered extractor exists | COMMON plus complement name; no invented normalized fields | EVIDENCE plus raw unknown-complement payload |
-| `unknown-version` | Missing version or any value outside the accepted version set | Current generic parser may report `complete`; this is a known gap reserved for PARSER-005B | `unsupported-error` | `manual-review` | Evidence is preserved, no supported extractor is selected, and no normalized result is labelled complete | Declared/raw version and status only | EVIDENCE, including the original XML |
+| `cfdi-32-income` | Declared `3.2`, type `I`, legacy-shaped basic invoice | Version-specific scaffold returns `complete` for accepted synthetic COMMON fields; broader legacy attributes remain future extractor work | `complete` | `completed` | Dedicated 3.2 extractor returns COMMON and no business complement is pending | COMMON | EVIDENCE, including the original XML |
+| `cfdi-33-income` | Declared `3.3`, type `I`, no business complement | Version-specific scaffold returns `complete` for accepted synthetic COMMON fields | `complete` | `completed` | Dedicated 3.3 extractor returns COMMON and no business complement is pending | COMMON | EVIDENCE |
+| `cfdi-40-income` | Declared `4.0`, type `I`, no business complement | Version-specific scaffold returns `complete` for accepted synthetic COMMON fields | `complete` | `completed` | Dedicated 4.0 extractor returns COMMON and no business complement is pending | COMMON | EVIDENCE |
+| `cfdi-40-expense` | Declared `4.0`, type `E`, no business complement | Version-specific scaffold returns `complete` and preserves `TipoDeComprobante=E` | `complete` | `completed` | Dedicated 4.0 extractor returns COMMON while preserving `TipoDeComprobante=E` | COMMON | EVIDENCE |
+| `payments` | Supported base CFDI with a synthetic `Pagos` root | Registry dispatch now marks unregistered `Pagos` as `partial`; registering a parser keeps the base result `complete`, but PAYMENTS field extraction remains future work | `complete` | `completed` | Registered payments extractor succeeds and returns PAYMENTS; absent or failed extractor must return `partial` instead | PAYMENTS | EVIDENCE plus raw payments payload |
+| `payroll` | Supported base CFDI with a synthetic `Nomina` root | Registry dispatch now marks unregistered `Nomina` as `partial`; payroll field extraction remains future work | `complete` | `completed` | Registered payroll extractor succeeds and returns PAYROLL; absent or failed extractor must return `partial` instead | PAYROLL | EVIDENCE plus raw payroll payload |
+| `unknown-complement` | Supported base CFDI with an unregistered synthetic complement root | Detector reports the direct business complement root and parser returns `partial` | `partial` | `partial` | COMMON is safe, complement root/payload is retained, and no registered extractor exists | COMMON plus complement name; no invented normalized fields | EVIDENCE plus raw unknown-complement payload |
+| `unknown-version` | Missing version or any value outside the accepted version set | Detector returns the declared value or `unknown`; parser returns `unsupported-error` with no normalized parse result | `unsupported-error` | `manual-review` | Evidence is preserved, no supported extractor is selected, and no normalized result is labelled complete | Declared/raw version and status only | EVIDENCE, including the original XML |
 
 ## PARSER-005B acceptance boundary
 
 PARSER-005B must implement and test version detection, dedicated extractors,
-complement-registry dispatch, and the target transitions above. A target row is
-not CURRENT support until its extractor and fixture tests pass. In particular,
-this matrix does not claim current CFDI 3.2, payments, or payroll support.
+complement-registry dispatch, and the target transitions above. This first
+rollout slice proves version/status routing and complement completeness
+decisions; deep payments/payroll payload extraction remains a later parser
+slice before those rows can be called fully normalized.
 
 Parser work remains import-first and offline. It has no Docker, PostgreSQL,
 RabbitMQ, Redis, MinIO, e.firma, network, or live SAT dependency.
