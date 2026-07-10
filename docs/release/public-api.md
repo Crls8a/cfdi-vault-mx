@@ -10,21 +10,25 @@ The first public API should be import-first and small. The CLI remains valuable 
 reference system, demos, and packaging smoke checks, but the library promise is the
 Python contract documented here and in [SAT download public API research and contract](../api/sat-download-public-api.md).
 
-LIB-005A's exact SAT module classification, reserved names, error semantics, and
-promotion gates live in [SAT v1.5 public API contract](../api/sat-v15-public-api.md).
-Reserved LIB-005B/C names are not supported imports until their own gates pass.
+The exact SAT module classification, supported LIB-005B names, remaining
+reserved LIB-005C facade, error semantics, and promotion gates live in
+[SAT v1.5 public API contract](../api/sat-v15-public-api.md).
 
 ## Public today
 
 | Import | Stability | Notes |
 |---|---|---|
 | `cfdi_vault.__version__` | Stable | Exported from `cfdi_vault.__init__`. |
+| `cfdi_vault.domain.DateTimePeriod`, `DownloadDirection`, `DownloadQuery`, `RequestType`, `SatRequestState` | LIB-005B supported | Typed request criteria and state values for injected SAT ports. |
+| `cfdi_vault.ports.SatAuthenticatorPort`, `SatRequestPort`, `SatVerificationPort`, `SatDownloadPort` | LIB-005B supported | Runtime-agnostic split SAT boundaries. |
+| `cfdi_vault.sat_contract.SatAuthResult`, `SatRequestResult`, `SatVerificationResult`, `SatDownloadResult` | LIB-005B supported | Redacted result models for auth/request/verify/download operations. |
+| `cfdi_vault.sat_contract.SatError`, `SatAuthenticationError`, `SatRequestError`, `SatVerificationError`, `SatPackageDownloadError` | LIB-005B supported | Redacted typed SAT error hierarchy. |
+| `cfdi_vault.fake_sat.FakeSatStore`, `FakeSatAuthenticator`, `FakeSatRequester`, `FakeSatVerifier`, `FakeSatDownloader` | LIB-005B supported | Deterministic offline adapters for tests and examples. |
 
 No SAT live/probe module is public API today.
 
-No SAT result, error, port, fake, or `cfdi_vault.sat_download` facade is public
-today. Their names are reserved by LIB-005A without re-exporting implementation
-modules prematurely.
+The future `cfdi_vault.sat_download` facade remains reserved for LIB-005C and is
+not public today.
 
 ## Candidate public surfaces
 

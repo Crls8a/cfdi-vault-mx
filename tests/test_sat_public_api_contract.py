@@ -11,7 +11,7 @@ CONTRACT_DOC = ROOT / "docs" / "api" / "sat-v15-public-api.md"
 SOURCE_PACKAGE = ROOT / "src" / "cfdi_vault"
 
 
-def test_sat_public_contract_lists_the_only_supported_import_now() -> None:
+def test_sat_public_contract_lists_lib_005b_supported_imports() -> None:
     text = CONTRACT_DOC.read_text(encoding="utf-8")
     section = re.search(
         r"<!-- supported-imports:start -->(.*?)<!-- supported-imports:end -->",
@@ -20,7 +20,13 @@ def test_sat_public_contract_lists_the_only_supported_import_now() -> None:
     )
 
     assert section is not None
-    assert set(re.findall(r"`([^`]+)`", section.group(1))) == {"cfdi_vault.__version__"}
+    supported = set(re.findall(r"`([^`]+)`", section.group(1)))
+
+    assert "cfdi_vault.__version__" in supported
+    assert "cfdi_vault.sat_contract.SatError" in supported
+    assert "cfdi_vault.fake_sat.FakeSatRequester" in supported
+    assert "cfdi_vault.ports.SatRequestPort" in supported
+    assert "cfdi_vault.sat_download" not in supported
 
 
 def test_sat_public_contract_classifies_every_existing_sat_module() -> None:
@@ -58,7 +64,7 @@ def test_sat_public_contract_reserves_complete_lib_005b_and_005c_names() -> None
     assert all(f"`{name}`" in text for name in reserved_names)
 
 
-def test_supported_package_import_is_service_free_and_offline() -> None:
+def test_supported_package_imports_are_service_free_and_offline() -> None:
     script = f"""
 import builtins
 import socket
@@ -81,9 +87,28 @@ socket.create_connection = blocked_network
 socket.socket.connect = blocked_network
 
 import cfdi_vault
+from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType, SatRequestState
+from cfdi_vault.fake_sat import FakeSatAuthenticator, FakeSatDownloader, FakeSatRequester, FakeSatStore, FakeSatVerifier
+from cfdi_vault.ports import SatAuthenticatorPort, SatDownloadPort, SatRequestPort, SatVerificationPort
+from cfdi_vault.sat_contract import (
+    SatAuthResult,
+    SatAuthenticationError,
+    SatDownloadResult,
+    SatError,
+    SatPackageDownloadError,
+    SatRequestError,
+    SatRequestResult,
+    SatVerificationError,
+    SatVerificationResult,
+)
 
 assert cfdi_vault.__all__ == ["__version__"]
 assert isinstance(cfdi_vault.__version__, str)
+assert FakeSatAuthenticator and FakeSatRequester and FakeSatVerifier and FakeSatDownloader and FakeSatStore
+assert SatError and SatAuthenticationError and SatRequestError and SatVerificationError and SatPackageDownloadError
+assert SatAuthResult and SatRequestResult and SatVerificationResult and SatDownloadResult
+assert SatAuthenticatorPort and SatRequestPort and SatVerificationPort and SatDownloadPort
+assert DateTimePeriod and DownloadDirection and DownloadQuery and RequestType and SatRequestState
 assert not blocked.intersection(sys.modules)
 """
 

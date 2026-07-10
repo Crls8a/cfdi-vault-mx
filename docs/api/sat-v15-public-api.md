@@ -21,19 +21,44 @@ or an implied live-SAT guarantee.
 
 <!-- supported-imports:start -->
 - `cfdi_vault.__version__`
+- `cfdi_vault.domain.DateTimePeriod`
+- `cfdi_vault.domain.DownloadDirection`
+- `cfdi_vault.domain.DownloadQuery`
+- `cfdi_vault.domain.RequestType`
+- `cfdi_vault.domain.SatRequestState`
+- `cfdi_vault.ports.SatAuthenticatorPort`
+- `cfdi_vault.ports.SatRequestPort`
+- `cfdi_vault.ports.SatVerificationPort`
+- `cfdi_vault.ports.SatDownloadPort`
+- `cfdi_vault.sat_contract.SatAuthResult`
+- `cfdi_vault.sat_contract.SatRequestResult`
+- `cfdi_vault.sat_contract.SatVerificationResult`
+- `cfdi_vault.sat_contract.SatDownloadResult`
+- `cfdi_vault.sat_contract.SatError`
+- `cfdi_vault.sat_contract.SatAuthenticationError`
+- `cfdi_vault.sat_contract.SatRequestError`
+- `cfdi_vault.sat_contract.SatVerificationError`
+- `cfdi_vault.sat_contract.SatPackageDownloadError`
+- `cfdi_vault.fake_sat.FakeSatStore`
+- `cfdi_vault.fake_sat.FakeSatAuthenticator`
+- `cfdi_vault.fake_sat.FakeSatRequester`
+- `cfdi_vault.fake_sat.FakeSatVerifier`
+- `cfdi_vault.fake_sat.FakeSatDownloader`
 <!-- supported-imports:end -->
 
-No SAT operation, result, error, port, fake, live adapter, or facade is a
-supported import in LIB-005A. `cfdi_vault.__all__` therefore remains limited to
-`__version__`. Existing modules can still be used inside this repository, but
-that availability is not a semver promise.
+LIB-005B promotes only the typed request/result/error contracts, split ports,
+and deterministic offline fakes listed above. `cfdi_vault.__all__` remains
+limited to `__version__`; consumers import SAT contracts from their owning
+modules. Live adapters, probes, orchestration, CLI internals, and the future
+`cfdi_vault.sat_download` facade remain unsupported.
 
 ## Reserved contract for later work
 
-These names are reserved so LIB-005B and LIB-005C do not invent a second
-surface. Reserved means **specified but not yet supported as a public import**.
+These names were reserved so LIB-005B and LIB-005C do not invent a second
+surface. LIB-005B names are now promoted only where listed in the supported
+imports block above; LIB-005C facade names remain reserved but unsupported.
 
-### LIB-005B results and errors
+### LIB-005B results and errors (supported now)
 
 | Concept | Reserved name | Required semantics before promotion |
 |---|---|---|
@@ -47,12 +72,12 @@ surface. Reserved means **specified but not yet supported as a public import**.
 | Verification failure | `SatVerificationError` | Signals a verification-stage failure and whether later retry is allowed. |
 | Package failure | `SatPackageDownloadError` | Signals a package-stage failure without embedding package content or a full package identifier. |
 
-The existing models in `cfdi_vault.sat_contract` are implementation candidates,
-not promoted API. LIB-005B must first complete validation, redaction, public
-docstrings, typed errors, and boundary tests. Public error construction must be
-side-effect free.
+The models and errors in `cfdi_vault.sat_contract` are supported LIB-005B
+imports when used as side-effect-free contracts. They provide redacted
+diagnostics and safe serialization helpers; raw responses, tokens, identifiers,
+and package bytes remain caller-owned implementation details.
 
-### LIB-005B ports and offline fakes
+### LIB-005B ports and offline fakes (supported now)
 
 | Responsibility | Reserved name | Contract |
 |---|---|---|
@@ -68,7 +93,8 @@ side-effect free.
 `SignerPort` and `SecretProviderPort` remain named security boundaries, not
 credential-custody implementations. Their future promotion requires the
 security/human gate. The existing multi-operation `FakeSatClient` remains an
-internal compatibility adapter; the split fakes above belong to LIB-005B.
+internal compatibility adapter; the split fakes above are the supported LIB-005B
+offline adapter contracts.
 
 ### LIB-005C facade
 

@@ -1,13 +1,165 @@
-"""Deterministic fake SAT client used before live SOAP integration."""
+"""Deterministic offline SAT adapters used before live SOAP integration.
+
+The split fake adapters implement the public LIB-005B ports without credentials,
+network, files, clocks, Docker, PostgreSQL, RabbitMQ, Redis, or live SAT side
+effects. ``FakeSatClient`` remains as an internal compatibility adapter for the
+reference-system recovery service.
+"""
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 from cfdi_vault.domain import DownloadQuery, MetadataEntry, SatRequestState
+from cfdi_vault.sat_contract import (
+    SatAuthResult,
+    SatDownloadResult,
+    SatOutcomeAction,
+    SatPackageDownloadError,
+    SatRequestError,
+    SatRequestResult,
+    SatVerificationError,
+    SatVerificationResult,
+)
+
+
+@dataclass
+class FakeSatStore:
+    """In-memory synthetic SAT state shared by split fake adapters.
+
+    The store keeps only synthetic request/package references and caller-owned
+    package bytes. It is intended for tests and examples, not persistence.
+    """
+
+    requests: dict[str, DownloadQuery] = field(default_factory=dict)
+    packages: dict[str, bytes] = field(default_factory=dict)
+    verifications: dict[str, SatVerificationResult] = field(default_factory=dict)
+
+
+class FakeSatAuthenticator:
+    """Deterministic credential-free implementation of ``SatAuthenticatorPort``."""
+
+    def __init__(self, *, authorization: str = "SYNTHETIC-AUTHORIZATION") -> None:
+        self._authorization = authorization
+
+    def authenticate(self) -> SatAuthResult:
+        """Return a synthetic authorization result without external side effects."""
+
+        return SatAuthResult(
+            authorization=self._authorization,
+            expires_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            raw_response={"source": "synthetic"},
+        )
+
+
+class FakeSatRequester:
+    """Deterministic offline implementation of ``SatRequestPort``."""
+
+    def __init__(self, store: FakeSatStore | None = None) -> None:
+        self.store = store or FakeSatStore()
+
+    def submit_request(self, query: DownloadQuery) -> SatRequestResult:
+        """Validate and register one synthetic SAT request.
+
+        Raises:
+            SatRequestError: If the query violates local request validation.
+        """
+
+        errors = query.validate()
+        if errors:
+            raise SatRequestError(
+                operation="request",
+                code="invalid-query",
+                message="; ".join(errors),
+                retryable=False,
+                next_action="correct the synthetic request criteria before retrying",
+            )
+        request_id = f"SYN-REQ-{query.criteria_hash()[:12].upper()}"
+        package_id = f"SYN-PKG-{query.criteria_hash()[12:24].upper()}"
+        self.store.requests[request_id] = query
+        self.store.packages.setdefault(package_id, _synthetic_metadata_package_bytes(query, package_id))
+        self.store.verifications[request_id] = SatVerificationResult(
+            request_id=request_id,
+            state=SatRequestState.FINISHED,
+            sat_code="5000",
+            message="Synthetic request finished",
+            package_ids=(package_id,),
+            action=SatOutcomeAction.FINISHED,
+            raw_response={"source": "synthetic"},
+        )
+        return SatRequestResult(
+            request_id=request_id,
+            sat_code="5000",
+            message="Synthetic request accepted",
+            action=SatOutcomeAction.ACCEPTED,
+            raw_response={"source": "synthetic"},
+        )
+
+
+class FakeSatVerifier:
+    """Deterministic offline implementation of ``SatVerificationPort``."""
+
+    def __init__(self, store: FakeSatStore | None = None) -> None:
+        self.store = store or FakeSatStore()
+
+    def verify_request(self, request_id: str) -> SatVerificationResult:
+        """Return synthetic verification state for one request id.
+
+        Raises:
+            SatVerificationError: If the request id is unknown to this store.
+        """
+
+        try:
+            return self.store.verifications[request_id]
+        except KeyError as exc:
+            raise SatVerificationError(
+                operation="verify",
+                code="not-found",
+                message="synthetic request id not found",
+                retryable=False,
+                next_action="submit the request with the same fake store before verifying",
+                request_id=request_id,
+            ) from exc
+
+
+class FakeSatDownloader:
+    """Deterministic offline implementation of ``SatDownloadPort``."""
+
+    def __init__(self, store: FakeSatStore | None = None, packages: dict[str, bytes] | None = None) -> None:
+        self.store = store or FakeSatStore()
+        if packages:
+            self.store.packages.update(packages)
+
+    def download_package(self, package_id: str) -> SatDownloadResult:
+        """Return caller-owned synthetic package bytes for one package id.
+
+        Raises:
+            SatPackageDownloadError: If the package id is unknown to this store.
+        """
+
+        try:
+            content = self.store.packages[package_id]
+        except KeyError as exc:
+            raise SatPackageDownloadError(
+                operation="download",
+                code="not-found",
+                message="synthetic package id not found",
+                retryable=False,
+                next_action="verify a finished synthetic request before downloading",
+                package_id=package_id,
+            ) from exc
+        return SatDownloadResult(
+            package_id=package_id,
+            sat_code="5000",
+            message="Synthetic package downloaded",
+            action=SatOutcomeAction.FINISHED,
+            content=bytes(content),
+            raw_response={"source": "synthetic"},
+        )
 
 
 class FakeSatClient:
@@ -100,6 +252,26 @@ def _zip_from_entries(entries: tuple[MetadataEntry, ...]) -> bytes:
             info.create_system = 0
             info.external_attr = 0
             archive.writestr(info, _xml_from_entry(entry))
+    return buffer.getvalue()
+
+
+def _synthetic_metadata_package_bytes(query: DownloadQuery, package_id: str) -> bytes:
+    entries = _fake_metadata_entries(query, package_id)
+    buffer = BytesIO()
+    with ZipFile(buffer, mode="w", compression=ZIP_DEFLATED) as archive:
+        info = ZipInfo("metadata.txt", date_time=(2024, 1, 1, 0, 0, 0))
+        info.compress_type = ZIP_DEFLATED
+        info.create_system = 0
+        info.external_attr = 0
+        rows = [
+            "uuid|issuer_rfc|receiver_rfc|total|status|source",
+            *(
+                f"{entry.uuid}|{entry.issuer_rfc}|{entry.receiver_rfc}|"
+                f"{entry.total}|{entry.status}|synthetic"
+                for entry in entries
+            ),
+        ]
+        archive.writestr(info, "\n".join(rows).encode("utf-8"))
     return buffer.getvalue()
 
 
