@@ -31,7 +31,12 @@ docker compose --profile object-storage up -d minio minio-create-bucket
 | Bucket | `cfdi-vault-evidence` |
 | Container data volume | `minio_data` |
 
-MinIO is a reference-system lab service only. The default app and worker still use `CFDI_STORAGE_ROOT` and the host-mounted `./storage` directory until the storage port and MinIO adapter are implemented and tested.
+MinIO is a reference-system lab service only. The default app and worker still
+use `CFDI_STORAGE_ROOT` and the host-mounted `./storage` directory. The optional
+S3-compatible adapter implements the same storage port for MinIO labs when the
+caller explicitly injects a compatible object client or installs the
+`object-storage` extra; it is not required by the default app, worker, or
+library import path.
 
 ## User-visible location
 
@@ -102,6 +107,9 @@ STOR-004A defines the adapter-neutral boundary in
 - Object keys remain case-sensitive, while `LocalStorage` rejects aliases that
   differ only by case so Windows and future object-storage behavior cannot
   produce two references for one local file.
+- The optional S3-compatible adapter stores the same keys and
+  `EvidenceReference` metadata in object storage, writes SHA-256 metadata, and
+  keeps object-storage dependencies out of the default install path.
 
 The configured storage root/profile is the tenant boundary; object keys begin
 with the requester RFC and period. PostgreSQL remains responsible for binding
