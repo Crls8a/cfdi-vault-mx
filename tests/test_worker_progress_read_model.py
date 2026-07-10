@@ -75,6 +75,19 @@ def test_progress_read_model_shows_stale_worker_without_changing_durable_status(
     assert cache.get_progress("tenant-demo", "job-001") == _progress()
 
 
+def test_progress_read_model_keeps_terminal_durable_status_over_stale_cache() -> None:
+    cache = InMemoryCache(clock=lambda: NOW)
+    cache.set_progress(_progress(updated_at=NOW - timedelta(minutes=5)), 120)
+    cache.record_heartbeat(WorkerHeartbeat("worker-001", NOW - timedelta(minutes=5)), 120)
+    reader = WorkerProgressReadModel(cache, clock=lambda: NOW, stale_after_seconds=30)
+
+    snapshot = reader.get(_durable("succeeded"))
+
+    assert snapshot["durable_status"] == "succeeded"
+    assert snapshot["transient_progress"] == _progress(updated_at=NOW - timedelta(minutes=5)).as_dict()
+    assert snapshot["worker_heartbeat_state"] == "stale"
+
+
 def test_progress_read_model_keeps_durable_status_when_transient_cache_is_unavailable() -> None:
     class BrokenCache:
         def get_progress(self, tenant_id: str, job_id: str) -> ProgressObservation | None:
