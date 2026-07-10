@@ -78,7 +78,29 @@ Goal: make each infrastructure primitive reliable enough that higher-level API a
 | PARSER-005A | feature/docs | Parser | `feature/parser-version-matrix` | ARCH-EXEC-001 | Define fixture matrix for CFDI 3.2, 3.3, 4.0, unknown version, payments, payroll, unknown complements. | Parser scope and partial/complete rules are documented and fixture-safe. |
 | LIB-005A | feature/docs | SAT library | `feature/sat-v15-public-api-contract` | ARCH-EXEC-001 | Define supported imports, result models, public errors, source policy, and internal/live exclusions. | Public API doc matches library quality contract and import smoke expectations. |
 
-### Phase 1 parallel plan
+### Phase 1 completion evidence
+
+Phase 1 is complete on `dev`. Phase 2 remains pending and must preserve the runtime boundaries proven here.
+
+| Completed stream | Evidence |
+|---|---|
+| Planning baseline | PR #176 |
+| Parser matrix | PR #183 |
+| Storage contract and filesystem parity | PRs #184-#185 |
+| PostgreSQL evidence metadata | PR #186 |
+| SAT public API contract | PR #187 |
+| RabbitMQ delivery, retries, acknowledgements, and idempotency | PRs #188-#193 |
+| Redis coordination, locks, heartbeat, and durable-state transition | PRs #194-#199 |
+
+- [x] All Phase 1 streams are merged to `dev`.
+- [x] PostgreSQL, RabbitMQ, and Redis integrations are validated in CI.
+- [x] Final tests, scanners, branch policy, diff checks, and Compose validation pass.
+- [x] Redis remains coordination state; PostgreSQL remains the durable source of truth.
+- [x] MinIO remains optional and is not wired into the app or worker runtime.
+
+### Original Phase 1 parallel execution plan
+
+The schedule below is retained as the historical plan used to sequence the now-complete work.
 
 ```mermaid
 gantt
