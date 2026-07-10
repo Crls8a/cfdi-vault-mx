@@ -45,7 +45,7 @@ library import path.
 | Local CLI default | `<repo>/storage/<RFC>/xml/YYYY/MM/...` |
 | Local CLI custom | `<--storage>/<RFC>/xml/YYYY/MM/...` |
 | Docker Compose | `<repo>/storage/<RFC>/xml/YYYY/MM/...` on the host, mounted to `/app/storage/<RFC>/xml/YYYY/MM/...` in the container |
-| Docker Compose MinIO lab | Future object keys under bucket `cfdi-vault-evidence`; not used by app/worker yet |
+| Docker Compose MinIO lab | Opaque objects under bucket `cfdi-vault-evidence`; not used by app/worker yet |
 | Future packaged installer | User-selected data directory, shown by `doctor` and setup summary |
 
 The `doctor` command must always show the resolved storage root and key subfolders.
@@ -107,21 +107,25 @@ STOR-004A defines the adapter-neutral boundary in
 - Object keys remain case-sensitive, while `LocalStorage` rejects aliases that
   differ only by case so Windows and future object-storage behavior cannot
   produce two references for one local file.
-- The optional S3-compatible adapter stores the same keys and
-  `EvidenceReference` metadata in object storage, writes SHA-256 metadata, and
-  keeps object-storage dependencies out of the default install path.
+- The optional S3-compatible adapter preserves the public `StorageKey` and
+  `EvidenceReference` contract for callers, but maps each `StorageKey` to a
+  deterministic opaque object key such as `evidence/<sha256(storage_key)>`
+  before calling S3/MinIO. The object store receives only the opaque key plus
+  SHA-256 and size metadata; it must not receive RFCs, SAT request/package IDs,
+  UUIDs, fiscal names, or the original storage key in object keys or metadata.
 
-The configured storage root/profile is the tenant boundary; object keys begin
-with the requester RFC and period. PostgreSQL remains responsible for binding
-that stable evidence reference to `tenant_id`, jobs, packages, and documents.
+The configured storage root/profile is the tenant boundary for filesystem
+storage. PostgreSQL remains responsible for binding stable evidence references
+to `tenant_id`, jobs, packages, and documents; object storage is only a byte
+store addressed by opaque physical keys.
 Existing recovery fields that expose filesystem paths remain compatibility
 surfaces until their DB/application migration is delivered with the evidence
 index work; new queue/API contracts must use object keys instead.
 
-MinIO is not implemented by STOR-004A. A future STOR-004B adapter may be wired
-only after it passes the same write/read/stat and collision tests. Until then,
-`app` and `worker` continue to use `CFDI_STORAGE_ROOT=/app/storage`, and no
-MinIO variables belong in their runtime configuration.
+STOR-004B implements the optional S3-compatible adapter for explicit MinIO/S3
+labs. It is not wired into the default `app` or `worker`; they continue to use
+`CFDI_STORAGE_ROOT=/app/storage`, and no MinIO variables belong in their
+runtime configuration until a separate runtime wiring change is accepted.
 
 ## Extraction and discovery UX
 

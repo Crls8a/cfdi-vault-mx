@@ -9,6 +9,8 @@ compatible client, or opt in through ``from_boto3`` after installing the
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import re
 from typing import Any, Protocol, runtime_checkable
 
 from cfdi_vault.storage import sha256_bytes
@@ -38,10 +40,18 @@ class S3ObjectClient(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class S3CompatibleStorage:
-    """StoragePort adapter for MinIO or another S3-compatible object store."""
+    """StoragePort adapter for MinIO or another S3-compatible object store.
+
+    Public ``StorageKey`` values may contain fiscal identifiers required by the
+    control plane. This adapter never sends those values to S3/MinIO object
+    keys or metadata; it derives a deterministic opaque physical key instead.
+    """
 
     bucket: str
     client: S3ObjectClient
+
+    def __post_init__(self) -> None:
+        _validate_bucket_name(self.bucket)
 
     @classmethod
     def from_boto3(
@@ -75,19 +85,13 @@ class S3CompatibleStorage:
         storage_key = StorageKey.parse(key)
         digest = sha256_bytes(content)
         try:
-            existing = self._head_or_none(storage_key)
-            if existing is not None:
-                existing_reference = self._reference_from_head(storage_key, existing)
-                if existing_reference.sha256 == digest and existing_reference.size_bytes == len(content):
-                    return existing_reference
-                existing_content = self.read_bytes(storage_key)
-                if sha256_bytes(existing_content) != digest:
-                    raise StorageCollisionError(storage_key)
-                return EvidenceReference(key=storage_key, sha256=digest, size_bytes=len(existing_content))
+            existing_reference = self._existing_reference_or_none(storage_key, digest, len(content))
+            if existing_reference is not None:
+                return existing_reference
 
             self.client.put_object(
                 Bucket=self.bucket,
-                Key=str(storage_key),
+                Key=_physical_key(storage_key),
                 Body=content,
                 ContentLength=len(content),
                 Metadata={"sha256": digest, "size-bytes": str(len(content))},
@@ -95,7 +99,11 @@ class S3CompatibleStorage:
             )
         except StorageError:
             raise
-        except Exception:
+        except Exception as exc:
+            if _is_precondition_failed(exc):
+                raced_reference = self._existing_reference_or_none(storage_key, digest, len(content))
+                if raced_reference is not None:
+                    return raced_reference
             raise StorageIOError(storage_key, "write") from None
         return EvidenceReference(key=storage_key, sha256=digest, size_bytes=len(content))
 
@@ -104,7 +112,7 @@ class S3CompatibleStorage:
 
         storage_key = StorageKey.parse(key)
         try:
-            response = self.client.get_object(Bucket=self.bucket, Key=str(storage_key))
+            response = self.client.get_object(Bucket=self.bucket, Key=_physical_key(storage_key))
             body = response["Body"]
             content = body.read()
         except KeyError:
@@ -122,7 +130,7 @@ class S3CompatibleStorage:
 
         storage_key = StorageKey.parse(key)
         try:
-            head = self.client.head_object(Bucket=self.bucket, Key=str(storage_key))
+            head = self.client.head_object(Bucket=self.bucket, Key=_physical_key(storage_key))
             return self._reference_from_head(storage_key, head)
         except Exception as exc:
             if _is_not_found(exc):
@@ -131,11 +139,25 @@ class S3CompatibleStorage:
 
     def _head_or_none(self, key: StorageKey) -> dict[str, Any] | None:
         try:
-            return self.client.head_object(Bucket=self.bucket, Key=str(key))
+            return self.client.head_object(Bucket=self.bucket, Key=_physical_key(key))
         except Exception as exc:
             if _is_not_found(exc):
                 return None
             raise
+
+    def _existing_reference_or_none(
+        self, key: StorageKey, expected_sha256: str, expected_size: int
+    ) -> EvidenceReference | None:
+        existing = self._head_or_none(key)
+        if existing is None:
+            return None
+        existing_reference = self._reference_from_head(key, existing)
+        if existing_reference.sha256 == expected_sha256 and existing_reference.size_bytes == expected_size:
+            return existing_reference
+        existing_content = self.read_bytes(key)
+        if sha256_bytes(existing_content) != expected_sha256:
+            raise StorageCollisionError(key)
+        return EvidenceReference(key=key, sha256=expected_sha256, size_bytes=len(existing_content))
 
     def _reference_from_head(self, key: StorageKey, head: dict[str, Any]) -> EvidenceReference:
         metadata = {str(name).lower(): str(value) for name, value in head.get("Metadata", {}).items()}
@@ -153,3 +175,32 @@ def _is_not_found(exc: Exception) -> bool:
         code = response.get("Error", {}).get("Code")
         return str(code).lower() in {"404", "nosuchkey", "notfound"}
     return isinstance(exc, FileNotFoundError)
+
+
+_BUCKET_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
+
+
+def _physical_key(key: StorageKey) -> str:
+    digest = hashlib.sha256(str(key).encode("utf-8")).hexdigest()
+    return f"evidence/{digest}"
+
+
+def _validate_bucket_name(bucket: str) -> None:
+    if (
+        not isinstance(bucket, str)
+        or not _BUCKET_PATTERN.fullmatch(bucket)
+        or ".." in bucket
+        or ".-" in bucket
+        or "-." in bucket
+    ):
+        raise ValueError("object storage bucket name is invalid")
+
+
+def _is_precondition_failed(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        error = response.get("Error", {})
+        code = str(error.get("Code", "")).lower()
+        status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        return code in {"preconditionfailed", "precondition failed"} or status == 412
+    return False
