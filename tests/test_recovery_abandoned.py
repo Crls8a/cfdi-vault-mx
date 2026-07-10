@@ -35,17 +35,14 @@ def test_recovery_service_conditionally_persists_abandoned_job_transition(
         assert progress is not None
         assert progress["job_id"] == queued.job_id
         assert progress["tenant_id"] == "tenant-demo"
+        assert progress["durable_status"] == "pending"
         assert progress["worker_ref"] == "unassigned"
-        assert progress["status"] == "pending"
-        assert progress["percent"] == 0
-        assert set(progress) == {
-            "job_id",
-            "tenant_id",
-            "worker_ref",
-            "status",
-            "percent",
-            "updated_at",
-        }
+        assert progress["worker_heartbeat_state"] == "missing"
+        assert progress["transient_available"] is True
+        transient = progress["transient_progress"]
+        assert isinstance(transient, dict)
+        assert transient["status"] == "pending"
+        assert transient["percent"] == 0
         with service.session_factory() as session:
             job = session.get(DownloadJob, queued.job_id)
             assert job is not None

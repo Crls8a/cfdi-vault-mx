@@ -54,6 +54,7 @@ from cfdi_vault.recovery_db import (
     init_recovery_schema,
 )
 from cfdi_vault.storage import LocalStorage, sha256_bytes
+from cfdi_vault.worker_progress import DurableWorkerJobState, WorkerProgressReadModel
 
 
 @dataclass(frozen=True)
@@ -577,12 +578,19 @@ class RecoveryService:
         return tuple({"queue": queue, "status": status, "count": int(count)} for queue, status, count in rows)
 
     def progress(self, job_id: str) -> dict[str, object] | None:
+        """Return durable job status plus optional transient worker observations."""
+
         with self.session_factory() as session:
             job = session.get(DownloadJob, job_id)
             if job is None:
                 return None
-            observation = self.cache.get_progress(job.tenant_id, job_id)
-        return observation.as_dict() if observation is not None else None
+            durable = DurableWorkerJobState(
+                job_id=job.id,
+                tenant_id=job.tenant_id,
+                status=job.status,
+                updated_at=job.updated_at,
+            )
+        return WorkerProgressReadModel(self.cache).get(durable)
 
     def _set_progress(
         self,
