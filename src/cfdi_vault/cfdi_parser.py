@@ -11,13 +11,14 @@ from dataclasses import dataclass
 import xml.etree.ElementTree as ET
 from typing import Protocol
 
-from cfdi_vault.parser import CfdiParseError, ParsedCfdi, parse_cfdi_xml
+from cfdi_vault.parser import CfdiParseError, ParsedCfdi, _reject_doctype, parse_cfdi_xml
 
 
 PARSER_STATUS_COMPLETE = "complete"
 PARSER_STATUS_PARTIAL = "partial"
 PARSER_STATUS_UNSUPPORTED_ERROR = "unsupported-error"
 SUPPORTED_CFDI_VERSIONS = frozenset({"3.2", "3.3", "4.0"})
+COMMON_COMPLETE_CFDI_VERSIONS = frozenset({"4.0"})
 STAMP_COMPLEMENT = "TimbreFiscalDigital"
 
 
@@ -90,10 +91,25 @@ class CommonCfdiParser:
                 parser_status=PARSER_STATUS_UNSUPPORTED_ERROR,
             )
 
-        parsed = parse_cfdi_xml(xml_bytes)
+        try:
+            parsed = parse_cfdi_xml(xml_bytes)
+        except CfdiParseError:
+            if version in COMMON_COMPLETE_CFDI_VERSIONS:
+                raise
+            return VersionedParsedCfdi(
+                parsed=None,
+                version=version,
+                complements=complements,
+                parser_status=PARSER_STATUS_PARTIAL,
+            )
+
         status = (
             PARSER_STATUS_COMPLETE
-            if self._supports_version(version) and self._all_complements_registered(complements)
+            if (
+                self._supports_version(version)
+                and version in COMMON_COMPLETE_CFDI_VERSIONS
+                and self._all_complements_extracted(xml_bytes)
+            )
             else PARSER_STATUS_PARTIAL
         )
         return VersionedParsedCfdi(
@@ -106,8 +122,22 @@ class CommonCfdiParser:
     def _supports_version(self, version: str) -> bool:
         return not self.supported_versions or version in self.supported_versions
 
-    def _all_complements_registered(self, complements: tuple[str, ...]) -> bool:
-        return all(self.complement_registry.get(name) is not None for name in complements)
+    def _all_complements_extracted(self, xml_bytes: bytes) -> bool:
+        root = _parse_root(xml_bytes)
+        for complemento in _direct_children(root, "Complemento"):
+            for element in complemento:
+                name = _local_name(element.tag)
+                if name == STAMP_COMPLEMENT:
+                    continue
+                parser = self.complement_registry.get(name)
+                parse = getattr(parser, "parse", None)
+                if parse is None:
+                    return False
+                try:
+                    parse(element)
+                except Exception:
+                    return False
+        return True
 
 
 class CfdiParserV32(CommonCfdiParser):
@@ -161,6 +191,7 @@ def _local_name(tag: str) -> str:
 
 
 def _parse_root(xml_bytes: bytes) -> ET.Element:
+    _reject_doctype(xml_bytes)
     try:
         return ET.fromstring(xml_bytes)
     except ET.ParseError as exc:
