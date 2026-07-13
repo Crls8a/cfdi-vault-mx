@@ -3,8 +3,12 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+import pytest
 from cfdi_vault.service import VaultService
 from tests.conftest import write_xml
+
+
+pytestmark = pytest.mark.integration
 
 
 def test_summary_returns_totals_by_month_issuer_and_type(tmp_path: Path, reset_postgres_database: str) -> None:

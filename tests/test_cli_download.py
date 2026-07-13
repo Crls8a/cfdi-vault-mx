@@ -111,6 +111,7 @@ def test_download_request_prints_synthetic_accepted_result(tmp_path: Path) -> No
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
 
 
+@pytest.mark.integration
 def test_download_sync_cfdi_runs_fake_pipeline_without_sensitive_output(tmp_path: Path, reset_postgres_database: str) -> None:
     appdata_root = tmp_path / "appdata"
     paths = _write_setup_profile(appdata_root)
@@ -153,6 +154,7 @@ def test_download_sync_cfdi_runs_fake_pipeline_without_sensitive_output(tmp_path
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
 
 
+@pytest.mark.integration
 def test_download_status_reads_persisted_fake_sync_aggregates_safely(tmp_path: Path, reset_postgres_database: str) -> None:
     appdata_root = tmp_path / "appdata"
     _write_setup_profile(appdata_root)
@@ -203,6 +205,7 @@ def test_download_status_reads_persisted_fake_sync_aggregates_safely(tmp_path: P
     _assert_no_download_status_leaks(status.output, appdata_root)
 
 
+@pytest.mark.integration
 def test_download_status_missing_or_unknown_job_fails_safely(tmp_path: Path, reset_postgres_database: str) -> None:
     appdata_root = tmp_path / "appdata"
     paths = _write_setup_profile(appdata_root)
@@ -249,6 +252,7 @@ def test_download_status_missing_or_unknown_job_fails_safely(tmp_path: Path, res
     _assert_no_download_status_leaks(unknown_job.output, appdata_root)
 
 
+@pytest.mark.integration
 def test_download_sync_replay_same_criteria_returns_stable_result(tmp_path: Path, reset_postgres_database: str) -> None:
     appdata_root = tmp_path / "appdata"
     _write_setup_profile(appdata_root)

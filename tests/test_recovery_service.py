@@ -1,11 +1,15 @@
 from datetime import datetime, timezone
 
+import pytest
 from cfdi_vault.domain import DownloadDirection, QueueName, ReconciliationState, RequestType
 from cfdi_vault.fake_sat import FakeSatClient
 from cfdi_vault.recovery_db import CfdiDocument, CfdiMetadataLedger, SatPackageRecord, SatRequestRecord, XmlEvidence
 from cfdi_vault.recovery_service import RecoveryService, build_default_query, write_minimal_pdf
 from cfdi_vault.worker import RecoveryWorker
 from sqlalchemy import select
+
+
+pytestmark = pytest.mark.integration
 
 
 def _synthetic_metadata_bytes(*rows: tuple[str, str, str, str]) -> bytes:

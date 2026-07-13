@@ -4,7 +4,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECKER = REPO_ROOT / "scripts" / "check_branch_policy.py"
 
@@ -76,6 +75,60 @@ def test_feature_branch_based_on_dev_is_allowed(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "contains dev in its history" in result.stdout
+
+
+def test_explicit_branch_name_validates_detached_fork_pr_checkout(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    assert git(repo, "switch", "-c", "feat/fork-pr", "dev").returncode == 0
+    commit_file(repo, "feature.txt", "feature\n")
+    assert git(repo, "switch", "--detach").returncode == 0
+
+    result = run_checker(repo, "--strict", "--branch-name", "feat/fork-pr")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "branch=feat/fork-pr" in result.stdout
+    assert "contains dev in its history" in result.stdout
+
+
+def test_explicit_head_sha_rejects_synthetic_merge_false_pass(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    assert git(repo, "switch", "-c", "feat/from-main", "main").returncode == 0
+    commit_file(repo, "feature.txt", "feature\n")
+    feature_sha = git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    assert git(repo, "switch", "-c", "synthetic-merge").returncode == 0
+    merge = git(repo, "merge", "--no-ff", "dev", "-m", "test: synthetic merge")
+    assert merge.returncode == 0, merge.stdout + merge.stderr
+
+    synthetic = run_checker(repo, "--strict", "--branch-name", "feat/from-main")
+    actual_head = run_checker(
+        repo,
+        "--strict",
+        "--branch-name",
+        "feat/from-main",
+        "--head-sha",
+        feature_sha,
+    )
+
+    assert synthetic.returncode == 0, synthetic.stdout + synthetic.stderr
+    assert actual_head.returncode == 1
+    assert "appears to be based on main" in actual_head.stdout
+
+
+def test_explicit_head_sha_must_be_a_commit_sha(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+
+    result = run_checker(
+        repo,
+        "--strict",
+        "--branch-name",
+        "feat/example",
+        "--head-sha",
+        "HEAD; echo unsafe",
+    )
+
+    assert result.returncode == 1
+    assert "valid commit SHA" in result.stdout
 
 
 def test_feature_branch_based_on_main_is_detected_in_strict_mode(tmp_path: Path) -> None:

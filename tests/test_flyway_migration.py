@@ -78,6 +78,7 @@ def test_evidence_index_migration_is_additive_and_query_driven() -> None:
     assert "BYTEA" not in executable_sql.upper()
 
 
+@pytest.mark.integration
 def test_flyway_baseline_satisfies_runtime_schema_validation(reset_postgres_database: str) -> None:
     engine = create_engine_from_url(reset_postgres_database)
     try:
@@ -87,6 +88,7 @@ def test_flyway_baseline_satisfies_runtime_schema_validation(reset_postgres_data
         engine.dispose()
 
 
+@pytest.mark.integration
 def test_runtime_schema_validation_does_not_bootstrap_empty_database(reset_postgres_database: str) -> None:
     engine = create_engine_from_url(reset_postgres_database)
     try:
