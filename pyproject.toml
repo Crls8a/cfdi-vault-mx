@@ -33,6 +33,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0,<9.0",
+    "ruff>=0.12,<1.0",
 ]
 infra = [
     "pika>=1.3,<2.0",
@@ -57,6 +58,21 @@ cfdi-vault = "cfdi_vault.cli:app"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "integration: tests requiring real local integration services",
+    "container: tests requiring Docker containers or docker compose services",
+    "external: tests requiring external network services",
+    "live: tests that call real external/live systems such as SAT",
+    "slow: tests too expensive for default pull-request CI",
+    "ci: tests intended for default GitHub CI",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cfdi_vault"]

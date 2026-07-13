@@ -5,36 +5,22 @@ on:
   push:
     branches:
       - main
-      - develop
+      - dev
 
 permissions:
   contents: read
 
 jobs:
-  test:
-    name: Scanner and tests
+  lightweight-ci:
+    name: Policy, scanners, and unit tests
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_DB: cfdi_vault_test
-          POSTGRES_USER: cfdi_vault
-          POSTGRES_PASSWORD: cfdi_vault
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U cfdi_vault -d cfdi_vault_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      CFDI_VAULT_TEST_DATABASE_URL: postgresql+psycopg://cfdi_vault:cfdi_vault@localhost:5432/cfdi_vault_test
-      DATABASE_URL: postgresql+psycopg://cfdi_vault:cfdi_vault@localhost:5432/cfdi_vault_test
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -46,90 +32,51 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: Run sensitive fixture scanner
+      - name: Run static policy checks
+        env:
+          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python scripts/check_branch_policy.py --strict --branch-name "$BRANCH_NAME" --head-sha "$HEAD_SHA"
+          python scripts/work_orchestrator.py validate
+          python scripts/work_orchestrator.py status
+          python scripts/check_ci_policy.py --strict
+
+      - name: Run focused lint
+        run: |
+          python -m ruff check scripts/check_ci_policy.py scripts/check_branch_policy.py tests/test_ci_policy.py tests/test_branch_policy.py tests/test_work_orchestrator.py
+
+      - name: Check changed lines for whitespace errors
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base="$BASE_SHA"
+            git diff --check "$base...HEAD"
+          else
+            before="$BEFORE_SHA"
+            if [[ "$before" =~ ^0+$ ]]; then
+              empty_tree="$(git hash-object -t tree /dev/null)"
+              git diff --check "$empty_tree" "$HEAD_SHA"
+            else
+              git diff --check "$before..$HEAD_SHA"
+            fi
+          fi
+
+      - name: Run safety scanners
         run: |
           python scripts/scan_sensitive_fixtures.py
+          python scripts/scan_sat_context.py
 
-      - name: Run Flyway migrations
+      - name: Run default CI tests
         run: |
-          docker run --rm --network host \
-            -v "$PWD/db/migration:/flyway/sql:ro" \
-            redgate/flyway \
-            -url=jdbc:postgresql://localhost:5432/cfdi_vault_test \
-            -user=cfdi_vault \
-            -password=cfdi_vault \
-            -locations=filesystem:/flyway/sql \
-            -cleanDisabled=true \
-            migrate
+          python -m pytest -q -m "not integration and not container and not external and not live and not slow"
 
-      - name: Run tests
+      - name: Validate Docker Compose configuration only
         run: |
-          python -m pytest -q
-
-  rabbitmq-integration:
-    name: RabbitMQ integration
-    runs-on: ubuntu-latest
-    services:
-      rabbitmq:
-        image: rabbitmq:3.13-alpine
-        ports:
-          - 5672:5672
-        options: >-
-          --health-cmd "rabbitmq-diagnostics -q ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      CFDI_VAULT_TEST_RABBITMQ_URL: amqp://guest:guest@localhost:5672/
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install package with infrastructure extras
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,infra]"
-
-      - name: Run RabbitMQ integration tests
-        run: |
-          python -m pytest tests/test_rabbitmq_integration.py -q
-
-  redis-integration:
-    name: Redis integration
-    runs-on: ubuntu-latest
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      CFDI_VAULT_TEST_REDIS_URL: redis://localhost:6379/15
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install package with infrastructure extras
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,infra]"
-
-      - name: Run Redis integration tests
-        run: |
-          python -m pytest tests/test_redis_integration.py -q
+          docker compose config --quiet
+          docker compose --profile object-storage config --quiet

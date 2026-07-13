@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from cfdi_vault.adapters.cli import setup as setup_cli
@@ -122,6 +123,7 @@ def test_status_cli_reports_missing_profile_with_redaction(tmp_path: Path) -> No
     assert str(appdata_root) not in result.output
 
 
+@pytest.mark.integration
 def test_doctor_includes_setup_status_without_failing_on_missing_profile(tmp_path: Path, reset_postgres_database: str) -> None:
     appdata_root = tmp_path / "appdata"
     storage_root = tmp_path / "storage"

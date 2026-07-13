@@ -4,11 +4,15 @@ from decimal import Decimal
 from pathlib import Path
 from zipfile import ZipFile
 
+import pytest
 from sqlalchemy import select
 
 from cfdi_vault.db import Invoice
 from cfdi_vault.service import VaultService
 from tests.conftest import write_xml
+
+
+pytestmark = pytest.mark.integration
 
 
 def test_import_xml_stores_invoice_and_hash(tmp_path: Path, sample_xml: bytes, reset_postgres_database: str) -> None:

@@ -111,6 +111,17 @@ Use `python scripts/work_orchestrator.py status` before starting a new wave.
    .\.venv\Scripts\python.exe -m pytest
    ```
 
+### Lightweight CI policy
+
+GitHub CI runs static checks, scanners, hermetic unit/offline tests, and config-only Docker Compose validation. Container-backed integration tests and SAT live gates are manual/local only.
+
+```bash
+python scripts/check_ci_policy.py --strict
+pytest -m "not integration and not container and not external and not live and not slow"
+```
+
+See `docs/ci-test-policy.md` for the Tier 0-4 boundary and marker rules.
+
 ## Docker Compose path
 
 ```powershell

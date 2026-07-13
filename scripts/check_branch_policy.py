@@ -9,7 +9,6 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-
 ALLOWED_WORK_BRANCH = re.compile(r"^(feature|feat|chore|test|fix|docs|refactor)/.+")
 PERMANENT_BRANCHES = {"main", "dev"}
 
@@ -67,8 +66,8 @@ def is_ancestor(repo: Path, ancestor: str, descendant: str = "HEAD") -> bool | N
     return None
 
 
-def commits_not_in_head(repo: Path, ref: str) -> int | None:
-    result = run_git(repo, "rev-list", "--count", f"HEAD..{ref}")
+def commits_not_in_ref(repo: Path, descendant: str, ref: str) -> int | None:
+    result = run_git(repo, "rev-list", "--count", f"{descendant}..{ref}")
     if result.returncode != 0:
         return None
     try:
@@ -77,9 +76,14 @@ def commits_not_in_head(repo: Path, ref: str) -> int | None:
         return None
 
 
-def evaluate(repo: Path) -> PolicyResult:
+def evaluate(
+    repo: Path,
+    *,
+    branch_name: str | None = None,
+    head_sha: str | None = None,
+) -> PolicyResult:
     messages: list[str] = []
-    branch = current_branch(repo)
+    branch = branch_name or current_branch(repo)
     if branch is None:
         return PolicyResult(
             branch="(detached)",
@@ -87,6 +91,24 @@ def evaluate(repo: Path) -> PolicyResult:
             strict_failure=True,
             messages=("ERROR: could not detect the current branch.",),
         )
+
+    descendant = "HEAD"
+    if head_sha is not None:
+        if not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", head_sha):
+            return PolicyResult(
+                branch=branch,
+                ok=False,
+                strict_failure=True,
+                messages=("ERROR: --head-sha must be a valid commit SHA.",),
+            )
+        if run_git(repo, "cat-file", "-e", f"{head_sha}^{{commit}}").returncode != 0:
+            return PolicyResult(
+                branch=branch,
+                ok=False,
+                strict_failure=True,
+                messages=("ERROR: --head-sha does not identify an available commit.",),
+            )
+        descendant = head_sha
 
     dev_ref = resolve_dev_ref(repo)
     if dev_ref is None:
@@ -113,7 +135,7 @@ def evaluate(repo: Path) -> PolicyResult:
             "fix/, docs/, or refactor/."
         )
 
-    dev_is_ancestor = is_ancestor(repo, dev_ref)
+    dev_is_ancestor = is_ancestor(repo, dev_ref, descendant)
     if dev_is_ancestor is True:
         messages.append("OK: current branch contains dev in its history.")
         return PolicyResult(branch=branch, ok=True, strict_failure=False, messages=tuple(messages))
@@ -122,9 +144,11 @@ def evaluate(repo: Path) -> PolicyResult:
         messages.append("WARNING: could not compare current branch against dev.")
         return PolicyResult(branch=branch, ok=True, strict_failure=False, messages=tuple(messages))
 
-    missing_count = commits_not_in_head(repo, dev_ref)
+    missing_count = commits_not_in_ref(repo, descendant, dev_ref)
     main_is_ancestor = (
-        is_ancestor(repo, "main") if ref_exists(repo, "refs/heads/main") else None
+        is_ancestor(repo, "main", descendant)
+        if ref_exists(repo, "refs/heads/main")
+        else None
     )
     if main_is_ancestor is True and missing_count and missing_count > 0:
         messages.append(
@@ -141,13 +165,25 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check dev-first branch policy alignment.")
     parser.add_argument("--repo", type=Path, default=Path.cwd(), help="Repository root.")
     parser.add_argument(
+        "--branch-name",
+        help="Explicit event branch name for detached CI checkouts.",
+    )
+    parser.add_argument(
+        "--head-sha",
+        help="Explicit event head commit SHA to validate instead of the checkout HEAD.",
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         help="Exit non-zero when the current branch appears not to be based on dev.",
     )
     args = parser.parse_args(argv)
 
-    result = evaluate(args.repo.resolve())
+    result = evaluate(
+        args.repo.resolve(),
+        branch_name=args.branch_name,
+        head_sha=args.head_sha,
+    )
     print(f"branch={result.branch}")
     for message in result.messages:
         print(message)

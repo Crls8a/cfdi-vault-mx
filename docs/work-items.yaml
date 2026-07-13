@@ -136,3 +136,29 @@ items:
       diff_check: passed
       sensitive_scanner: passed
       sat_context_scanner: passed
+  - id: CI-001
+    title: Lightweight GitHub CI test boundary
+    kind: feature
+    module: workflow
+    wave: governance
+    owner: human
+    agent: codex
+    status: in_progress
+    branch: feature/lightweight-ci-test-boundary
+    base_branch: dev
+    base_commit: 17aff75f8377dcb1203fbb319773628c148467b4
+    base_source: clean local dev with ORCH-001; origin/dev at 599a7358648c2a4cfdb9bbaf9568e84cd52d39e4
+    target_branch: dev
+    issue: null
+    required_issue_label: status:approved
+    required_pr_type_label: type:feature
+    dependencies:
+      - INTEGRATION-WAVE1-WAVE2
+    blockers: []
+    gates:
+      ci_policy_check: required
+      targeted_pytest: required
+      sensitive_scanner: required
+      sat_context_scanner: required
+      diff_check: required
+      full_pytest: optional
