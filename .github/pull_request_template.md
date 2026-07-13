@@ -4,6 +4,7 @@
 - [ ] If this PR targets `main`, it is a documented release or hotfix.
 - [ ] The branch was created from `dev` or from a subbranch that converges into `dev`.
 - [ ] No unrelated changes are mixed into this PR.
+- [ ] Work item exists in `docs/work-items.yaml`, or this PR explains why it is exempt.
 
 ## Safety
 

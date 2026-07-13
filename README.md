@@ -37,6 +37,11 @@ Live SAT SOAP access is still intentionally disabled until signing, credential c
 
 Use `dev` as the integration branch for normal feature, chore, test, refactor, and documentation work. `main` is reserved for release merges and documented hotfix exceptions. See `docs/branching-policy.md` before opening a pull request.
 
+### Work orchestration
+
+Feature/module coordination is tracked in `docs/work-items.yaml`.
+Use `python scripts/work_orchestrator.py status` before starting a new wave.
+
 ## Quick path
 
 1. Create a local Python 3.12 environment.
