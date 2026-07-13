@@ -6,11 +6,14 @@ items:
     wave: integration
     owner: human
     agent: coordinator
-    status: awaiting_approval
+    status: integrated_remote
     branch: integration/dev-wave1-wave2
     base_branch: dev
     target_branch: dev
     issue: 200
+    pull_request: 201
+    merge_commit: 599a7358648c2a4cfdb9bbaf9568e84cd52d39e4
+    merge_commit_short: 599a735
     required_issue_label: status:approved
     required_pr_type_label: type:feature
     dependencies:
@@ -26,10 +29,13 @@ items:
       sat_context_scanner: passed
       diff_check: passed
       full_pytest: "620 passed, 31 skipped"
+      issue_approval_status_approved: passed
+      pr_type_feature: passed
+      remote_integration: passed
     notes:
-      - origin/dev has not advanced
-      - branch already published
-      - PR not created
+      - PR #201 merged into dev
+      - "issue #200 approved with status:approved"
+      - origin/dev at 599a735 contains Wave 1 and Wave 2
   - id: LIB-005B
     title: Wave 1 library work
     kind: feature
@@ -37,7 +43,7 @@ items:
     wave: Wave 1
     owner: human
     agent: codex
-    status: integrated_local
+    status: integrated_remote
     branch: feature/lib-005b
     base_branch: dev
     target_branch: dev
@@ -52,7 +58,7 @@ items:
     wave: Wave 1
     owner: human
     agent: codex
-    status: integrated_local
+    status: integrated_remote
     branch: feature/queue-004
     base_branch: dev
     target_branch: dev
@@ -67,7 +73,7 @@ items:
     wave: Wave 1
     owner: human
     agent: codex
-    status: integrated_local
+    status: integrated_remote
     branch: feature/parser-005b
     base_branch: dev
     target_branch: dev
@@ -82,7 +88,7 @@ items:
     wave: Wave 2
     owner: human
     agent: codex
-    status: integrated_local
+    status: integrated_remote
     branch: feature/cache-003
     base_branch: dev
     target_branch: dev
@@ -97,7 +103,7 @@ items:
     wave: Wave 2
     owner: human
     agent: codex
-    status: integrated_local
+    status: integrated_remote
     branch: feature/stor-004b
     base_branch: dev
     target_branch: dev
@@ -116,9 +122,9 @@ items:
     branch: feature/module-feature-work-orchestration
     base_branch: dev
     base_commit: 599a7358648c2a4cfdb9bbaf9568e84cd52d39e4
-    base_source: clean local dev ahead of origin/dev
+    base_source: origin/dev at 599a735
     target_branch: dev
-    issue: null
+    issue: 202
     required_issue_label: status:approved
     required_pr_type_label: type:feature
     dependencies:
