@@ -118,13 +118,14 @@ items:
     wave: governance
     owner: human
     agent: codex
-    status: completed
+    status: integrated_local
     branch: feature/module-feature-work-orchestration
     base_branch: dev
     base_commit: 599a7358648c2a4cfdb9bbaf9568e84cd52d39e4
     base_source: origin/dev at 599a735
     target_branch: dev
     issue: 202
+    pull_request: 203
     required_issue_label: status:approved
     required_pr_type_label: type:feature
     dependencies:
@@ -136,6 +137,10 @@ items:
       diff_check: passed
       sensitive_scanner: passed
       sat_context_scanner: passed
+    notes:
+      - completed locally
+      - included in integration/dev-governance-ci
+      - PR #203 remains open and is not merged into origin/dev
   - id: CI-001
     title: Lightweight GitHub CI test boundary
     kind: feature
@@ -143,7 +148,7 @@ items:
     wave: governance
     owner: human
     agent: codex
-    status: in_progress
+    status: integrated_local
     branch: feature/lightweight-ci-test-boundary
     base_branch: dev
     base_commit: 17aff75f8377dcb1203fbb319773628c148467b4
@@ -156,9 +161,51 @@ items:
       - INTEGRATION-WAVE1-WAVE2
     blockers: []
     gates:
-      ci_policy_check: required
-      targeted_pytest: required
-      sensitive_scanner: required
-      sat_context_scanner: required
-      diff_check: required
-      full_pytest: optional
+      ci_policy_check: passed
+      targeted_pytest: passed
+      ci_subset_pytest: passed
+      sensitive_scanner: passed
+      sat_context_scanner: passed
+      diff_check: passed
+      focused_ruff: passed
+      compose_config: passed
+      object_storage_config: passed
+      full_pytest: "714 passed, 31 skipped"
+    notes:
+      - completed locally
+      - included in integration/dev-governance-ci
+      - not published or integrated into origin/dev
+  - id: INTEGRATION-GOV-CI
+    title: Integrate ORCH-001 and CI-001 into dev
+    kind: integration
+    module: repo-governance
+    wave: governance
+    owner: human
+    agent: coordinator
+    status: local_ready
+    branch: integration/dev-governance-ci
+    base_branch: dev
+    base_commit: 599a7358648c2a4cfdb9bbaf9568e84cd52d39e4
+    base_source: origin/dev at 599a735
+    target_branch: dev
+    issue: null
+    required_issue_label: status:approved
+    required_pr_type_label: type:feature
+    dependencies:
+      - ORCH-001
+      - CI-001
+    blockers: []
+    gates:
+      work_orchestrator: passed
+      ci_policy_check: passed
+      ci_subset_pytest: passed
+      sensitive_scanner: passed
+      sat_context_scanner: passed
+      diff_check: passed
+      focused_ruff: passed
+      compose_config: passed
+      object_storage_config: passed
+      full_pytest: "714 passed, 31 skipped"
+    notes:
+      - local cut only; not published or integrated into origin/dev
+      - Wave 3 remains blocked until this cut reaches origin/dev

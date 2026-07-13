@@ -16,11 +16,26 @@ merges.
 
 - `dev` is the integration branch; `main` is reserved for releases.
 - Every feature, chore, and test branch converges into `dev`.
-- No wave starts until dependencies are in `origin/dev`, unless a clean local
-  `dev` base is explicitly authorized and recorded.
+- No wave starts until its required integration cut is present in `origin/dev`.
 - Green tests do not replace fresh review.
 - Every feature records module, owner, issue, branch, base, target, gates, and status.
 - `status:approved` is an issue label. Exactly one `type:*` label belongs on the PR.
+
+## Local-first integration model
+
+This project uses local-first integration for active development.
+
+- `dev` local may be ahead of `origin/dev` while a wave is being assembled.
+- `origin/dev` is updated only through controlled integration cuts.
+- Feature work starts from the current approved `dev` baseline.
+- Remote PRs are created only after a local cut passes fresh review and gates.
+- GitHub CI is intentionally lightweight and must not run heavy services by default.
+- Container-backed checks remain local/manual unless explicitly promoted.
+- Wave 3 or later work must not start until the required integration cut is present in `origin/dev`.
+
+For the current governance transition, ORCH-001 and CI-001 converge locally in
+`integration/dev-governance-ci`. That cut is the single publication unit; its
+local readiness does not mean it has reached `origin/dev`.
 
 ## Levels
 
@@ -38,8 +53,8 @@ cleared. PR readiness also requires an approved issue and exactly one declared
 PR `type:*` label. Normal work targeting anything other than `dev` is invalid;
 `main` produces an explicit release-only warning.
 
-Wave 3 is **blocked** while `INTEGRATION-WAVE1-WAVE2` is blocked or absent from
-`origin/dev`. Local integration does not satisfy that remote dependency.
+Wave 3 is **blocked** until `INTEGRATION-GOV-CI` is integrated remotely in
+`origin/dev`. A `local_ready` cut does not satisfy that remote dependency.
 
 ## Maintenance
 

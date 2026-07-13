@@ -12,6 +12,7 @@ from typing import Any
 
 DEFAULT_PATH = Path(__file__).resolve().parents[1] / "docs" / "work-items.yaml"
 REQUIRED = {"id", "title", "kind", "module", "status", "branch", "base_branch", "target_branch", "gates"}
+GOVERNANCE_CUT_ID = "INTEGRATION-GOV-CI"
 
 
 class WorkItemsError(ValueError):
@@ -133,6 +134,21 @@ def coordination_blockers(document: dict[str, Any], item: dict[str, Any]) -> lis
     return list(dict.fromkeys(blockers))
 
 
+def wave3_blocker(document: dict[str, Any]) -> str | None:
+    """Return the remote governance gate that must clear before Wave 3."""
+    try:
+        governance_cut = item_by_id(document, GOVERNANCE_CUT_ID)
+    except WorkItemsError:
+        return f"{GOVERNANCE_CUT_ID} is missing from the work-item registry"
+    status = governance_cut.get("status")
+    if status == "integrated_remote":
+        return None
+    return (
+        f"{GOVERNANCE_CUT_ID} must be integrated in origin/dev "
+        f"(current status: {status})"
+    )
+
+
 def _issue_labels(issue: int) -> list[str] | None:
     if not shutil.which("gh"): return None
     try:
@@ -192,13 +208,16 @@ def main(argv: list[str] | None = None) -> int:
             for item in items: print(f"{item['id']}: {item['title']}")
         elif args.command == "status":
             for item in items: print(f"{item['id']}: {item['status']} | {item['branch']} -> {item['target_branch']}")
-            if item_by_id(document, "INTEGRATION-WAVE1-WAVE2")["status"] != "integrated_remote": print("Wave 3: BLOCKED until INTEGRATION-WAVE1-WAVE2 is integrated in origin/dev")
+            wave3 = wave3_blocker(document)
+            if wave3: print(f"Wave 3: BLOCKED: {wave3}")
         elif args.command == "blocked":
             for item in items:
                 local = coordination_blockers(document, item)
                 if item.get("required_issue_label") and item.get("issue") and item.get("status") == "awaiting_approval":
                     local.append(f"issue #{item['issue']} requires {item['required_issue_label']}")
                 if local: print(f"Blocked: {item['id']}: {'; '.join(local)}")
+            wave3 = wave3_blocker(document)
+            if wave3: print(f"Blocked: Wave 3: {wave3}")
         else:
             item = item_by_id(document, args.id)
             if args.command == "item": print(json.dumps(item, indent=2))

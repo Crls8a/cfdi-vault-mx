@@ -11,6 +11,7 @@ from scripts.work_orchestrator import (
     parse_restricted_yaml,
     pr_readiness,
     validate_document,
+    wave3_blocker,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,6 +81,19 @@ def test_integrated_remote_dependency_does_not_block_orch():
     assert pr_readiness(
         publishable, issue_labels=["status:approved"], document=document,
     ) == (True, [], [])
+
+
+def test_wave3_stays_blocked_until_governance_cut_reaches_origin_dev():
+    document = source()
+    governance_cut = item_by_id(document, "INTEGRATION-GOV-CI")
+    assert governance_cut["status"] == "local_ready"
+    assert wave3_blocker(document) == (
+        "INTEGRATION-GOV-CI must be integrated in origin/dev "
+        "(current status: local_ready)"
+    )
+
+    governance_cut["status"] = "integrated_remote"
+    assert wave3_blocker(document) is None
 
 
 def test_non_ready_status_blocks_readiness():
