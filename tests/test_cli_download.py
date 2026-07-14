@@ -430,6 +430,21 @@ def test_download_sync_live_option_is_rejected_without_running(tmp_path: Path) -
     assert "mode=fake" not in result.output
 
 
+def test_live_smoke_doctor_checks_local_storage_without_database_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    paths = _write_ready_setup_profile(appdata_root)
+    profile = setup_flow.load_profile("dummy-profile", env={"LOCALAPPDATA": str(appdata_root)})
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    assert common_cli._live_smoke_doctor_ok(profile) is True
+
+    paths.storage_root.rmdir()
+    assert common_cli._live_smoke_doctor_ok(profile) is False
+
+
 @pytest.mark.parametrize(
     ("args", "env_overrides", "interactive", "checkout", "doctor_ok", "reason"),
     [

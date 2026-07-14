@@ -313,11 +313,9 @@ def _validate_live_smoke_guard(
     return permit_verified
 
 def _live_smoke_doctor_ok(profile: setup_flow.LocalProfile) -> bool:
-    service = _download_profile_service(profile)
-    try:
-        return all(check.ok for check in service.doctor())
-    finally:
-        service.close()
+    """Check the local runtime dependency required by SAT live commands."""
+
+    return profile.storage_root.is_dir()
 
 def _checkout_guard_status() -> tuple[bool, bool]:
     repo_root = _find_checkout_root(Path.cwd())
