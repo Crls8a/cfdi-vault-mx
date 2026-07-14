@@ -6,6 +6,11 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+try:
+    from click.utils import strip_ansi
+except ModuleNotFoundError:
+    from typer._click.utils import strip_ansi
+
 from cfdi_vault.adapters.cli import storage as storage_cli
 from cfdi_vault.cli import app
 from cfdi_vault.storage_contract import (
@@ -324,8 +329,9 @@ def test_storage_command_help_uses_the_documented_storage_option(command: str) -
     result = CliRunner().invoke(app, ["storage", command, "--help"])
 
     assert result.exit_code == 0, result.output
-    assert "--storage" in result.output
-    assert "--storage-root" not in result.output
+    output = strip_ansi(result.output)
+    assert "--storage" in output
+    assert "--storage-root" not in output
 
 
 @pytest.mark.parametrize("command", ["status", "locate"])
