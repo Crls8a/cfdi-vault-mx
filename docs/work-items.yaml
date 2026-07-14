@@ -218,13 +218,13 @@ items:
       full_pytest: "714 passed, 31 skipped"
     notes:
       - GOV-001 is represented by INTEGRATION-GOV-CI and is now present in origin/dev
-      - Wave 3 is planned from updated dev and can start only after explicit human approval
+      - Local implementation of LIB-005C and CLI-001 is authorized; remote publication remains prohibited
   - id: LIB-005C
     title: Add SAT v1.5 import-first facade
     kind: feature
     module: sat-download
     wave: Wave 3
-    status: planned
+    status: in_progress
     branch: feature/sat-v15-facade
     base_branch: dev
     target_branch: dev
@@ -239,14 +239,14 @@ items:
       sat_context_scanner: required
       diff_check: required
     notes:
-      - Candidate only; no implementation branch or agent is authorized
+      - Local implementation authorized; remote publication remains prohibited
       - "Evidence: docs/planning/backlog.md and missing src/cfdi_vault/sat_download.py"
   - id: CLI-001
     title: Add safe storage status and locate commands
     kind: feature
     module: cli
     wave: Wave 3
-    status: planned
+    status: in_progress
     branch: feature/storage-observability-cli
     base_branch: dev
     target_branch: dev
@@ -260,13 +260,13 @@ items:
       sensitive_scanner: required
       diff_check: required
     notes:
-      - Candidate only; no implementation branch or agent is authorized
+      - Local implementation authorized; remote publication remains prohibited
       - Filesystem-first commands must not require MinIO or Docker services
       - "Future gate: create tests/test_cli_storage_commands.py with injected fakes and no PostgreSQL or services"
       - Existing tests/test_cli_storage.py is optional Tier 3 PostgreSQL integration evidence
       - "Evidence: docs/foundation/storage-and-retention.md and docs/planning/cli-command-parity-report.md"
 wave3:
-  status: planned
-  started: false
-  human_approval: required
+  status: in_progress
+  started: true
+  human_approval: approved
   dependency: INTEGRATION-GOV-CI

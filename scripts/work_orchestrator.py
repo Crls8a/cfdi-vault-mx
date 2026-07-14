@@ -427,6 +427,8 @@ def next_action(document: dict[str, Any]) -> str:
     wave3 = document.get("wave3", {})
     if wave3.get("status") == "planned" and wave3.get("started") is False and wave3.get("human_approval") == "required":
         return "Next: Wave 3 is planned from updated dev and can start only after explicit human approval."
+    if wave3.get("status") == "in_progress" and wave3.get("started") is True and wave3.get("human_approval") == "approved":
+        return "Next: complete the authorized local Wave 3 features and required gates; remote publication is not authorized."
     return "Next: reconcile Wave 3 state before continuing."
 
 

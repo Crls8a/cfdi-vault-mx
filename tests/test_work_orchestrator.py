@@ -88,13 +88,13 @@ def test_integrated_remote_dependency_does_not_block_orch():
     ) == (True, [], [])
 
 
-def test_wave3_stays_human_gated_after_governance_reaches_origin_dev():
+def test_wave3_records_explicit_authorization_without_a_remote_blocker():
     document = source()
     assert item_by_id(document, "INTEGRATION-GOV-CI")["status"] == "integrated_remote"
     assert wave3_blocker(document) is None
     assert document["wave3"] == {
-        "status": "planned", "started": False,
-        "human_approval": "required", "dependency": "INTEGRATION-GOV-CI",
+        "status": "in_progress", "started": True,
+        "human_approval": "approved", "dependency": "INTEGRATION-GOV-CI",
     }
 
 
@@ -323,7 +323,7 @@ def test_wave3_cross_fields_fail_closed(wave3):
     assert validate_document({"items": [item], "wave3": wave3})[0]
 
 
-def test_state_commands_are_offline_and_human_gated(monkeypatch, capsys):
+def test_state_commands_are_offline_and_report_authorized_local_work(monkeypatch, capsys):
     def no_network(*_args, **_kwargs):
         pytest.fail("state command attempted network access")
 
@@ -333,8 +333,26 @@ def test_state_commands_are_offline_and_human_gated(monkeypatch, capsys):
         assert main([command]) == 0
     output = capsys.readouterr().out
     assert "Remote blockers: none" in output
-    assert "planned | not started | human approval required" in output
-    assert "only after explicit human approval" in output
+    assert "in_progress | started | human approval approved" in output
+    assert "complete the authorized local Wave 3 features" in output
+    assert "remote publication is not authorized" in output
+
+
+def test_planned_wave3_command_path_requires_explicit_human_approval(monkeypatch, capsys):
+    document = source()
+    document["wave3"].update(
+        status="planned", started=False, human_approval="required",
+    )
+    monkeypatch.setattr(
+        "scripts.work_orchestrator.load_work_items", lambda _path: document,
+    )
+
+    assert main(["blocked"]) == 0
+    assert main(["next"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Blocked: Wave 3 start requires explicit human approval" in output
+    assert "can start only after explicit human approval" in output
 
 
 @pytest.mark.parametrize(
@@ -449,7 +467,7 @@ def test_wave3_remote_gate_uses_declared_dependency(dependency, status, blocked)
     else:
         item_by_id(document, "INTEGRATION-GOV-CI")["status"] = "blocked"
         assert wave3_blocker(document) is None
-        assert "only after explicit human approval" in next_action(document)
+        assert "complete the authorized local Wave 3 features" in next_action(document)
 
 
 @pytest.mark.parametrize("target", ["main", "feature/other", "", None, True, [], {}])
