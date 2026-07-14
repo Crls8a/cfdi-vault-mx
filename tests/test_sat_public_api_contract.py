@@ -5,13 +5,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_DOC = ROOT / "docs" / "api" / "sat-v15-public-api.md"
 SOURCE_PACKAGE = ROOT / "src" / "cfdi_vault"
 
 
-def test_sat_public_contract_lists_lib_005b_supported_imports() -> None:
+def test_sat_public_contract_lists_supported_lib_005b_and_005c_imports() -> None:
     text = CONTRACT_DOC.read_text(encoding="utf-8")
     section = re.search(
         r"<!-- supported-imports:start -->(.*?)<!-- supported-imports:end -->",
@@ -26,7 +25,8 @@ def test_sat_public_contract_lists_lib_005b_supported_imports() -> None:
     assert "cfdi_vault.sat_contract.SatError" in supported
     assert "cfdi_vault.fake_sat.FakeSatRequester" in supported
     assert "cfdi_vault.ports.SatRequestPort" in supported
-    assert "cfdi_vault.sat_download" not in supported
+    assert "cfdi_vault.sat_download.SatDownloadFacade" in supported
+    assert "cfdi_vault.sat_download.create_offline_facade" in supported
 
 
 def test_sat_public_contract_classifies_every_existing_sat_module() -> None:
@@ -123,5 +123,7 @@ assert not blocked.intersection(sys.modules)
     assert completed.returncode == 0, completed.stderr
 
 
-def test_sat_download_facade_is_not_created_before_lib_005c() -> None:
-    assert not (SOURCE_PACKAGE / "sat_download.py").exists()
+def test_sat_download_facade_is_promoted_by_lib_005c() -> None:
+    assert (SOURCE_PACKAGE / "sat_download.py").is_file()
+    text = CONTRACT_DOC.read_text(encoding="utf-8")
+    assert "future `cfdi_vault.sat_download` facade" not in text

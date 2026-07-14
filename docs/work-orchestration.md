@@ -7,7 +7,8 @@ waves, branches, issues, approvals, labels, dependencies, and gates.
 
 1. `python scripts/work_orchestrator.py validate`
 2. `python scripts/work_orchestrator.py status`
-3. `python scripts/work_orchestrator.py pr-ready <ID>`
+3. `python scripts/work_orchestrator.py next`
+4. `python scripts/work_orchestrator.py pr-ready <ID>` for publication readiness
 
 The tool reports state only. It never changes labels, opens a PR, pushes, or
 merges.
@@ -18,8 +19,11 @@ merges.
 - Every feature, chore, and test branch converges into `dev`.
 - No wave starts until its required integration cut is present in `origin/dev`.
 - Green tests do not replace fresh review.
-- Every feature records module, owner, issue, branch, base, target, gates, and status.
-- `status:approved` is an issue label. Exactly one `type:*` label belongs on the PR.
+- Dependencies and blockers are lists of unique, trim-aware, non-empty strings.
+- Required scalar fields and Wave 3 references are non-empty strings.
+- Declared local quality gates use exact `passed` evidence; arbitrary truthy values fail.
+- Remote cuts require positive integer issue/PR references, `status:approved`,
+  and exactly one lowercase canonical `type:<name>` PR label.
 
 ## Local-first integration model
 
@@ -33,9 +37,25 @@ This project uses local-first integration for active development.
 - Container-backed checks remain local/manual unless explicitly promoted.
 - Wave 3 or later work must not start until the required integration cut is present in `origin/dev`.
 
-For the current governance transition, ORCH-001 and CI-001 converge locally in
-`integration/dev-governance-ci`. That cut is the single publication unit; its
-local readiness does not mean it has reached `origin/dev`.
+ORCH-001 and CI-001 reached `origin/dev` through the single GOV-001 publication
+unit recorded as `INTEGRATION-GOV-CI`.
+
+## Ceremony boundary
+
+Local feature states (`planned` through `local_integrated`) require local gates,
+dependencies, blockers, and fresh review, but no issue, remote branch, PR, or
+label. Readiness, blockers, and generated prompts require a globally valid
+registry and its exact authoritative item; malformed or forged context fails closed.
+
+Integration cuts use `cut_ready → published_pr → integrated_remote`. Both
+`kind: integration` and an `integration/*` branch are required; disagreement
+fails closed. Publication retains the approved issue, canonical type label, PR
+to `dev`, and exact lightweight-CI `passed` evidence. Integration cuts never
+target release-only `main`; a future release kind must define that flow.
+
+The sole historical exception is a complete `integrated_remote` integration
+record marked `legacy_pre_ci001`, with truthful publication metadata and both
+CI gates exactly `not_run_pre_ci001`. It never authorizes `pr-ready`.
 
 ## Levels
 
@@ -48,17 +68,24 @@ local readiness does not mean it has reached `origin/dev`.
 
 ## Progression rules
 
-A work item progresses only when dependencies and gates pass and blockers are
-cleared. PR readiness also requires an approved issue and exactly one declared
-PR `type:*` label. Normal work targeting anything other than `dev` is invalid;
-`main` produces an explicit release-only warning.
+A work item progresses only when its shared schema and invariants validate,
+dependencies are integrated, blockers are cleared, and required gates have exact
+pass evidence. `INTEGRATION-GOV-CI` is integrated remotely; Wave 3 remains
+planned and can start only after explicit human approval. Active or completed
+Wave 3 state requires both `started: true` and `human_approval: approved`.
+The remote gate resolves the exact item named by `wave3.dependency`; no fixed
+integration-cut ID can substitute for that declaration.
 
-Wave 3 is **blocked** until `INTEGRATION-GOV-CI` is integrated remotely in
-`origin/dev`. A `local_ready` cut does not satisfy that remote dependency.
+## Wave 3 planning boundary
+
+[Wave 3](waves/wave-3-plan.md) is a two-feature, planning-only proposal. No
+candidate has an assigned owner, created implementation branch, or active
+agent. After separate human approval, at most two local feature agents may work
+in parallel; remote issue/PR ceremony remains deferred to one final
+`integration/dev-wave3-offline-access` cut.
 
 ## Maintenance
 
 - Update work-item state in the same work unit as its coordination change.
-- Write actionable blockers rather than relying on prompt context.
 - Never record secrets, credentials, complete fiscal identifiers, or local paths.
 - Re-run `validate` after changing dependencies or state.
