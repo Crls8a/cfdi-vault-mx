@@ -76,6 +76,14 @@ Wave 3 state requires both `started: true` and `human_approval: approved`.
 The remote gate resolves the exact item named by `wave3.dependency`; no fixed
 integration-cut ID can substitute for that declaration.
 
+## Wave 3 planning boundary
+
+[Wave 3](waves/wave-3-plan.md) is a two-feature, planning-only proposal. No
+candidate has an assigned owner, created implementation branch, or active
+agent. After separate human approval, at most two local feature agents may work
+in parallel; remote issue/PR ceremony remains deferred to one final
+`integration/dev-wave3-offline-access` cut.
+
 ## Maintenance
 
 - Update work-item state in the same work unit as its coordination change.

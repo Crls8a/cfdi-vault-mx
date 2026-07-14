@@ -219,6 +219,52 @@ items:
     notes:
       - GOV-001 is represented by INTEGRATION-GOV-CI and is now present in origin/dev
       - Wave 3 is planned from updated dev and can start only after explicit human approval
+  - id: LIB-005C
+    title: Add SAT v1.5 import-first facade
+    kind: feature
+    module: sat-download
+    wave: Wave 3
+    status: planned
+    branch: feature/sat-v15-facade
+    base_branch: dev
+    target_branch: dev
+    dependencies:
+      - LIB-005B
+    blockers: []
+    gates:
+      targeted_pytest: required
+      focused_ruff: required
+      fresh_review: required
+      sensitive_scanner: required
+      sat_context_scanner: required
+      diff_check: required
+    notes:
+      - Candidate only; no implementation branch or agent is authorized
+      - "Evidence: docs/planning/backlog.md and missing src/cfdi_vault/sat_download.py"
+  - id: CLI-001
+    title: Add safe storage status and locate commands
+    kind: feature
+    module: cli
+    wave: Wave 3
+    status: planned
+    branch: feature/storage-observability-cli
+    base_branch: dev
+    target_branch: dev
+    dependencies:
+      - STOR-004B
+    blockers: []
+    gates:
+      hermetic_cli_command_pytest: required
+      focused_ruff: required
+      fresh_review: required
+      sensitive_scanner: required
+      diff_check: required
+    notes:
+      - Candidate only; no implementation branch or agent is authorized
+      - Filesystem-first commands must not require MinIO or Docker services
+      - "Future gate: create tests/test_cli_storage_commands.py with injected fakes and no PostgreSQL or services"
+      - Existing tests/test_cli_storage.py is optional Tier 3 PostgreSQL integration evidence
+      - "Evidence: docs/foundation/storage-and-retention.md and docs/planning/cli-command-parity-report.md"
 wave3:
   status: planned
   started: false
