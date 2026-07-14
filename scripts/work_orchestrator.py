@@ -428,6 +428,9 @@ def next_action(document: dict[str, Any]) -> str:
     if wave3.get("status") == "planned" and wave3.get("started") is False and wave3.get("human_approval") == "required":
         return "Next: Wave 3 is planned from updated dev and can start only after explicit human approval."
     if wave3.get("status") == "in_progress" and wave3.get("started") is True and wave3.get("human_approval") == "approved":
+        wave_items = [item for item in document.get("items", []) if item.get("wave") == "Wave 3"]
+        if wave_items and all(item.get("status") == "local_integrated" for item in wave_items):
+            return "Next: request explicit approval before creating the Wave 3 integration cut; remote publication is not authorized."
         return "Next: complete the authorized local Wave 3 features and required gates; remote publication is not authorized."
     return "Next: reconcile Wave 3 state before continuing."
 

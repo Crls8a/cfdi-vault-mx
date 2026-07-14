@@ -224,7 +224,7 @@ items:
     kind: feature
     module: sat-download
     wave: Wave 3
-    status: in_progress
+    status: local_integrated
     branch: feature/sat-v15-facade
     base_branch: dev
     target_branch: dev
@@ -232,21 +232,23 @@ items:
       - LIB-005B
     blockers: []
     gates:
-      targeted_pytest: required
-      focused_ruff: required
-      fresh_review: required
-      sensitive_scanner: required
-      sat_context_scanner: required
-      diff_check: required
+      targeted_pytest: passed
+      focused_ruff: passed
+      fresh_review: passed
+      sensitive_scanner: passed
+      sat_context_scanner: passed
+      diff_check: passed
     notes:
       - Local implementation authorized; remote publication remains prohibited
-      - "Evidence: docs/planning/backlog.md and missing src/cfdi_vault/sat_download.py"
+      - "Planning evidence came from docs/planning/backlog.md; the facade is now delivered in src/cfdi_vault/sat_download.py"
+      - "Local commit: 6ae69475a7a8cfd5032fa89d12884917a11dafe9; cross-review passed"
+      - "Merged into local dev as efeebea2f4d99d52a1383e40c95b468aba8257e9"
   - id: CLI-001
     title: Add safe storage status and locate commands
     kind: feature
     module: cli
     wave: Wave 3
-    status: in_progress
+    status: local_integrated
     branch: feature/storage-observability-cli
     base_branch: dev
     target_branch: dev
@@ -254,16 +256,18 @@ items:
       - STOR-004B
     blockers: []
     gates:
-      hermetic_cli_command_pytest: required
-      focused_ruff: required
-      fresh_review: required
-      sensitive_scanner: required
-      diff_check: required
+      hermetic_cli_command_pytest: passed
+      focused_ruff: passed
+      fresh_review: passed
+      sensitive_scanner: passed
+      diff_check: passed
     notes:
       - Local implementation authorized; remote publication remains prohibited
       - Filesystem-first commands must not require MinIO or Docker services
-      - "Future gate: create tests/test_cli_storage_commands.py with injected fakes and no PostgreSQL or services"
+      - "Hermetic gate delivered by tests/test_cli_storage_commands.py with injected fakes and no PostgreSQL or services"
       - Existing tests/test_cli_storage.py is optional Tier 3 PostgreSQL integration evidence
+      - "Local commit: 29b9216e7730474e8517d754a64a821a69d79552; cross-review passed"
+      - "Merged into local dev as f1ffce9fe7154fcc99286f1786e9e00af5d09d6a"
       - "Evidence: docs/foundation/storage-and-retention.md and docs/planning/cli-command-parity-report.md"
 wave3:
   status: in_progress
