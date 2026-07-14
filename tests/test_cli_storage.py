@@ -1,6 +1,10 @@
+import pytest
 from typer.testing import CliRunner
 
 from cfdi_vault.cli import app
+
+
+pytestmark = pytest.mark.integration
 
 
 def test_doctor_uses_cfdi_storage_root_when_storage_option_is_omitted(tmp_path, reset_postgres_database: str) -> None:

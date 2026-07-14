@@ -37,6 +37,11 @@ Live SAT SOAP access is still intentionally disabled until signing, credential c
 
 Use `dev` as the integration branch for normal feature, chore, test, refactor, and documentation work. `main` is reserved for release merges and documented hotfix exceptions. See `docs/branching-policy.md` before opening a pull request.
 
+### Work orchestration
+
+Feature/module coordination is tracked in `docs/work-items.yaml`.
+Use `python scripts/work_orchestrator.py status` before starting a new wave.
+
 ## Quick path
 
 1. Create a local Python 3.12 environment.
@@ -105,6 +110,17 @@ Use `dev` as the integration branch for normal feature, chore, test, refactor, a
    ```powershell
    .\.venv\Scripts\python.exe -m pytest
    ```
+
+### Lightweight CI policy
+
+GitHub CI runs static checks, scanners, hermetic unit/offline tests, and config-only Docker Compose validation. Container-backed integration tests and SAT live gates are manual/local only.
+
+```bash
+python scripts/check_ci_policy.py --strict
+pytest -m "not integration and not container and not external and not live and not slow"
+```
+
+See `docs/ci-test-policy.md` for the Tier 0-4 boundary and marker rules.
 
 ## Docker Compose path
 

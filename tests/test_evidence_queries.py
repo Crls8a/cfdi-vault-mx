@@ -84,6 +84,7 @@ def test_query_limits_must_be_positive() -> None:
         jobs_by_status("SYN-TENANT", "running", limit=0)
 
 
+@pytest.mark.integration
 def test_evidence_lookup_executes_against_migrated_postgres(
     reset_postgres_database: str,
 ) -> None:

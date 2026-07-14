@@ -12,10 +12,13 @@ from cfdi_vault.cache_contract import CacheKeys, ProgressObservation, ProgressSt
 
 
 REDIS_URL = os.getenv("CFDI_VAULT_TEST_REDIS_URL")
-pytestmark = pytest.mark.skipif(
-    not REDIS_URL,
-    reason="CFDI_VAULT_TEST_REDIS_URL is required for Redis integration tests.",
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not REDIS_URL,
+        reason="CFDI_VAULT_TEST_REDIS_URL is required for Redis integration tests.",
+    ),
+]
 
 
 def test_real_redis_owner_leases_progress_heartbeat_and_expiry() -> None:

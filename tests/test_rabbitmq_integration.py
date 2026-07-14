@@ -12,7 +12,10 @@ from cfdi_vault.queueing import RabbitMqQueue
 
 
 RABBITMQ_URL = os.getenv("CFDI_VAULT_TEST_RABBITMQ_URL")
-pytestmark = pytest.mark.skipif(not RABBITMQ_URL, reason="dedicated RabbitMQ test broker is not configured")
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(not RABBITMQ_URL, reason="dedicated RabbitMQ test broker is not configured"),
+]
 
 
 def _message(message_id: str) -> QueueMessage:
