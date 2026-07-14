@@ -14,6 +14,7 @@ items:
     pull_request: 201
     merge_commit: 599a7358648c2a4cfdb9bbaf9568e84cd52d39e4
     merge_commit_short: 599a735
+    ci_evidence_mode: legacy_pre_ci001
     required_issue_label: status:approved
     required_pr_type_label: type:feature
     dependencies:
@@ -29,6 +30,8 @@ items:
       sat_context_scanner: passed
       diff_check: passed
       full_pytest: "620 passed, 31 skipped"
+      ci_policy_check: not_run_pre_ci001
+      ci_subset_pytest: not_run_pre_ci001
       issue_approval_status_approved: passed
       pr_type_feature: passed
       remote_integration: passed
@@ -49,6 +52,7 @@ items:
     target_branch: dev
     issue: null
     dependencies: []
+    blockers: []
     gates:
       local_integration: passed
   - id: QUEUE-004
@@ -64,6 +68,7 @@ items:
     target_branch: dev
     issue: null
     dependencies: []
+    blockers: []
     gates:
       local_integration: passed
   - id: PARSER-005B
@@ -79,6 +84,7 @@ items:
     target_branch: dev
     issue: null
     dependencies: []
+    blockers: []
     gates:
       local_integration: passed
   - id: CACHE-003
@@ -94,6 +100,7 @@ items:
     target_branch: dev
     issue: null
     dependencies: []
+    blockers: []
     gates:
       local_integration: passed
   - id: STOR-004B
@@ -109,6 +116,7 @@ items:
     target_branch: dev
     issue: null
     dependencies: []
+    blockers: []
     gates:
       local_integration: passed
   - id: ORCH-001
@@ -118,7 +126,7 @@ items:
     wave: governance
     owner: human
     agent: codex
-    status: integrated_local
+    status: integrated_remote
     branch: feature/module-feature-work-orchestration
     base_branch: dev
     base_commit: 599a7358648c2a4cfdb9bbaf9568e84cd52d39e4
@@ -126,6 +134,7 @@ items:
     target_branch: dev
     issue: 202
     pull_request: 203
+    published_via: INTEGRATION-GOV-CI
     required_issue_label: status:approved
     required_pr_type_label: type:feature
     dependencies:
@@ -133,14 +142,13 @@ items:
     blockers: []
     gates:
       targeted_pytest: passed
-      full_pytest: "635 passed, 31 skipped"
+      full_pytest: passed
       diff_check: passed
       sensitive_scanner: passed
       sat_context_scanner: passed
     notes:
-      - completed locally
-      - included in integration/dev-governance-ci
-      - PR #203 remains open and is not merged into origin/dev
+      - integrated through INTEGRATION-GOV-CI and present in origin/dev
+      - PR #203 was marked merged by commit reachability
   - id: CI-001
     title: Lightweight GitHub CI test boundary
     kind: feature
@@ -148,13 +156,14 @@ items:
     wave: governance
     owner: human
     agent: codex
-    status: integrated_local
+    status: integrated_remote
     branch: feature/lightweight-ci-test-boundary
     base_branch: dev
     base_commit: 17aff75f8377dcb1203fbb319773628c148467b4
     base_source: clean local dev with ORCH-001; origin/dev at 599a7358648c2a4cfdb9bbaf9568e84cd52d39e4
     target_branch: dev
     issue: null
+    published_via: INTEGRATION-GOV-CI
     required_issue_label: status:approved
     required_pr_type_label: type:feature
     dependencies:
@@ -170,11 +179,9 @@ items:
       focused_ruff: passed
       compose_config: passed
       object_storage_config: passed
-      full_pytest: "714 passed, 31 skipped"
+      full_pytest: passed
     notes:
-      - completed locally
-      - included in integration/dev-governance-ci
-      - not published or integrated into origin/dev
+      - integrated through INTEGRATION-GOV-CI and present in origin/dev
   - id: INTEGRATION-GOV-CI
     title: Integrate ORCH-001 and CI-001 into dev
     kind: integration
@@ -182,13 +189,16 @@ items:
     wave: governance
     owner: human
     agent: coordinator
-    status: local_ready
+    status: integrated_remote
     branch: integration/dev-governance-ci
     base_branch: dev
     base_commit: 599a7358648c2a4cfdb9bbaf9568e84cd52d39e4
     base_source: origin/dev at 599a735
     target_branch: dev
-    issue: null
+    issue: 204
+    pull_request: 205
+    merge_commit: dfe6d6a06020cb01455893fd0043d31073fd07cf
+    merge_commit_short: dfe6d6a
     required_issue_label: status:approved
     required_pr_type_label: type:feature
     dependencies:
@@ -207,5 +217,10 @@ items:
       object_storage_config: passed
       full_pytest: "714 passed, 31 skipped"
     notes:
-      - local cut only; not published or integrated into origin/dev
-      - Wave 3 remains blocked until this cut reaches origin/dev
+      - GOV-001 is represented by INTEGRATION-GOV-CI and is now present in origin/dev
+      - Wave 3 is planned from updated dev and can start only after explicit human approval
+wave3:
+  status: planned
+  started: false
+  human_approval: required
+  dependency: INTEGRATION-GOV-CI
