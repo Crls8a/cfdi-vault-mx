@@ -1,7 +1,7 @@
 # SAT v1.5 public API contract
 
-Status: LIB-005A contract. This document defines names and promotion gates; it
-does not promote the current SAT implementations or create a runtime facade.
+Status: LIB-005C offline facade. This document defines the supported imports
+and keeps live, probe, transport, and reference-system modules internal.
 
 ## Decision
 
@@ -44,23 +44,25 @@ or an implied live-SAT guarantee.
 - `cfdi_vault.fake_sat.FakeSatRequester`
 - `cfdi_vault.fake_sat.FakeSatVerifier`
 - `cfdi_vault.fake_sat.FakeSatDownloader`
+- `cfdi_vault.sat_download.SatDownloadFacade`
+- `cfdi_vault.sat_download.create_offline_facade`
 <!-- supported-imports:end -->
 
-LIB-005B promotes only the typed request/result/error contracts, split ports,
-and deterministic offline fakes listed above. `cfdi_vault.__all__` remains
-limited to `__version__`; consumers import SAT contracts from their owning
-modules. Live adapters, probes, orchestration, CLI internals, and the future
-`cfdi_vault.sat_download` facade remain unsupported.
+LIB-005B promotes the typed request/result/error contracts, split ports, and
+deterministic offline fakes listed above. LIB-005C adds only the facade class
+and its explicit offline factory. `cfdi_vault.__all__` remains limited to
+`__version__`; the facade module's `__all__` contains exactly those two LIB-005C
+names. Live adapters, probes, internal transport, orchestration, and CLI
+internals remain unsupported.
 
-## Reserved contract for later work
+## Contract progression
 
-These names were reserved so LIB-005B and LIB-005C do not invent a second
-surface. LIB-005B names are now promoted only where listed in the supported
-imports block above; LIB-005C facade names remain reserved but unsupported.
+These names were reserved so LIB-005B and LIB-005C did not invent a second
+surface. They are promoted only where listed in the supported imports block.
 
 ### LIB-005B results and errors (supported now)
 
-| Concept | Reserved name | Required semantics before promotion |
+| Concept | Public name | Guaranteed semantics |
 |---|---|---|
 | Authentication result | `SatAuthResult` | Immutable typed result; authorization material is never exposed by `repr`, string conversion, serialization, or diagnostics. |
 | Request result | `SatRequestResult` | Carries a request reference, normalized outcome, safe code, and redacted message; identifiers are redacted in diagnostics. |
@@ -79,7 +81,7 @@ and package bytes remain caller-owned implementation details.
 
 ### LIB-005B ports and offline fakes (supported now)
 
-| Responsibility | Reserved name | Contract |
+| Responsibility | Public name | Contract |
 |---|---|---|
 | Authenticate | `SatAuthenticatorPort` | A split protocol returning `SatAuthResult`; the port itself owns no credentials and performs no work at import time. |
 | Submit | `SatRequestPort` | Accepts a typed request model and returns `SatRequestResult`; implementations document network and persistence side effects. |
@@ -98,15 +100,22 @@ offline adapter contracts.
 
 ### LIB-005C facade
 
-`cfdi_vault.sat_download` is the reserved facade import path. LIB-005C may
-create it only after LIB-005B satisfies this contract. The facade must use
-injected ports, remain offline by default, expose explicit side effects, and
-never select a live adapter automatically.
+`cfdi_vault.sat_download` is the supported facade import path. It exposes
+`SatDownloadFacade`, which delegates one operation at a time to four explicit
+injected ports, and `create_offline_facade`, which wires only the deterministic
+in-memory fakes through one shared `FakeSatStore`.
+
+Import and offline-factory construction require no environment, configuration,
+credentials, certificates, files, services, or network. The facade never
+selects a live adapter. A caller that explicitly constructs `SatDownloadFacade`
+with another implementation owns that adapter's documented side effects. The
+facade does not log, serialize, or persist operation data; result diagnostics
+remain redacted by the LIB-005B contracts.
 
 ## Existing module classification
 
-Every current SAT-named module is classified below. None is promoted by
-LIB-005A.
+Every current SAT-named module is classified below. Only the explicitly
+supported LIB-005B and LIB-005C rows are public library API.
 
 | Module | Classification | Boundary |
 |---|---|---|
@@ -120,9 +129,10 @@ LIB-005A.
 | `cfdi_vault.sat_auth_matrix_probe` | Probe | Research-only matrix probe. |
 | `cfdi_vault.sat_auth_oracle` | Community oracle helper | Comparison evidence, not SAT authority or runtime dependency. |
 | `cfdi_vault.sat_auth_post_probe` | Probe | Research-only POST probe. |
-| `cfdi_vault.sat_auth` | Internal implementation | Authentication implementation remains behind the future port. |
+| `cfdi_vault.sat_auth` | Internal implementation | Authentication implementation remains behind the split public port. |
 | `cfdi_vault.sat_backfill` | Reference-system orchestration | Operational backfill policy is not library API. |
-| `cfdi_vault.sat_contract` | LIB-005B candidate | Existing results/outcome policy require hardening before promotion. |
+| `cfdi_vault.sat_contract` | LIB-005B public contract | Supported typed results, errors, and outcome policy remain side-effect free. |
+| `cfdi_vault.sat_download` | LIB-005C public facade | Two-name import-first surface; injected delegation plus deterministic offline factory only. |
 | `cfdi_vault.sat_download_envelope_lint` | Research tool | Download envelope inspection helper. |
 | `cfdi_vault.sat_download_live_gate` | Live-only gate | Human-gated reference-system operation. |
 | `cfdi_vault.sat_live_request_state` | Live-only state helper | Permit-gated live diagnostic state. |
@@ -144,7 +154,7 @@ reference-system surfaces. They are not transitive requirements of this API.
 
 ## Import and behavior requirements
 
-Before any reserved name becomes supported:
+Every supported facade name satisfies these requirements:
 
 1. Import smoke must pass in an isolated interpreter while service modules and
    network connection attempts are blocked.
@@ -157,8 +167,9 @@ Before any reserved name becomes supported:
 4. Live/network adapters require explicit construction and opt-in. Importing or
    constructing a result, error, protocol, or fake remains side-effect free.
 5. Errors and diagnostics are redacted by construction, not by caller habit.
-6. Result/fake implementation is LIB-005B. The unified facade and orchestration
-   are LIB-005C. Neither is implemented here.
+6. Result/fake implementation remains owned by LIB-005B modules. LIB-005C owns
+   only injected single-operation delegation and the offline fake factory; it
+   does not promote reference-system orchestration.
 
 ## Review checklist
 
@@ -168,4 +179,5 @@ Before any reserved name becomes supported:
       `COMMUNITY_ORACLE`, `LEGACY_REFERENCE`, and `REJECTED_AS_CONTRACT` rules.
 - [ ] Import tests require no service, network, credentials, or live permit.
 - [ ] Sensitive and SAT-context scanners pass.
-- [ ] LIB-005B/C boundaries remain explicit.
+- [ ] LIB-005B/C boundaries remain explicit and the facade exports stay limited
+      to `SatDownloadFacade` and `create_offline_facade`.
