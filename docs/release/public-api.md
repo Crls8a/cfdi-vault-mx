@@ -10,8 +10,8 @@ The first public API should be import-first and small. The CLI remains valuable 
 reference system, demos, and packaging smoke checks, but the library promise is the
 Python contract documented here and in [SAT download public API research and contract](../api/sat-download-public-api.md).
 
-The exact SAT module classification, supported LIB-005B names, remaining
-reserved LIB-005C facade, error semantics, and promotion gates live in
+The exact SAT module classification, supported LIB-005B names, LIB-005C
+facade, error semantics, and promotion gates live in
 [SAT v1.5 public API contract](../api/sat-v15-public-api.md).
 
 ## Public today
@@ -24,11 +24,14 @@ reserved LIB-005C facade, error semantics, and promotion gates live in
 | `cfdi_vault.sat_contract.SatAuthResult`, `SatRequestResult`, `SatVerificationResult`, `SatDownloadResult` | LIB-005B supported | Redacted result models for auth/request/verify/download operations. |
 | `cfdi_vault.sat_contract.SatError`, `SatAuthenticationError`, `SatRequestError`, `SatVerificationError`, `SatPackageDownloadError` | LIB-005B supported | Redacted typed SAT error hierarchy. |
 | `cfdi_vault.fake_sat.FakeSatStore`, `FakeSatAuthenticator`, `FakeSatRequester`, `FakeSatVerifier`, `FakeSatDownloader` | LIB-005B supported | Deterministic offline adapters for tests and examples. |
+| `cfdi_vault.sat_download.SatDownloadFacade`, `create_offline_facade` | LIB-005C supported | Injection-only operation facade plus an explicit deterministic offline factory; no live adapter selection. |
 
 No SAT live/probe module is public API today.
 
-The future `cfdi_vault.sat_download` facade remains reserved for LIB-005C and is
-not public today.
+The `cfdi_vault.sat_download` facade is public with exactly the two names above.
+Its import and offline factory require no environment, credentials, services,
+or network. Results keep identifiers and package bytes caller-owned while their
+diagnostic representations remain redacted.
 
 ## Candidate public surfaces
 
@@ -65,14 +68,24 @@ A name can become public only when all items are true:
 
 ## Consumer shape
 
-A future consumer should look like this, not like an import of internal probe modules.
-This snippet is illustrative; real code must provide `start`, `end`, and concrete
-clients implementing the ports.
+A consumer should look like this, not like an import of internal probe modules.
+This offline example uses the deterministic in-memory adapters; callers that
+need another implementation construct `SatDownloadFacade` with four explicit
+ports.
 
 ```python
-from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType
-from cfdi_vault.ports import SatRequestPort, SatVerificationPort
+from datetime import datetime, timezone
 
+from cfdi_vault.domain import (
+    DateTimePeriod,
+    DownloadDirection,
+    DownloadQuery,
+    RequestType,
+)
+from cfdi_vault.sat_download import create_offline_facade
+
+start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+end = datetime(2024, 1, 2, tzinfo=timezone.utc)
 query = DownloadQuery(
     tenant_id="demo-tenant",
     requester_rfc="XAXX010101000",
@@ -81,19 +94,19 @@ query = DownloadQuery(
     period=DateTimePeriod(start=start, end=end),
 )
 
-request_result = sat_request_client.submit_request(query)
-verification_result = sat_verify_client.verify_request(request_result.request_id)
+sat = create_offline_facade()
+request_result = sat.submit_request(query)
+verification_result = sat.verify_request(request_result.request_id)
 ```
 
-The example intentionally uses injected ports. The library should not require the
-consumer to copy the reference-system CLI, Docker stack, AppData layout, or live smoke
-commands.
+The facade never selects a live implementation. The library does not require
+the consumer to copy the reference-system CLI, Docker stack, AppData layout, or
+live smoke commands.
 
 ## Next release gates
 
 - Add `docs/api/` links to the README and documentation index.
-- Implement and harden the reserved LIB-005B results, errors, split ports, and
-  offline fakes before promoting their imports.
-- Introduce the reserved `cfdi_vault.sat_download` facade only in LIB-005C.
-- Extend import smoke tests whenever a reserved name is actually promoted.
+- Preserve the LIB-005B result/error/port/fake contracts while the LIB-005C
+  facade remains limited to injection and the explicit offline factory.
+- Extend import smoke tests whenever another name is proposed for promotion.
 - Keep live SAT support internal until the security gate is approved.
