@@ -13,6 +13,7 @@ operations = importlib.import_module("cfdi_vault.adapters.cli.operations")
 sat = importlib.import_module("cfdi_vault.adapters.cli.sat")
 custody_commands = importlib.import_module("cfdi_vault.adapters.cli.secrets")
 setup = importlib.import_module("cfdi_vault.adapters.cli.setup")
+storage_commands = importlib.import_module("cfdi_vault.adapters.cli.storage")
 
 app = typer.Typer(
     name="cfdi-vault",
@@ -29,6 +30,10 @@ backfill_app = typer.Typer(help="Plan safe SAT metadata historical backfills.", 
 custody_app = typer.Typer(help="Manage local secret references without printing values.", no_args_is_help=True)
 live_app = typer.Typer(help="Create one-time local live execution permits.", no_args_is_help=True)
 permit_app = typer.Typer(help="Create one-time local live execution permits.", no_args_is_help=True)
+storage_app = typer.Typer(
+    help="Inspect offline filesystem evidence with redacted output.",
+    no_args_is_help=True,
+)
 
 app.add_typer(config_app, name="config")
 app.add_typer(queue_app, name="queue")
@@ -38,6 +43,7 @@ app.add_typer(download_app, name="download")
 app.add_typer(sat_app, name="sat")
 app.add_typer(custody_app, name="secret")
 app.add_typer(live_app, name="live")
+app.add_typer(storage_app, name="storage")
 sat_app.add_typer(backfill_app, name="backfill")
 live_app.add_typer(permit_app, name="permit")
 
@@ -48,5 +54,6 @@ live.register(permit_app)
 sat.register(sat_app, backfill_app)
 download.register(queue_app, worker_app, sync_app, download_app)
 operations.register(app)
+storage_commands.register(storage_app)
 
 __all__ = ["app"]

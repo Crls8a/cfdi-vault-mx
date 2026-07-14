@@ -129,25 +129,36 @@ runtime configuration until a separate runtime wiring change is accepted.
 
 ## Extraction and discovery UX
 
-Future CLI commands should make storage discoverable:
+`storage status` and `storage locate` inspect one canonical relative storage
+reference through the filesystem adapter. They do not query PostgreSQL, MinIO,
+or any network service. Output is redacted by construction: the raw reference,
+RFC/UUID/package segments, configured root, and physical path are never shown.
 
 ```bash
-cfdi-vault storage status
-cfdi-vault storage locate <UUID>
-cfdi-vault storage open <UUID>
-cfdi-vault storage manifest --tenant-id acme --format jsonl
-cfdi-vault export xml --tenant-id acme --start 2024-01-01 --end 2024-01-31 --output ./out/xml
+cfdi-vault storage status <relative-storage-reference>
+cfdi-vault storage locate <relative-storage-reference>
+cfdi-vault storage status <relative-storage-reference> --storage <path>
 ```
 
-Expected `storage locate` output:
+Observation is strictly read-only. The commands do not create a missing
+storage root, repair its directory layout, or write evidence; an absent root is
+reported as not found.
+
+Successful status output is scriptable and exposes only safe metadata:
 
 ```text
-UUID: <UUID>
-XML: storage/<RFC>/xml/2024/01/<UUID>-<sha12>.xml
-SHA-256: ...
-Source package: storage/<RFC>/packages/2024/01/<id_paquete>-<sha12>.zip
-Parser status: complete
+status=exists
+reference=ref-<fingerprint>
+category=xml
+size_bytes=<bytes>
+sha256=<12-character-prefix>
 ```
+
+`storage locate` returns a logical location such as
+`filesystem://xml/ref-<fingerprint>`, never an absolute filesystem path. A
+missing reference reports `status=not_found` or `location=unavailable` and exits
+with status 1. Invalid references and adapter failures use stable error codes
+without echoing the input or low-level exception.
 
 ## Manifest contract
 
@@ -173,9 +184,8 @@ Manifests are secondary indexes. PostgreSQL remains the source of truth.
 
 ## Open implementation tasks
 
-- Add `storage status` and `storage locate`.
 - Add manifests for packages/XML.
 - Add storage usage summary to `doctor`.
-- Add tests proving custom `--storage` is honored.
+- Keep custom `--storage` observation covered by read-only CLI regression tests.
 - Add safe export/copy command for XML evidence.
 - Implement the storage-port MinIO adapter and prove filesystem/object-storage parity.
