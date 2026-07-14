@@ -12,6 +12,7 @@ from typing import Mapping
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 
+from cfdi_vault.sat_auth_endpoints import auth_wsdl_endpoint
 from cfdi_vault.sat_auth_http import build_soap11_headers
 from cfdi_vault.sat_download_envelope_lint import lint_package_download_envelope
 from cfdi_vault.sat_live_request_state import LiveMetadataRequestRecord, PACKAGE_READY, redact_package_ref
@@ -234,7 +235,7 @@ def check_download_wsdl_endpoint(
     """Check the public download WSDL endpoint without reading its body."""
 
     request = urllib_request.Request(
-        _wsdl_url(endpoint_download),
+        auth_wsdl_endpoint(endpoint_download),
         headers={"Accept": "text/xml, application/wsdl+xml, */*;q=0.1"},
         method="GET",
     )
@@ -343,11 +344,6 @@ def _resolve_timeout_value(
         return float(env_value), ""
     except ValueError:
         return default, invalid_name
-
-
-def _wsdl_url(endpoint: str) -> str:
-    separator = "&" if "?" in endpoint else "?"
-    return f"{endpoint}{separator}wsdl"
 
 
 def _classify_wsdl_error(exc: BaseException) -> str:

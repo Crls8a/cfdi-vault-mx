@@ -10,6 +10,7 @@ from cfdi_vault.adapters.cli import sat_verify as cli_module
 from cfdi_vault.cli import app
 from cfdi_vault.domain import SatRequestState
 from cfdi_vault.live_permit import LivePermitRequest, create_live_execution_permit
+from cfdi_vault.sat_auth_endpoints import auth_wsdl_endpoint
 from cfdi_vault.sat_contract import SatDownloadResult, SatOutcomeAction, SatVerificationResult
 from cfdi_vault.sat_download_live_gate import (
     DownloadOracleParityResult,
@@ -299,14 +300,15 @@ def test_download_wsdl_check_does_not_read_or_persist_raw_wsdl() -> None:
             return self.response
 
     opener = FakeOpener()
+    endpoint = "https://example.test/DescargaMasivaService.svc"
 
-    result = check_download_wsdl_endpoint(connect_timeout_seconds=15, opener=opener)
+    result = check_download_wsdl_endpoint(endpoint_download=endpoint, connect_timeout_seconds=15, opener=opener)
 
     assert result.status == "passed"
     assert result.reachable is True
     assert result.status_code == 200
     assert opener.timeout == 15
-    assert opener.url.endswith("?wsdl")
+    assert opener.url == auth_wsdl_endpoint(endpoint)
     assert opener.response.read_called is False
 
 
