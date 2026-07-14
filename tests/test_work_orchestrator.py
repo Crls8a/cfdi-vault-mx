@@ -93,7 +93,7 @@ def test_wave3_records_explicit_authorization_without_a_remote_blocker():
     assert item_by_id(document, "INTEGRATION-GOV-CI")["status"] == "integrated_remote"
     assert wave3_blocker(document) is None
     assert document["wave3"] == {
-        "status": "in_progress", "started": True,
+        "status": "completed", "started": True,
         "human_approval": "approved", "dependency": "INTEGRATION-GOV-CI",
     }
 
@@ -333,13 +333,18 @@ def test_state_commands_are_offline_and_report_authorized_local_work(monkeypatch
         assert main([command]) == 0
     output = capsys.readouterr().out
     assert "Remote blockers: none" in output
-    assert "in_progress | started | human approval approved" in output
-    assert "request explicit approval before creating the Wave 3 integration cut" in output
+    assert "completed | started | human approval approved" in output
+    assert "request explicit approval before publishing integration/dev-wave3-offline-access" in output
     assert "remote publication is not authorized" in output
 
 
 def test_next_reports_in_progress_features_before_integration_cut():
     document = source()
+    document["wave3"]["status"] = "in_progress"
+    document["items"] = [
+        item for item in document["items"]
+        if item["id"] != "INTEGRATION-WAVE3-OFFLINE-ACCESS"
+    ]
     for item_id in ("LIB-005C", "CLI-001"):
         item_by_id(document, item_id)["status"] = "in_progress"
     assert "complete the authorized local Wave 3 features" in next_action(document)
@@ -474,6 +479,11 @@ def test_wave3_remote_gate_uses_declared_dependency(dependency, status, blocked)
     else:
         item_by_id(document, "INTEGRATION-GOV-CI")["status"] = "blocked"
         assert wave3_blocker(document) is None
+        document["wave3"]["status"] = "in_progress"
+        document["items"] = [
+            item for item in document["items"]
+            if item["id"] != "INTEGRATION-WAVE3-OFFLINE-ACCESS"
+        ]
         assert "request explicit approval" in next_action(document)
 
 

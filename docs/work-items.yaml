@@ -269,8 +269,41 @@ items:
       - "Local commit: 29b9216e7730474e8517d754a64a821a69d79552; cross-review passed"
       - "Merged into local dev as f1ffce9fe7154fcc99286f1786e9e00af5d09d6a"
       - "Evidence: docs/foundation/storage-and-retention.md and docs/planning/cli-command-parity-report.md"
+  - id: INTEGRATION-WAVE3-OFFLINE-ACCESS
+    title: Integrate Wave 3 offline access into dev
+    kind: integration
+    module: repo-governance
+    wave: Wave 3
+    owner: human
+    agent: coordinator
+    status: cut_ready
+    branch: integration/dev-wave3-offline-access
+    base_branch: dev
+    base_commit: 75ac7555674d27e25ec1a3d8af41d77b998a554c
+    base_source: local dev at 75ac755
+    target_branch: dev
+    required_issue_label: status:approved
+    required_pr_type_label: type:feature
+    dependencies:
+      - LIB-005C
+      - CLI-001
+    blockers:
+      - Remote publication requires separate human approval
+    gates:
+      work_orchestrator: passed
+      ci_policy_check: passed
+      ci_subset_pytest: passed
+      targeted_pytest: passed
+      focused_ruff: passed
+      sensitive_scanner: passed
+      sat_context_scanner: passed
+      diff_check: passed
+    notes:
+      - Local cut created from dev at 75ac755; origin/dev remains at dfe6d6a
+      - Includes GOV-002, WAVE3-PLAN, LIB-005C, and CLI-001
+      - No issue, PR, push, or remote merge is authorized in this state
 wave3:
-  status: in_progress
+  status: completed
   started: true
   human_approval: approved
   dependency: INTEGRATION-GOV-CI
