@@ -126,6 +126,12 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "example": "cfdi-vault sat metadata-recovery-status --profile <profile-id> --recovery-ref <recovery-ref>",
     },
     {
+        "command": "sat metadata-recovery-runner",
+        "purpose": "Advance at most one due persisted recovery with sanitized aggregate output.",
+        "when": "Wake periodically; SAT is not contacted before the persisted due time.",
+        "example": "cfdi-vault sat metadata-recovery-runner --profile <profile-id>",
+    },
+    {
         "command": "sat metadata-window-plan",
         "purpose": "Derive XML eligibility and select two weekly windows from external SAT metadata without persisting rows.",
         "when": "Run offline after manually exporting received or issued metadata; received is the default direction.",

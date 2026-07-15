@@ -18,12 +18,15 @@ from cfdi_vault.live_permit import (
     permit_expectation_from_query,
     validate_and_consume_live_permit,
     validate_consumed_metadata_recovery_permit,
+    validate_consumed_metadata_recovery_permit_id,
 )
 from cfdi_vault.sat_live_smoke import SatLiveV15MetadataAdapter
 from cfdi_vault.sat_metadata_recovery import PackageRecoveryStatus
 from cfdi_vault.sat_metadata_recovery_runner import advance_metadata_recovery_once
+from cfdi_vault.sat_metadata_recovery_scheduler import select_due_metadata_recovery
 from cfdi_vault.sat_metadata_recovery_state import (
     MetadataRecoveryStateError,
+    list_metadata_recovery_states,
     load_metadata_recovery_state,
 )
 from cfdi_vault.sat_metadata_submission import MetadataSubmissionError, SubmissionStatus, submit_metadata_recovery_once
@@ -105,6 +108,48 @@ def sat_metadata_recovery_status(
         _fail(exc.reason)
     except Exception:
         _fail("recovery_status_failed")
+def sat_metadata_recovery_runner(
+    profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
+) -> None:
+    """Advance at most one due persisted recovery and print sanitized aggregates."""
+
+    try:
+        local_profile = _safe_recovery_profile(profile)
+        repo_root = _checked_recovery_repo_root()
+        _validate_recovery_state_path(local_profile, repo_root)
+        now = _recovery_now()
+        records = list_metadata_recovery_states(
+            local_profile.storage_root, repo_root=repo_root,
+        )
+        selected = select_due_metadata_recovery(
+            records, profile_id=local_profile.profile_id, now=now,
+        )
+        if selected is None:
+            _print_scheduler_idle()
+            return
+        record = next(item for item in records if item.recovery.recovery_ref == selected)
+        permit = validate_consumed_metadata_recovery_permit_id(
+            record.authorization_ref, profile_id=record.profile_id,
+            direction=record.direction, date_from=record.fecha_inicial,
+            date_to=record.fecha_final, now=now, repo_root=repo_root,
+        )
+        package_storage = _new_recovery_storage(local_profile.storage_root)
+        adapter = _new_recovery_adapter(local_profile, permit)
+        outcome = advance_metadata_recovery_once(
+            storage_root=local_profile.storage_root, recovery_ref=selected,
+            verifier=adapter, downloader=adapter, package_storage=package_storage,
+            now=now, repo_root=repo_root,
+        )
+        if outcome.recovery is None:
+            _print_runner_failure(outcome)
+            raise typer.Exit(code=1)
+        _print_recovery_document(outcome.recovery)
+    except typer.Exit:
+        raise
+    except (_RecoveryCliError, LivePermitError, MetadataRecoveryStateError) as exc:
+        _fail(exc.reason)
+    except Exception:
+        _fail("recovery_runner_failed")
 def _safe_recovery_query(profile: str, direction: str, start: str, end: str):
     hidden = StringIO()
     try:
@@ -182,6 +227,10 @@ def _print_runner_failure(outcome) -> None:  # type: ignore[no-untyped-def]
     typer.echo("stage=runner")
     typer.echo(f"status={outcome.error_kind or 'runner_failed'}")
     typer.echo(f"operation_attempts={outcome.verify_count + outcome.download_attempts}")
+def _print_scheduler_idle() -> None:
+    typer.echo("stage=scheduler")
+    typer.echo("status=no_due")
+    typer.echo("operation_attempts=0")
 def _fail(reason: str) -> None:
     typer.echo(f"error={reason}")
     raise typer.Exit(code=1)

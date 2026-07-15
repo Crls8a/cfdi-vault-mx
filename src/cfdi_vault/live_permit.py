@@ -375,6 +375,28 @@ def validate_consumed_metadata_recovery_permit(
     return permit
 
 
+def validate_consumed_metadata_recovery_permit_id(
+    permit_id: str,
+    *,
+    profile_id: str,
+    direction: str,
+    date_from: str,
+    date_to: str,
+    now: datetime | None,
+    repo_root: Path | None,
+    env: Mapping[str, str] | None = None,
+) -> LiveExecutionPermit:
+    """Resolve and validate a consumed recovery permit only by canonical id."""
+
+    if type(permit_id) is not str or PERMIT_ID_PATTERN.fullmatch(permit_id) is None:
+        raise LivePermitError("permit-id-invalid")
+    return validate_consumed_metadata_recovery_permit(
+        permit_id, profile_id=profile_id, direction=direction,
+        date_from=date_from, date_to=date_to, now=now,
+        repo_root=repo_root, env=env,
+    )
+
+
 def permit_expectation_from_query(scope: str, profile_id: str, query: DownloadQuery) -> dict[str, str]:
     if query.period is None:
         raise LivePermitError("permit-query-period-required")

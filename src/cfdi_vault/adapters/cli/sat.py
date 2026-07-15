@@ -19,7 +19,11 @@ from .sat_metadata import (
     sat_metadata_window_plan,
 )
 from .sat_probes import sat_probe_auth_matrix, sat_probe_auth_post, sat_probe_transport, sat_probe_verify_post
-from .sat_recovery import sat_metadata_recover_live, sat_metadata_recovery_status
+from .sat_recovery import (
+    sat_metadata_recover_live,
+    sat_metadata_recovery_runner,
+    sat_metadata_recovery_status,
+)
 from .sat_scheduler import render_windows_task, sat_verify_due_runner
 from .sat_verify import (
     sat_download_live_gate,
@@ -38,6 +42,7 @@ def register(sat_app: typer.Typer, backfill_app: typer.Typer) -> None:
     sat_app.command("metadata-request-state")(sat_metadata_request_state)
     sat_app.command("metadata-recover-live")(sat_metadata_recover_live)
     sat_app.command("metadata-recovery-status")(sat_metadata_recovery_status)
+    sat_app.command("metadata-recovery-runner")(sat_metadata_recovery_runner)
     sat_app.command("metadata-window-plan")(sat_metadata_window_plan)
     backfill_app.command("plan")(sat_backfill_plan)
     backfill_app.command("submit")(sat_backfill_submit)

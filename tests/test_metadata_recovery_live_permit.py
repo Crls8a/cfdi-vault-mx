@@ -14,6 +14,7 @@ from cfdi_vault.live_permit import (
     load_live_execution_permit,
     validate_and_consume_live_permit,
     validate_consumed_metadata_recovery_permit,
+    validate_consumed_metadata_recovery_permit_id,
 )
 
 NOW = datetime(2026, 7, 15, 15, 0, tzinfo=timezone.utc)
@@ -269,6 +270,29 @@ def test_metadata_recovery_continuation_rejects_unsafe_explicit_path(tmp_path: P
             now=NOW + timedelta(minutes=1),
             repo_root=repo_root,
         )
+
+
+@pytest.mark.parametrize("reference", ["permit.json", "../permit-id", r"C:\permit-id.json"])
+def test_scheduler_continuation_accepts_only_canonical_permit_ids(reference: str) -> None:
+    with pytest.raises(LivePermitError, match="permit-id-invalid"):
+        validate_consumed_metadata_recovery_permit_id(
+            reference, profile_id="dummy-profile", direction="received",
+            date_from="2026-06-30", date_to="2026-06-30", now=NOW,
+            repo_root=Path("repo"),
+        )
+
+
+def test_scheduler_continuation_resolves_consumed_permit_by_id(tmp_path: Path) -> None:
+    permit, env, repo_root = _create(tmp_path)
+    consumed = _consume(permit.permit_id, env, repo_root)
+
+    validated = validate_consumed_metadata_recovery_permit_id(
+        permit.permit_id, profile_id="dummy-profile", direction="received",
+        date_from="2026-06-30", date_to="2026-06-30", now=consumed.consumed_at,
+        repo_root=repo_root, env=env,
+    )
+
+    assert validated.permit_id == permit.permit_id
 
 
 def test_metadata_recovery_permit_still_rejects_double_initial_consumption(

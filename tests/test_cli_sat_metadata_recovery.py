@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 
 from cfdi_vault.adapters.cli import sat_recovery as subject
 from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType
-from cfdi_vault.sat_metadata_recovery import PackageRecoveryStatus
+from cfdi_vault.sat_metadata_recovery import PackageRecoveryStatus, RecoveryStatus
 from cfdi_vault.sat_metadata_submission import SubmissionStatus
 
 NOW = datetime(2026, 6, 30, tzinfo=timezone.utc)
@@ -20,6 +20,7 @@ def _app() -> typer.Typer:
     app = typer.Typer()
     app.command("metadata-recover-live")(subject.sat_metadata_recover_live)
     app.command("metadata-recovery-status")(subject.sat_metadata_recovery_status)
+    app.command("metadata-recovery-runner")(subject.sat_metadata_recovery_runner)
     return app
 def _query() -> DownloadQuery:
     return DownloadQuery(
@@ -238,3 +239,54 @@ def test_escaping_state_link_stops_before_permit_storage_credentials_or_network(
     assert result.exit_code == 1
     assert result.output == "error=recovery-state-path-invalid\n"
     assert calls == [] and permit_path.read_bytes() == b"SYNTHETIC_UNCHANGED"
+
+
+def test_runner_no_due_has_zero_live_or_storage_side_effects(monkeypatch, tmp_path: Path) -> None:
+    events: list[str] = []
+    profile = SimpleNamespace(profile_id="profile-synthetic", storage_root=tmp_path / "external")
+    monkeypatch.setattr(subject, "_load_download_profile", lambda _: profile)
+    monkeypatch.setattr(subject, "_checked_recovery_repo_root", lambda: events.append("guard") or tmp_path / "repo")
+    monkeypatch.setattr(subject, "_validate_recovery_state_path", lambda *_: events.append("path"))
+    monkeypatch.setattr(subject, "list_metadata_recovery_states", lambda *_a, **_k: events.append("list") or ())
+    monkeypatch.setattr(subject, "_recovery_now", lambda: NOW)
+    for name in ("validate_consumed_metadata_recovery_permit_id", "_new_recovery_storage",
+                 "_new_recovery_adapter", "advance_metadata_recovery_once"):
+        monkeypatch.setattr(subject, name, lambda *_a, _name=name, **_k: (_ for _ in ()).throw(
+            AssertionError(f"{_name} must not run")))
+
+    result = CliRunner().invoke(_app(), ["metadata-recovery-runner", "--profile", profile.profile_id])
+
+    assert result.exit_code == 0, result.output
+    assert events == ["guard", "path", "list"]
+    assert result.output == "stage=scheduler\nstatus=no_due\noperation_attempts=0\n"
+
+
+def test_runner_validates_stored_permit_before_storage_and_advances_once(monkeypatch, tmp_path: Path) -> None:
+    events: list[str] = []
+    profile = SimpleNamespace(profile_id="profile-synthetic", storage_root=tmp_path / "external")
+    recovery = SimpleNamespace(
+        recovery_ref="run-000000000000", status=RecoveryStatus.PACKAGES_READY,
+        created_at=NOW, deadline_at=NOW, next_check_at=None,
+    )
+    record = SimpleNamespace(
+        profile_id=profile.profile_id, authorization_ref="permit-synthetic",
+        direction="received", fecha_inicial="2026-06-30", fecha_final="2026-06-30",
+        recovery=recovery,
+    )
+    monkeypatch.setattr(subject, "_load_download_profile", lambda _: profile)
+    monkeypatch.setattr(subject, "_checked_recovery_repo_root", lambda: events.append("guard") or tmp_path / "repo")
+    monkeypatch.setattr(subject, "_validate_recovery_state_path", lambda *_: events.append("path"))
+    monkeypatch.setattr(subject, "list_metadata_recovery_states", lambda *_a, **_k: events.append("list") or (record,))
+    monkeypatch.setattr(subject, "validate_consumed_metadata_recovery_permit_id",
+                        lambda *_a, **_k: events.append("permit") or SimpleNamespace())
+    monkeypatch.setattr(subject, "_new_recovery_storage", lambda *_: events.append("storage") or object())
+    monkeypatch.setattr(subject, "_new_recovery_adapter", lambda *_: events.append("adapter") or object())
+    monkeypatch.setattr(subject, "_recovery_now", lambda: NOW)
+    monkeypatch.setattr(subject, "advance_metadata_recovery_once",
+                        lambda **_: events.append("advance") or SimpleNamespace(recovery=_document()))
+
+    result = CliRunner().invoke(_app(), ["metadata-recovery-runner", "--profile", profile.profile_id])
+
+    assert result.exit_code == 0, result.output
+    assert events == ["guard", "path", "list", "permit", "storage", "adapter", "advance"]
+    assert "permit-synthetic" not in result.output and "profile-synthetic" not in result.output
