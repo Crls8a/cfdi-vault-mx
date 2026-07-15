@@ -52,6 +52,8 @@ class MetadataWindowPlan:
 def resolve_external_metadata_path(candidate: Path, *, checkout_root: Path) -> Path:
     """Resolve a metadata path and reject any lexical or real checkout descendant."""
 
+    if _is_windows_namespace_path(candidate):
+        raise MetadataPathPolicyError("metadata_namespace_path_rejected")
     candidate_absolute = Path(os.path.abspath(candidate.expanduser()))
     checkout_absolute = Path(os.path.abspath(checkout_root.expanduser()))
     try:
@@ -63,6 +65,13 @@ def resolve_external_metadata_path(candidate: Path, *, checkout_root: Path) -> P
     if candidate_absolute.is_relative_to(checkout_absolute) or candidate_resolved.is_relative_to(checkout_resolved):
         raise MetadataPathPolicyError("metadata_inside_checkout")
     return candidate_resolved
+
+
+def _is_windows_namespace_path(candidate: Path) -> bool:
+    """Detect extended/device namespace spellings before path normalization."""
+
+    spelling = os.fspath(candidate).replace("/", "\\")
+    return spelling.startswith(("\\\\?\\", "\\\\.\\"))
 
 
 def build_metadata_window_plan(

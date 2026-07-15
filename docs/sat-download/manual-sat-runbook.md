@@ -54,7 +54,9 @@ path, RFC, UUID, taxpayer name, or monetary total.
 
 The command resolves both the candidate path and the active checkout root. It
 rejects a lexical checkout path or a link/junction that resolves back into the
-checkout, and it never prints the rejected path.
+checkout. Windows extended/device namespace spellings (`\\?\` and `\\.\`,
+including extended UNC) are rejected before normalization. The command never
+prints a rejected path.
 
 The range is split into inclusive seven-day windows, including a shorter final
 window when needed. At most two positive windows are returned, ordered by the

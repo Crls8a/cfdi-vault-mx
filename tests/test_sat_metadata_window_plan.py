@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 from datetime import date
 from pathlib import Path
 
@@ -208,6 +210,91 @@ def test_external_metadata_path_policy_blocks_symlink_resolving_into_checkout(tm
 
     with pytest.raises(MetadataPathPolicyError) as exc:
         resolve_external_metadata_path(outside_link, checkout_root=checkout)
+
+    assert exc.value.reason == "metadata_inside_checkout"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows namespace syntax")
+def test_external_metadata_path_policy_rejects_extended_in_checkout_path(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    inside = checkout / "metadata.txt"
+    inside.write_text(HEADER, encoding="utf-8")
+    extended_path = Path("\\\\?\\" + str(inside.resolve()))
+
+    with pytest.raises(MetadataPathPolicyError) as exc:
+        resolve_external_metadata_path(extended_path, checkout_root=checkout)
+
+    assert exc.value.reason == "metadata_namespace_path_rejected"
+    assert str(extended_path) not in str(exc.value)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows namespace syntax")
+def test_cli_rejects_extended_path_without_echo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    inside = checkout / "metadata.txt"
+    inside.write_text(HEADER, encoding="utf-8")
+    extended_path = Path("\\\\?\\" + str(inside.resolve()))
+    monkeypatch.setattr(cli_module, "_find_checkout_root", lambda _path: checkout)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "sat",
+            "metadata-window-plan",
+            "--metadata",
+            str(extended_path),
+            "--from",
+            "2026-01-01",
+            "--to",
+            "2026-06-30",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "error_kind=metadata_namespace_path_rejected" in result.output
+    assert "status=blocked" in result.output
+    assert str(extended_path) not in result.output
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows namespace syntax")
+@pytest.mark.parametrize(
+    "namespace_path",
+    (
+        Path(r"\\.\C:\synthetic\metadata.txt"),
+        Path(r"\\?\UNC\synthetic-server\synthetic-share\metadata.txt"),
+    ),
+)
+def test_external_metadata_path_policy_rejects_device_and_extended_unc_paths(namespace_path: Path, tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+
+    with pytest.raises(MetadataPathPolicyError) as exc:
+        resolve_external_metadata_path(namespace_path, checkout_root=checkout)
+
+    assert exc.value.reason == "metadata_namespace_path_rejected"
+    assert str(namespace_path) not in str(exc.value)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction behavior")
+def test_external_metadata_path_policy_blocks_junction_resolving_into_checkout(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    inside = checkout / "metadata.txt"
+    inside.write_text(HEADER, encoding="utf-8")
+    junction = tmp_path / "external-junction"
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(checkout)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if created.returncode != 0:
+        pytest.skip("directory junctions are unavailable on this Windows environment")
+
+    with pytest.raises(MetadataPathPolicyError) as exc:
+        resolve_external_metadata_path(junction / "metadata.txt", checkout_root=checkout)
 
     assert exc.value.reason == "metadata_inside_checkout"
 
