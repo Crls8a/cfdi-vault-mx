@@ -44,13 +44,15 @@ Keep the TXT outside the repository and run:
 cfdi-vault sat metadata-window-plan `
   --metadata <EXTERNAL_METADATA_TXT> `
   --from 2026-01-01 `
-  --to 2026-06-30
+  --to 2026-06-30 `
+  --direction received
 ```
 
-This experimental reference-system command reads the file into memory, accepts
-the parser's SAT-style `~` delimiter, and prints only date windows and row
-counts. It does not copy the input, create CSV, call SAT, or print the input
-path, RFC, UUID, taxpayer name, or monetary total.
+This experimental reference-system command reads the file into memory and
+derives local XML eligibility from the portal TXT; it is not observed live SAT
+behavior. `--direction` defaults to `received`. Received cancelled UUIDs are
+excluded, while issued active or cancelled UUIDs are eligible. Unknown or
+contradictory UUID evidence requires manual review and selects no window.
 
 The command resolves both the candidate path and the active checkout root. It
 rejects a lexical checkout path or a link/junction that resolves back into the
@@ -60,10 +62,10 @@ prints a rejected path.
 
 The range is split into inclusive seven-day windows, including a shorter final
 window when needed. At most two positive windows are returned, ordered by the
-smallest metadata count and then by earliest date. Empty, headerless, unknown
+smallest eligible UUID count and then by earliest date. Empty, headerless, unknown
 header, or invalid-row inputs produce the fail-closed `invalid_metadata` result:
 correct the external export before considering live work.
-`no_received_metadata_in_range` means no live request should be created for that
+`no_xml_eligible_metadata_in_range` means no live request should be created for that
 range.
 
 The metadata file is sensitive fiscal data. Delete or retain it according to

@@ -22,9 +22,14 @@ def sat_metadata_window_plan(
     metadata: Path = typer.Option(..., "--metadata", help="Operator-supplied SAT metadata TXT; never persisted or printed."),
     from_date: str = typer.Option(..., "--from", help="Inclusive planning start: YYYY-MM-DD."),
     to_date: str = typer.Option(..., "--to", help="Inclusive planning end: YYYY-MM-DD."),
+    direction: str = typer.Option("received", "--direction", help="Metadata direction: received (default) or issued."),
 ) -> None:
-    """Select two bounded live-diagnostic windows from external metadata."""
+    """Derive XML eligibility and bounded diagnostic windows offline."""
 
+    normalized_direction = direction.strip().casefold()
+    if normalized_direction not in {"received", "issued"}:
+        _print_metadata_window_error("invalid_direction")
+        raise typer.Exit(code=1)
     try:
         start = date.fromisoformat(from_date)
         end = date.fromisoformat(to_date)
@@ -46,7 +51,7 @@ def sat_metadata_window_plan(
         _print_metadata_window_error("metadata_unavailable")
         raise typer.Exit(code=1) from exc
     try:
-        plan = build_metadata_window_plan(content, start=start, end=end)
+        plan = build_metadata_window_plan(content, start=start, end=end, direction=normalized_direction)
     except UnicodeError as exc:
         _print_metadata_window_error("invalid_metadata_encoding")
         raise typer.Exit(code=1) from exc
@@ -55,42 +60,41 @@ def sat_metadata_window_plan(
         raise typer.Exit(code=1) from exc
 
     _print_metadata_window_plan(plan)
-    if plan.status == "invalid_metadata":
+    if plan.status in {"invalid_metadata", "metadata_requires_manual_review"}:
         raise typer.Exit(code=1)
 
 
 def _print_metadata_window_plan(plan: MetadataWindowPlan) -> None:
-    typer.echo("mode=metadata-window-plan")
     typer.echo(f"status={plan.status}")
+    typer.echo(f"reason={plan.reason}")
+    typer.echo(f"direction={plan.direction}")
     typer.echo(f"range_from={plan.start.isoformat()}")
     typer.echo(f"range_to={plan.end.isoformat()}")
-    typer.echo("window_days=7")
     typer.echo(f"accepted_rows={plan.accepted_rows}")
     typer.echo(f"rejected_rows={plan.rejected_rows}")
-    typer.echo(f"in_range_rows={plan.in_range_rows}")
-    typer.echo(f"selected_window_count={len(plan.selected_windows)}")
+    typer.echo(f"unique_uuids={plan.unique_uuids}")
+    typer.echo(f"duplicate_rows={plan.duplicate_rows}")
+    typer.echo(f"eligible_uuids={plan.eligible_uuids}")
+    typer.echo(f"in_range_eligible_uuids={plan.in_range_eligible_uuids}")
+    typer.echo(f"cancelled_no_xml_expected={plan.cancelled_no_xml_expected}")
+    typer.echo(f"manual_review_uuids={plan.manual_review_uuids}")
+    typer.echo(f"conflicting_uuids={plan.conflicting_uuids}")
+    typer.echo(f"selected_count={len(plan.selected_windows)}")
     roles = ("primary", "backup")
     for index, window in enumerate(plan.selected_windows):
         role = roles[index]
         typer.echo(
             "selected_window="
-            f"{role}|from={window.start.isoformat()}|to={window.end.isoformat()}|metadata_count={window.metadata_count}"
+            f"{role}|from={window.start.isoformat()}|to={window.end.isoformat()}|eligible_count={window.eligible_count}"
         )
     typer.echo(f"live_action={plan.live_action}")
-    typer.echo("raw_rows_persisted=no")
-    typer.echo("sensitive_fields_printed=no")
-    typer.echo("metadata_path_printed=no")
 
 
 def _print_metadata_window_error(error: str) -> None:
-    typer.echo("mode=metadata-window-plan")
     typer.echo("status=blocked")
-    typer.echo(f"error={error}")
-    typer.echo(f"error_kind={error}")
+    typer.echo(f"reason={error}")
+    typer.echo("selected_count=0")
     typer.echo("live_action=none")
-    typer.echo("raw_rows_persisted=no")
-    typer.echo("sensitive_fields_printed=no")
-    typer.echo("metadata_path_printed=no")
 
 
 def _run_live_diagnose(profile_id: str, query: DownloadQuery) -> LiveSmokeCliResult:

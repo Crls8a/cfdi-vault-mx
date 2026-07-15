@@ -59,7 +59,13 @@ class MetadataParseResult:
         return len(self.invalid_rows)
 
 
-def parse_metadata_bytes(content: bytes, *, delimiter: str | None = None, source_package_id: str = "") -> MetadataParseResult:
+def parse_metadata_bytes(
+    content: bytes,
+    *,
+    delimiter: str | None = None,
+    source_package_id: str = "",
+    allow_empty_status: bool = False,
+) -> MetadataParseResult:
     """Parse SAT-like metadata bytes as CSV, pipe-delimited TXT, or tab-delimited TXT."""
 
     text = content.decode("utf-8-sig")
@@ -70,7 +76,11 @@ def parse_metadata_bytes(content: bytes, *, delimiter: str | None = None, source
     invalid_rows: list[InvalidMetadataRow] = []
     for offset, row in enumerate(reader, start=2):
         normalized = {str(key or "").strip(): str(value or "").strip() for key, value in row.items()}
-        entry, errors = _entry_from_row(normalized, source_package_id=source_package_id)
+        entry, errors = _entry_from_row(
+            normalized,
+            source_package_id=source_package_id,
+            allow_empty_status=allow_empty_status,
+        )
         if errors:
             invalid_rows.append(InvalidMetadataRow(line_number=offset, errors=tuple(errors), raw=normalized))
             continue
@@ -78,7 +88,12 @@ def parse_metadata_bytes(content: bytes, *, delimiter: str | None = None, source
     return MetadataParseResult(entries=tuple(entries), invalid_rows=tuple(invalid_rows), header_valid=header_valid)
 
 
-def _entry_from_row(row: dict[str, str], *, source_package_id: str) -> tuple[MetadataEntry, list[str]]:
+def _entry_from_row(
+    row: dict[str, str],
+    *,
+    source_package_id: str,
+    allow_empty_status: bool,
+) -> tuple[MetadataEntry, list[str]]:
     errors: list[str] = []
     uuid = _value(row, "uuid").upper()
     issuer_rfc = _value(row, "issuer_rfc").upper()
@@ -97,7 +112,7 @@ def _entry_from_row(row: dict[str, str], *, source_package_id: str) -> tuple[Met
         errors.append("rfcEmisor is required")
     if not receiver_rfc:
         errors.append("rfcReceptor is required")
-    if not status:
+    if not status and not allow_empty_status:
         errors.append("estadoComprobante is required")
     if not effect:
         errors.append("tipoComprobante is required")

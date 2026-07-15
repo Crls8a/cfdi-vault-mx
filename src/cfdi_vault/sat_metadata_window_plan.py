@@ -16,6 +16,9 @@ from cfdi_vault.metadata_parser import parse_metadata_bytes
 
 WINDOW_DAYS = 7
 MAX_SELECTED_WINDOWS = 2
+VALID_DIRECTIONS = frozenset({"received", "issued"})
+ACTIVE_STATUSES = frozenset({"active", "vigente"})
+CANCELLED_STATUSES = frozenset({"canceled", "cancelled", "cancelado"})
 
 
 class MetadataPathPolicyError(ValueError):
@@ -28,11 +31,11 @@ class MetadataPathPolicyError(ValueError):
 
 @dataclass(frozen=True)
 class MetadataDiagnosticWindow:
-    """One sanitized date window and its positive metadata row count."""
+    """One sanitized date window and its eligible deduplicated UUID count."""
 
     start: date
     end: date
-    metadata_count: int
+    eligible_count: int
 
 
 @dataclass(frozen=True)
@@ -40,11 +43,19 @@ class MetadataWindowPlan:
     """Sanitized offline plan derived from metadata held only in memory."""
 
     status: str
+    reason: str
+    direction: str
     start: date
     end: date
     accepted_rows: int
     rejected_rows: int
-    in_range_rows: int
+    unique_uuids: int
+    duplicate_rows: int
+    eligible_uuids: int
+    in_range_eligible_uuids: int
+    cancelled_no_xml_expected: int
+    manual_review_uuids: int
+    conflicting_uuids: int
     selected_windows: tuple[MetadataDiagnosticWindow, ...]
     live_action: str
 
@@ -79,38 +90,80 @@ def build_metadata_window_plan(
     *,
     start: date,
     end: date,
+    direction: str = "received",
 ) -> MetadataWindowPlan:
-    """Select up to two low-volume seven-day windows from metadata bytes.
+    """Classify XML eligibility and select two low-volume weekly windows.
 
     Invalid rows fail closed because silently ignoring them could select a live
-    request window from an incomplete inventory. Entries outside the inclusive
-    planning range do not influence selection.
+    request window from an incomplete inventory. Unknown or contradictory UUID
+    evidence also fails closed. Entries outside the inclusive planning range do
+    not influence selection.
     """
 
     if start > end:
         raise ValueError("start must be before or equal to end")
+    normalized_direction = direction.strip().casefold()
+    if normalized_direction not in VALID_DIRECTIONS:
+        raise ValueError("direction must be received or issued")
 
-    parsed = parse_metadata_bytes(content)
+    parsed = parse_metadata_bytes(content, allow_empty_status=True)
     if not parsed.header_valid or parsed.invalid_rows:
-        return MetadataWindowPlan(
-            status="invalid_metadata",
-            start=start,
-            end=end,
-            accepted_rows=parsed.accepted_count,
-            rejected_rows=parsed.rejected_count,
-            in_range_rows=0,
-            selected_windows=(),
-            live_action="none",
+        return _plan(
+            status="invalid_metadata", reason="invalid_header_or_row", direction=normalized_direction,
+            start=start, end=end, accepted_rows=parsed.accepted_count, rejected_rows=parsed.rejected_count,
+        )
+
+    entries_by_uuid: dict[str, list] = {}
+    for entry in parsed.entries:
+        entries_by_uuid.setdefault(entry.uuid.strip().upper(), []).append(entry)
+
+    duplicate_rows = sum(len(entries) - 1 for entries in entries_by_uuid.values())
+    eligible_dates: list[date] = []
+    cancelled_no_xml_expected = 0
+    manual_review_uuids = 0
+    conflicting_uuids = 0
+    for entries in entries_by_uuid.values():
+        statuses = {_normalize_status(entry.status) for entry in entries}
+        issue_dates = {entry.issue_date.date() for entry in entries}
+        if len(statuses) != 1 or len(issue_dates) != 1:
+            conflicting_uuids += 1
+            manual_review_uuids += 1
+            continue
+        status = statuses.pop()
+        if status == "unknown":
+            manual_review_uuids += 1
+        elif status == "active" or (status == "cancelled" and normalized_direction == "issued"):
+            eligible_dates.append(issue_dates.pop())
+        else:
+            cancelled_no_xml_expected += 1
+
+    common = dict(
+        direction=normalized_direction,
+        start=start,
+        end=end,
+        accepted_rows=parsed.accepted_count,
+        rejected_rows=parsed.rejected_count,
+        unique_uuids=len(entries_by_uuid),
+        duplicate_rows=duplicate_rows,
+        eligible_uuids=len(eligible_dates),
+        cancelled_no_xml_expected=cancelled_no_xml_expected,
+        manual_review_uuids=manual_review_uuids,
+        conflicting_uuids=conflicting_uuids,
+    )
+    if manual_review_uuids:
+        return _plan(
+            status="metadata_requires_manual_review",
+            reason="unknown_or_conflicting_metadata",
+            **common,
         )
 
     buckets = _build_buckets(start, end)
     counts = [0] * len(buckets)
-    in_range_rows = 0
-    for entry in parsed.entries:
-        issued_on = entry.issue_date.date()
+    in_range_eligible_uuids = 0
+    for issued_on in eligible_dates:
         if issued_on < start or issued_on > end:
             continue
-        in_range_rows += 1
+        in_range_eligible_uuids += 1
         bucket_index = (issued_on - start).days // WINDOW_DAYS
         counts[bucket_index] += 1
 
@@ -119,17 +172,64 @@ def build_metadata_window_plan(
         for (window_start, window_end), count in zip(buckets, counts, strict=True)
         if count > 0
     )
-    selected = tuple(sorted(positive, key=lambda window: (window.metadata_count, window.start))[:MAX_SELECTED_WINDOWS])
-    status = "ready" if selected else "no_received_metadata_in_range"
+    selected = tuple(sorted(positive, key=lambda window: (window.eligible_count, window.start))[:MAX_SELECTED_WINDOWS])
+    status = "ready" if selected else "no_xml_eligible_metadata_in_range"
     return MetadataWindowPlan(
         status=status,
+        reason="eligibility_ready" if selected else "no_eligible_uuid_in_range",
+        in_range_eligible_uuids=in_range_eligible_uuids,
+        selected_windows=selected,
+        live_action="none",
+        **common,
+    )
+
+
+def _normalize_status(value: str) -> str:
+    """Reduce SAT metadata status variants to eligibility states."""
+
+    normalized = " ".join(value.split()).casefold()
+    if normalized in ACTIVE_STATUSES:
+        return "active"
+    if normalized in CANCELLED_STATUSES:
+        return "cancelled"
+    return "unknown"
+
+
+def _plan(
+    *,
+    status: str,
+    reason: str,
+    direction: str,
+    start: date,
+    end: date,
+    accepted_rows: int,
+    rejected_rows: int,
+    unique_uuids: int = 0,
+    duplicate_rows: int = 0,
+    eligible_uuids: int = 0,
+    cancelled_no_xml_expected: int = 0,
+    manual_review_uuids: int = 0,
+    conflicting_uuids: int = 0,
+) -> MetadataWindowPlan:
+    """Build a fail-closed plan without selectable windows."""
+
+    return MetadataWindowPlan(
+        status=status,
+        reason=reason,
+        direction=direction,
         start=start,
         end=end,
-        accepted_rows=parsed.accepted_count,
-        rejected_rows=parsed.rejected_count,
-        in_range_rows=in_range_rows,
-        selected_windows=selected,
-        live_action="bounded_metadata_requests" if selected else "none",
+        accepted_rows=accepted_rows,
+        rejected_rows=rejected_rows,
+        unique_uuids=unique_uuids,
+        duplicate_rows=duplicate_rows,
+        eligible_uuids=eligible_uuids,
+        in_range_eligible_uuids=0,
+        cancelled_no_xml_expected=cancelled_no_xml_expected,
+        manual_review_uuids=manual_review_uuids,
+        conflicting_uuids=conflicting_uuids,
+        selected_windows=(),
+        live_action="none",
     )
 
 

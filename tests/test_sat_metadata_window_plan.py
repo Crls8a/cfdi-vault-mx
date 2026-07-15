@@ -19,9 +19,9 @@ from cfdi_vault.sat_metadata_window_plan import (
 HEADER = "Uuid~RfcEmisor~NombreEmisor~RfcReceptor~NombreReceptor~FechaEmision~MontoTotal~EfectoComprobante~Estatus\n"
 
 
-def _row(index: int, issued_on: str) -> str:
-    uuid = f"00000000-0000-4000-8000-{index:012d}"
-    return f"{uuid}~XAXX010101000~Synthetic Issuer~XAXX010101000~Synthetic Receiver~{issued_on}T12:00:00~1.00~I~Vigente\n"
+def _row(index: int, issued_on: str, *, status: str = "Vigente", uuid: str | None = None) -> str:
+    uuid = uuid or f"00000000-0000-4000-8000-{index:012d}"
+    return f"{uuid}~XAXX010101000~Synthetic Issuer~XAXX010101000~Synthetic Receiver~{issued_on}T12:00:00~1.00~I~{status}\n"
 
 
 def test_h1_plan_selects_two_smallest_positive_windows_with_partial_final_bucket() -> None:
@@ -43,8 +43,8 @@ def test_h1_plan_selects_two_smallest_positive_windows_with_partial_final_bucket
     assert result.status == "ready"
     assert result.accepted_rows == 5
     assert result.rejected_rows == 0
-    assert result.in_range_rows == 4
-    assert [(window.start, window.end, window.metadata_count) for window in result.selected_windows] == [
+    assert result.in_range_eligible_uuids == 4
+    assert [(window.start, window.end, window.eligible_count) for window in result.selected_windows] == [
         (date(2026, 1, 8), date(2026, 1, 14), 1),
         (date(2026, 6, 25), date(2026, 6, 30), 1),
     ]
@@ -57,9 +57,114 @@ def test_plan_returns_range_neutral_no_data_without_live_windows() -> None:
         end=date(2026, 6, 30),
     )
 
-    assert result.status == "no_received_metadata_in_range"
+    assert result.status == "no_xml_eligible_metadata_in_range"
     assert result.selected_windows == ()
     assert result.live_action == "none"
+
+
+def test_received_plan_counts_only_unique_active_rows_as_xml_eligible() -> None:
+    content = (
+        HEADER
+        + _row(1, "2026-01-02", status=" Vigente ")
+        + _row(2, "2026-01-03", status="CANCELADO")
+        + _row(3, "2026-01-09", status=" active ")
+    ).encode()
+
+    result = build_metadata_window_plan(content, start=date(2026, 1, 1), end=date(2026, 1, 14), direction="received")
+
+    assert result.status == "ready"
+    assert result.direction == "received"
+    assert result.eligible_uuids == 2
+    assert result.cancelled_no_xml_expected == 1
+    assert result.in_range_eligible_uuids == 2
+    assert [window.eligible_count for window in result.selected_windows] == [1, 1]
+    assert result.live_action == "none"
+
+
+def test_issued_cancelled_row_is_xml_eligible() -> None:
+    result = build_metadata_window_plan(
+        (HEADER + _row(1, "2026-01-02", status="cancelled")).encode(),
+        start=date(2026, 1, 1),
+        end=date(2026, 1, 7),
+        direction="issued",
+    )
+
+    assert result.status == "ready"
+    assert result.eligible_uuids == 1
+    assert result.cancelled_no_xml_expected == 0
+    assert result.selected_windows[0].eligible_count == 1
+
+
+def test_received_plan_with_only_cancelled_rows_selects_no_window() -> None:
+    result = build_metadata_window_plan(
+        (HEADER + _row(1, "2026-01-02", status="Cancelado")).encode(),
+        start=date(2026, 1, 1),
+        end=date(2026, 1, 7),
+        direction="received",
+    )
+
+    assert result.status == "no_xml_eligible_metadata_in_range"
+    assert result.cancelled_no_xml_expected == 1
+    assert result.selected_windows == ()
+    assert result.live_action == "none"
+
+
+@pytest.mark.parametrize("status", ("", "Desconocido", "En proceso"))
+def test_unknown_empty_or_transient_status_requires_manual_review(status: str) -> None:
+    result = build_metadata_window_plan(
+        (HEADER + _row(1, "2026-01-02", status=status)).encode(),
+        start=date(2026, 1, 1),
+        end=date(2026, 1, 7),
+        direction="received",
+    )
+
+    assert result.status == "metadata_requires_manual_review"
+    assert result.reason == "unknown_or_conflicting_metadata"
+    assert result.manual_review_uuids == 1
+    assert result.selected_windows == ()
+    assert result.live_action == "none"
+
+
+def test_identical_duplicate_uuid_counts_once_and_reports_only_aggregate() -> None:
+    row = _row(1, "2026-01-02")
+    result = build_metadata_window_plan(
+        (HEADER + row + row).encode(),
+        start=date(2026, 1, 1),
+        end=date(2026, 1, 7),
+        direction="received",
+    )
+
+    assert result.unique_uuids == 1
+    assert result.duplicate_rows == 1
+    assert result.eligible_uuids == 1
+    assert result.selected_windows[0].eligible_count == 1
+
+
+@pytest.mark.parametrize("duplicate", (_row(1, "2026-01-02", status="Cancelado"), _row(1, "2026-01-03")))
+def test_conflicting_duplicate_uuid_fails_closed(duplicate: str) -> None:
+    result = build_metadata_window_plan(
+        (HEADER + _row(1, "2026-01-02") + duplicate).encode(),
+        start=date(2026, 1, 1),
+        end=date(2026, 1, 7),
+        direction="received",
+    )
+
+    assert result.status == "metadata_requires_manual_review"
+    assert result.reason == "unknown_or_conflicting_metadata"
+    assert result.conflicting_uuids == 1
+    assert result.selected_windows == ()
+
+
+def test_eligible_row_outside_range_does_not_affect_window_counts() -> None:
+    result = build_metadata_window_plan(
+        (HEADER + _row(1, "2025-12-31") + _row(2, "2026-01-02")).encode(),
+        start=date(2026, 1, 1),
+        end=date(2026, 1, 7),
+    )
+
+    assert result.eligible_uuids == 2
+    assert result.in_range_eligible_uuids == 1
+    assert result.selected_windows[0].eligible_count == 1
 
 
 @pytest.mark.parametrize(
@@ -90,7 +195,7 @@ def test_valid_header_only_metadata_is_a_no_data_result() -> None:
         end=date(2026, 2, 28),
     )
 
-    assert result.status == "no_received_metadata_in_range"
+    assert result.status == "no_xml_eligible_metadata_in_range"
     assert result.selected_windows == ()
 
 
@@ -129,13 +234,35 @@ def test_cli_prints_only_sanitized_window_plan(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 0, result.output
-    assert "mode=metadata-window-plan" in result.output
+    assert "direction=received" in result.output
     assert "status=ready" in result.output
-    assert "selected_window=primary|from=2026-01-08|to=2026-01-14|metadata_count=1" in result.output
-    assert "live_action=bounded_metadata_requests" in result.output
-    assert "raw_rows_persisted=no" in result.output
-    assert "sensitive_fields_printed=no" in result.output
-    assert "metadata_path_printed=no" in result.output
+    assert "selected_window=primary|from=2026-01-08|to=2026-01-14|eligible_count=1" in result.output
+    assert "selected_count=1" in result.output
+    assert "live_action=none" in result.output
+    for sensitive in (uuid, "XAXX010101000", "Synthetic Issuer", "1.00", str(metadata_path)):
+        assert sensitive not in result.output
+
+
+def test_cli_issued_manual_review_output_is_aggregate_and_redacted(tmp_path: Path) -> None:
+    metadata_path = tmp_path / "private-metadata.txt"
+    uuid = "00000000-0000-4000-8000-000000000001"
+    metadata_path.write_text(HEADER + _row(1, "2026-01-08", status="unknown"), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "sat", "metadata-window-plan", "--metadata", str(metadata_path),
+            "--from", "2026-01-01", "--to", "2026-06-30", "--direction", "issued",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "direction=issued" in result.output
+    assert "status=metadata_requires_manual_review" in result.output
+    assert "reason=unknown_or_conflicting_metadata" in result.output
+    assert "manual_review_uuids=1" in result.output
+    assert "selected_count=0" in result.output
+    assert "live_action=none" in result.output
     for sensitive in (uuid, "XAXX010101000", "Synthetic Issuer", "1.00", str(metadata_path)):
         assert sensitive not in result.output
 
@@ -158,7 +285,7 @@ def test_cli_reports_unreadable_metadata_without_printing_path(tmp_path: Path) -
     )
 
     assert result.exit_code == 1
-    assert "error=metadata_unavailable" in result.output
+    assert "reason=metadata_unavailable" in result.output
     assert "live_action=none" in result.output
     assert str(missing_path) not in result.output
 
@@ -253,7 +380,7 @@ def test_cli_rejects_extended_path_without_echo(tmp_path: Path, monkeypatch: pyt
     )
 
     assert result.exit_code == 1
-    assert "error_kind=metadata_namespace_path_rejected" in result.output
+    assert "reason=metadata_namespace_path_rejected" in result.output
     assert "status=blocked" in result.output
     assert str(extended_path) not in result.output
 
@@ -321,8 +448,7 @@ def test_cli_blocks_checkout_metadata_without_printing_path(tmp_path: Path, monk
     )
 
     assert result.exit_code == 1
-    assert "error=metadata_inside_checkout" in result.output
-    assert "error_kind=metadata_inside_checkout" in result.output
+    assert "reason=metadata_inside_checkout" in result.output
     assert "status=blocked" in result.output
     assert "live_action=none" in result.output
     assert str(metadata_path) not in result.output
