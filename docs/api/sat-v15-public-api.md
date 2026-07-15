@@ -139,6 +139,7 @@ supported LIB-005B and LIB-005C rows are public library API.
 | `cfdi_vault.sat_live_smoke` | Live-only tool | Manual smoke runner; never public or imported by default. |
 | `cfdi_vault.sat_metadata_artifact_state` | Internal reference-system state | Private redacted artifact bindings for external ZIP/TXT evidence; not a supported import. |
 | `cfdi_vault.sat_metadata_observation` | Internal reference-system evidence | Sanitized append-only observation ledger; not public API or proof of live SAT behavior. |
+| `cfdi_vault.sat_metadata_observation_projection` | Internal reference-system evidence | Pure sanitized hypothesis projection and stability reduction; not public API or live SAT proof. |
 | `cfdi_vault.sat_metadata_package` | Internal package processor | ZIP/TXT validation and extraction for gated metadata recovery; not a supported import. |
 | `cfdi_vault.sat_metadata_recovery` | Internal lifecycle model | Pure reference-system recovery transitions; no transport or live-compatibility guarantee. |
 | `cfdi_vault.sat_metadata_recovery_runner` | Reference-system orchestration | Advances one persisted recovery through injected boundaries; not public API. |
