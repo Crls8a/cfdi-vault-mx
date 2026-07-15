@@ -165,7 +165,8 @@ def _reproduces(prior, current, code, result, conclusion) -> bool:
     candidate = next((item for item in _candidates(prior) if item[0] == code), None)
     return bool(
         prior.lifecycle_transitioned and prior.sat_contacted
-        and prior.execution_started_at != current.execution_started_at
+        and prior.execution_started_at < current.execution_started_at
+        and prior.observed_at < current.observed_at
         and prior.tested_commit == current.tested_commit
         and _scope(prior) == _scope(current)
         and candidate is not None and candidate[1] == result and candidate[2] == conclusion
@@ -199,7 +200,8 @@ def _validate_facts(facts: MetadataObservationFacts) -> None:
     stages_valid = (
         type(facts.executed_stages) is tuple
         and all(type(value) is str for value in facts.executed_stages)
-        and len(indexes) == len(facts.executed_stages) and indexes == tuple(sorted(set(indexes)))
+        and len(indexes) == len(facts.executed_stages)
+        and facts.executed_stages == _STAGES[:len(facts.executed_stages)]
         and (bool(facts.executed_stages) or not facts.lifecycle_transitioned or not facts.sat_contacted)
     )
     bools = (facts.lifecycle_transitioned, facts.sat_contacted, facts.terminal_status_received,
@@ -230,6 +232,14 @@ def _valid_semantics(facts: MetadataObservationFacts) -> bool:
     structural = (facts.utf8_sig, facts.delimiter_tilde, facts.parser_compatible,
                   facts.has_records, facts.column_count)
     has_structure = any(value is not None for value in structural)
+    positive_contact_evidence = (
+        facts.authentication_accepted is True or facts.request_accepted is True
+        or facts.terminal_status_received or facts.verify_contacts > 0
+        or any((facts.package_count, facts.downloaded_package_count, facts.zip_valid_count, facts.txt_count))
+        or has_structure
+    )
+    if positive_contact_evidence and not facts.sat_contacted:
+        return False
     downstream = (
         facts.terminal_status_received or facts.verify_attempts > 0 or facts.package_count > 0
         or status != "verify_scheduled"
@@ -245,6 +255,8 @@ def _valid_semantics(facts: MetadataObservationFacts) -> bool:
     verify_evidence = facts.verify_attempts > 0 or facts.verify_contacts > 0 or facts.terminal_status_received
     if verify_evidence and not {"wait", "verify"}.issubset(stages):
         return False
+    if "verify" in stages and facts.verify_attempts == 0:
+        return False
     if facts.verify_contacts > 0 and not facts.sat_contacted:
         return False
     if facts.terminal_status_received and facts.verify_contacts == 0:
@@ -254,6 +266,13 @@ def _valid_semantics(facts: MetadataObservationFacts) -> bool:
     if status in terminal_required and not facts.terminal_status_received:
         return False
     if facts.terminal_status_received and status in {"verify_scheduled", "pending_after_budget"}:
+        return False
+    stage_cap = {
+        "verify_scheduled": 4, "pending_after_budget": 4, "verify_failed": 4, "no_data": 4,
+        "packages_ready": 4, "downloading": 5, "download_uncertain": 5,
+        "download_failed": 7, "completed": 7,
+    }
+    if len(facts.executed_stages) > stage_cap[status]:
         return False
     package_required = {"packages_ready", "downloading", "completed",
                         "download_uncertain", "download_failed"}
@@ -272,7 +291,11 @@ def _valid_semantics(facts: MetadataObservationFacts) -> bool:
         and facts.txt_count > 0
     ):
         return False
-    if status in {"downloading", "download_uncertain", "download_failed"} and (
+    if status in {"downloading", "download_uncertain"} and any(
+        (facts.downloaded_package_count, facts.zip_valid_count, facts.txt_count)
+    ):
+        return False
+    if status == "download_failed" and (
         facts.package_count == facts.downloaded_package_count == facts.zip_valid_count
         and facts.txt_count > 0
     ):
@@ -286,6 +309,10 @@ def _valid_semantics(facts: MetadataObservationFacts) -> bool:
     if facts.txt_count > 0 and (
         facts.zip_valid_count == 0 or not {"extract", "inspect"}.issubset(stages)
     ):
+        return False
+    if "extract" in stages and facts.zip_valid_count == 0:
+        return False
+    if "inspect" in stages and facts.txt_count == 0:
         return False
     if has_structure and not (
         facts.package_count > 0 and facts.downloaded_package_count > 0

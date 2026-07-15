@@ -90,7 +90,7 @@ def test_partial_or_no_data_evidence_stays_inconclusive() -> None:
 
 def test_direct_negative_evidence_refutes_only_supported_hypotheses() -> None:
     h3 = _by_code(subject.project_metadata_observations(_facts(
-        executed_stages=("authenticate", "submit", "wait", "verify", "download", "extract", "inspect"),
+        executed_stages=("authenticate", "submit", "wait", "verify", "download", "extract"),
         lifecycle_status="download_failed", terminal_status_received=True,
         verify_contacts_not_before_due=0, verify_contacts_before_due=1,
         package_count=1, downloaded_package_count=1, zip_valid_count=1, txt_count=0,
@@ -128,7 +128,6 @@ def test_h5_requires_explicit_due_evidence_and_completion() -> None:
     "changes",
     (
         {"lifecycle_transitioned": False},
-        {"sat_contacted": False, "verify_contacts": 0, "verify_contacts_not_before_due": 0},
         {"lifecycle_transitioned": False, "sat_contacted": False, "executed_stages": (),
          "authentication_accepted": None, "request_accepted": None, "verify_attempts": 0,
          "verify_contacts": 0, "verify_contacts_not_before_due": 0},
@@ -175,6 +174,7 @@ def test_schema_is_immutable_redacted_and_rejects_scope_or_aggregate_mixing() ->
         {"lifecycle_status": "no_data", "terminal_status_received": True, "package_count": 1},
         {"terminal_status_received": True, "verify_attempts": 0, "verify_contacts": 0,
          "verify_contacts_not_before_due": 0},
+        {"verify_attempts": 0, "verify_contacts": 0, "verify_contacts_not_before_due": 0},
         {"verify_contacts": 0, "verify_contacts_not_before_due": 0,
          "verify_contacts_due_unknown": 1},
         {"verify_contacts_before_due": 1, "verify_contacts_not_before_due": 0,
@@ -186,6 +186,23 @@ def test_schema_is_immutable_redacted_and_rejects_scope_or_aggregate_mixing() ->
         {"utf8_sig": True, "delimiter_tilde": True, "parser_compatible": True,
          "executed_stages": ("authenticate", "submit", "wait", "verify", "download", "extract", "inspect")},
         {"authentication_accepted": False, "request_accepted": True},
+        {"sat_contacted": False, "authentication_accepted": True, "request_accepted": None,
+         "executed_stages": ("authenticate",), "verify_attempts": 0, "verify_contacts": 0,
+         "verify_contacts_not_before_due": 0},
+        {"sat_contacted": False, "authentication_accepted": True, "request_accepted": True,
+         "executed_stages": ("authenticate", "submit"), "verify_attempts": 0, "verify_contacts": 0,
+         "verify_contacts_not_before_due": 0},
+        {"lifecycle_status": "no_data", "terminal_status_received": True,
+         "executed_stages": ("authenticate", "submit", "wait", "verify", "download")},
+        {"lifecycle_status": "verify_failed",
+         "executed_stages": ("authenticate", "submit", "wait", "verify", "download")},
+        {"lifecycle_status": "packages_ready", "terminal_status_received": True, "package_count": 1,
+         "executed_stages": ("authenticate", "submit", "wait", "verify", "download")},
+        {"lifecycle_status": "downloading", "terminal_status_received": True, "package_count": 1,
+         "downloaded_package_count": 1, "executed_stages": ("authenticate", "submit", "wait", "verify", "download")},
+        {"lifecycle_status": "download_uncertain", "terminal_status_received": True, "package_count": 1,
+         "downloaded_package_count": 1, "zip_valid_count": 1,
+         "executed_stages": ("authenticate", "submit", "wait", "verify", "download")},
     ),
 )
 def test_impossible_cross_field_facts_fail_closed(changes) -> None:
@@ -205,9 +222,22 @@ def test_incomplete_but_possible_error_and_pending_evidence_remains_inconclusive
         executed_stages=("authenticate",), authentication_accepted=False, request_accepted=None,
         verify_attempts=0, verify_contacts=0, verify_contacts_not_before_due=0,
     )))
+    packages_ready = _by_code(subject.project_metadata_observations(_facts(
+        lifecycle_status="packages_ready", terminal_status_received=True, package_count=1,
+    )))
+    downloading = _by_code(subject.project_metadata_observations(_facts(
+        lifecycle_status="downloading", terminal_status_received=True, package_count=1,
+        executed_stages=("authenticate", "submit", "wait", "verify", "download"),
+    )))
+    uncertain = _by_code(subject.project_metadata_observations(_facts(
+        lifecycle_status="download_uncertain", terminal_status_received=True, package_count=1,
+        executed_stages=("authenticate", "submit", "wait", "verify", "download"),
+    )))
     assert download_error["H3"].conclusion == "inconclusive"
     assert pending_unknown["H5"].conclusion == "inconclusive"
     assert auth_failure["H1"].conclusion == "inconclusive"
+    assert packages_ready["H2"].conclusion == "confirmed"
+    assert downloading["H3"].conclusion == uncertain["H3"].conclusion == "inconclusive"
 
 
 def test_stability_needs_distinct_execution_with_exact_reproducible_identity() -> None:
@@ -232,4 +262,13 @@ def test_stability_needs_distinct_execution_with_exact_reproducible_identity() -
     ):
         assert all(event.stability == "observed_once" for event in subject.project_metadata_observations(
             changed, prior_facts=(prior,),
+        ))
+    future = replace(
+        prior, execution_started_at=current.execution_started_at + timedelta(days=1),
+        observed_at=current.observed_at + timedelta(days=1),
+    )
+    equal_observed = replace(prior, observed_at=current.observed_at)
+    for not_prior in (future, equal_observed):
+        assert all(event.stability == "observed_once" for event in subject.project_metadata_observations(
+            current, prior_facts=(not_prior,),
         ))
