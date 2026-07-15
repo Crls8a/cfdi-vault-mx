@@ -55,12 +55,12 @@ class MetadataRecoveryAdvanceOutcome:
     sat_contacted: bool
     verify_count: int
     download_attempts: int
+    error_kind: str | None = None
+    requires_live: bool = False
     verify_contacts_not_before_due: int = 0
     verify_contacts_before_due: int = 0
     verify_contacts_due_unknown: int = 0
     terminal_status_received: bool = False
-    error_kind: str | None = None
-    requires_live: bool = False
 
 
 @dataclass

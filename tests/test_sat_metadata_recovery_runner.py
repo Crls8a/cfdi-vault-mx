@@ -23,6 +23,7 @@ from cfdi_vault.sat_contract import (
 )
 from cfdi_vault.sat_live_smoke import SatLiveSmokeError
 from cfdi_vault.sat_metadata_recovery_runner import (
+    MetadataRecoveryAdvanceOutcome,
     advance_metadata_recovery_once,
     settle_metadata_recovery_locally,
 )
@@ -32,6 +33,14 @@ REQUEST = "synthetic-request"
 PACKAGES = ("synthetic-package-a", "synthetic-package-b")
 PROFILE, CRITERIA = "synthetic-profile", "a" * 64
 RUN_REF = state.recovery_ref(PROFILE, CRITERIA, REQUEST)
+
+
+def test_advance_outcome_preserves_legacy_positional_fields() -> None:
+    outcome = MetadataRecoveryAdvanceOutcome({}, True, 2, 3, "safe_error", True)
+
+    assert (outcome.error_kind, outcome.requires_live) == ("safe_error", True)
+    assert (outcome.verify_contacts_not_before_due, outcome.verify_contacts_before_due,
+            outcome.verify_contacts_due_unknown, outcome.terminal_status_received) == (0, 0, 0, False)
 
 
 class _Verifier:
