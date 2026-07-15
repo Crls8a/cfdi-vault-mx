@@ -60,7 +60,7 @@ def test_verification_failure_requires_due_check_and_is_terminal() -> None:
     assert failed.status is subject.RecoveryStatus.VERIFY_FAILED
     assert failed.verify_attempts == 1
     assert failed.next_check_at is None
-    assert failed.record_count == 0
+    assert failed.record_count is None
     assert failed.packages == ()
     with pytest.raises(subject.MetadataRecoveryError, match="recovery-terminal"):
         subject.record_verification_failure(failed, checked_at=due)
@@ -75,15 +75,51 @@ def test_deadline_wins_over_verification_failure(elapsed: timedelta) -> None:
     assert recovery.next_check_at is None
 
 
-def test_finished_without_packages_or_records_is_no_data() -> None:
+@pytest.mark.parametrize("record_count", (None, 0))
+def test_finished_without_packages_or_records_is_no_data(record_count: int | None) -> None:
     recovery = subject.record_finished_verification(
         _start(),
         checked_at=START + timedelta(minutes=5),
         package_refs=(),
-        record_count=0,
+        record_count=record_count,
     )
     assert recovery.status is subject.RecoveryStatus.NO_DATA
+    assert recovery.record_count is record_count
     assert recovery.packages == ()
+
+
+def test_not_reported_record_count_remains_unknown_with_packages() -> None:
+    recovery = subject.record_finished_verification(
+        _start(),
+        checked_at=START + timedelta(minutes=5),
+        package_refs=(PACKAGE_A,),
+        record_count=None,
+    )
+
+    assert recovery.status is subject.RecoveryStatus.PACKAGES_READY
+    assert recovery.record_count is None
+    assert recovery.to_redacted_document()["recordCount"] == "not_reported"
+
+
+@pytest.mark.parametrize("record_count", (True, -1, "not_reported"))
+def test_finished_rejects_invalid_record_counts(record_count: object) -> None:
+    with pytest.raises(subject.MetadataRecoveryError, match="record-count-invalid"):
+        subject.record_finished_verification(
+            _start(),
+            checked_at=START + timedelta(minutes=5),
+            package_refs=(PACKAGE_A,),
+            record_count=record_count,  # type: ignore[arg-type]
+        )
+
+
+def test_positive_record_count_without_packages_is_rejected() -> None:
+    with pytest.raises(subject.MetadataRecoveryError, match="finished-packages-required"):
+        subject.record_finished_verification(
+            _start(),
+            checked_at=START + timedelta(minutes=5),
+            package_refs=(),
+            record_count=1,
+        )
 
 
 def test_packages_are_independent_once_only_and_complete_with_txt() -> None:
@@ -136,6 +172,16 @@ def test_redacted_document_has_only_safe_references_and_aggregates() -> None:
     serialized = repr(document).lower()
     for forbidden in ("rfc", "idsolicitud", "idpaquete", "path", "row", "raw"):
         assert forbidden not in serialized
+
+
+def test_initial_and_pending_redaction_never_invent_zero_records() -> None:
+    initial = _start()
+    checked_at = initial.next_check_at
+    assert checked_at is not None
+    pending = subject.record_pending_verification(initial, checked_at=checked_at)
+
+    assert initial.to_redacted_document()["recordCount"] == "not_reported"
+    assert pending.to_redacted_document()["recordCount"] == "not_reported"
 
 
 def test_raw_or_duplicate_references_are_rejected() -> None:

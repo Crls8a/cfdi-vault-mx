@@ -27,7 +27,7 @@ from cfdi_vault.sat_metadata_recovery import (
     RecoveryStatus,
 )
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _STATE_KEYS = {"schemaVersion", "recoveries"}
 _RECORD_KEYS = {
     "recovery", "idSolicitud", "profileId", "direction", "kind", "fechaInicial",
@@ -295,7 +295,10 @@ def _validate_recovery(recovery: MetadataRecovery) -> None:
         any(value is not None and value.utcoffset() is None for value in datetimes)
         or recovery.deadline_at != recovery.created_at + timedelta(days=7)
         or recovery.verify_attempts < 0
-        or recovery.record_count < 0
+        or (
+            recovery.record_count is not None
+            and (type(recovery.record_count) is not int or recovery.record_count < 0)
+        )
     ):
         raise MetadataRecoveryStateError("recovery-state-invalid")
     for package in recovery.packages:
@@ -311,7 +314,7 @@ def _validate_recovery(recovery: MetadataRecovery) -> None:
         if package.status is PackageRecoveryStatus.FAILED and (package.zip_valid is not False or package.txt_count):
             raise MetadataRecoveryStateError("recovery-state-invalid")
     statuses = tuple(item.status for item in recovery.packages)
-    no_packages = not statuses and recovery.record_count == 0
+    no_packages = not statuses and recovery.record_count in {None, 0}
     pending = recovery.status is RecoveryStatus.VERIFY_SCHEDULED
     minimum_due = _minimum_next_check(recovery) if pending else None
     valid = {
@@ -509,7 +512,7 @@ def _recovery_from_document(value: object) -> MetadataRecovery:
             _string(document, "recoveryRef"), _parse_datetime(_string(document, "createdAt")),
             _parse_datetime(_string(document, "deadlineAt")), RecoveryStatus(_string(document, "status")),
             _integer(document, "verifyAttempts"), _parse_datetime(next_check) if next_check else None,
-            _integer(document, "recordCount"), packages,
+            _record_count(document, "recordCount"), packages,
         )
         if recovery.to_redacted_document() != dict(document):
             raise MetadataRecoveryStateError("recovery-state-invalid")
@@ -726,6 +729,15 @@ def _string(document: Mapping[str, object], key: str) -> str:
 def _integer(document: Mapping[str, object], key: str) -> int:
     value = document.get(key)
     if isinstance(value, bool) or not isinstance(value, int):
+        raise MetadataRecoveryStateError("recovery-state-invalid")
+    return value
+
+
+def _record_count(document: Mapping[str, object], key: str) -> int | None:
+    value = document.get(key)
+    if value == "not_reported":
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise MetadataRecoveryStateError("recovery-state-invalid")
     return value
 

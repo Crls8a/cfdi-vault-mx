@@ -131,7 +131,7 @@ def _apply_verification(record, result, now):
     valid = type(result) is SatVerificationResult and result.request_id == record.id_solicitud
     if valid and type(result.sat_code) is str and result.sat_code.strip() == "5004":
         return replace(record, recovery=lifecycle.record_finished_verification(
-            recovery, checked_at=now, package_refs=(), record_count=0)), None
+            recovery, checked_at=now, package_refs=(), record_count=None)), None
     pending = valid and result.state in {SatRequestState.ACCEPTED, SatRequestState.IN_PROCESS} \
         and result.action in {SatOutcomeAction.ACCEPTED, SatOutcomeAction.IN_PROGRESS, SatOutcomeAction.RETRY}
     if pending:
@@ -146,7 +146,7 @@ def _apply_verification(record, result, now):
                 and ids_valid and len(ids) == len(set(ids)) == len(set(refs)))
     if finished:
         recovery = lifecycle.record_finished_verification(
-            recovery, checked_at=now, package_refs=refs, record_count=0)
+            recovery, checked_at=now, package_refs=refs, record_count=None)
         bindings = tuple(state.PackageIdBinding(ref, raw) for ref, raw in zip(refs, ids, strict=True))
         return replace(record, recovery=recovery, package_bindings=bindings), None
     recovery = lifecycle.record_verification_failure(recovery, checked_at=now)

@@ -78,7 +78,7 @@ class MetadataRecovery:
     status: RecoveryStatus
     verify_attempts: int
     next_check_at: datetime | None
-    record_count: int = 0
+    record_count: int | None = None
     packages: tuple[PackageRecovery, ...] = ()
 
     @property
@@ -101,7 +101,7 @@ class MetadataRecovery:
             "deadlineAt": _format_dt(self.deadline_at),
             "verifyAttempts": self.verify_attempts,
             "nextCheckAt": _format_dt(self.next_check_at) if self.next_check_at else "",
-            "recordCount": self.record_count,
+            "recordCount": "not_reported" if self.record_count is None else self.record_count,
             "packageCount": len(self.packages),
             "downloadedPackageCount": len(completed),
             "zipValidCount": sum(package.zip_valid is True for package in self.packages),
@@ -189,7 +189,7 @@ def record_finished_verification(
     *,
     checked_at: datetime,
     package_refs: tuple[str, ...],
-    record_count: int,
+    record_count: int | None,
 ) -> MetadataRecovery:
     """Record SAT completion and initialize independent package states."""
 
@@ -197,13 +197,13 @@ def record_finished_verification(
     expired = apply_recovery_deadline(recovery, now=checked_at)
     if expired.status is RecoveryStatus.PENDING_AFTER_BUDGET:
         return expired
-    if record_count < 0:
+    if record_count is not None and (type(record_count) is not int or record_count < 0):
         raise MetadataRecoveryError("record-count-invalid")
     if len(set(package_refs)) != len(package_refs) or any(not _PACKAGE_REF_RE.fullmatch(ref) for ref in package_refs):
         raise MetadataRecoveryError("package-ref-invalid")
-    if not package_refs and record_count:
+    if not package_refs and record_count not in {None, 0}:
         raise MetadataRecoveryError("finished-packages-required")
-    status = RecoveryStatus.NO_DATA if not package_refs and record_count == 0 else RecoveryStatus.PACKAGES_READY
+    status = RecoveryStatus.NO_DATA if not package_refs else RecoveryStatus.PACKAGES_READY
     return replace(
         recovery,
         status=status,

@@ -71,9 +71,10 @@ def test_redacted_state_excludes_all_private_resume_values() -> None:
     (
         "{",
         json.dumps({"schemaVersion": 1, "recoveries": []}),
-        json.dumps({"schemaVersion": 2.0, "recoveries": []}),
-        json.dumps({"schemaVersion": 3, "recoveries": []}),
-        json.dumps({"schemaVersion": 2, "recoveries": [], "unexpected": True}),
+        json.dumps({"schemaVersion": 2, "recoveries": []}),
+        json.dumps({"schemaVersion": 3.0, "recoveries": []}),
+        json.dumps({"schemaVersion": 4, "recoveries": []}),
+        json.dumps({"schemaVersion": 3, "recoveries": [], "unexpected": True}),
     ),
 )
 def test_loader_fails_closed_for_invalid_or_unknown_state(tmp_path, document: str) -> None:
@@ -214,7 +215,7 @@ def test_artifacts_round_trip_privately_and_advance_sequentially(tmp_path) -> No
     with pytest.raises(subject.MetadataRecoveryStateError, match="artifact-binding-invalid"):
         replace(completed, artifact_bindings=tuple(reversed(completed.artifact_bindings)))
     private = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
-    assert private["schemaVersion"] == 2
+    assert private["schemaVersion"] == 3
     assert private["recoveries"][0]["artifacts"] == [
         item.to_private_document() for item in completed.artifact_bindings
     ]
@@ -583,6 +584,16 @@ def test_loader_rejects_semantically_impossible_lifecycle(tmp_path, field: str, 
         subject.list_metadata_recovery_states(tmp_path)
 
 
+@pytest.mark.parametrize("value", ("unknown", "", True, -1))
+def test_loader_rejects_invalid_record_count_representations(tmp_path, value: object) -> None:
+    document = _state_document(_pending_record())
+    document["recoveries"][0]["recovery"]["recordCount"] = value
+    _write_document(tmp_path, document)
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="recovery-state-invalid"):
+        subject.list_metadata_recovery_states(tmp_path)
+
+
 def test_loader_rejects_incoherent_package_status_aggregate(tmp_path) -> None:
     document = _state_document(_ready_record())
     document["recoveries"][0]["recovery"]["packages"][0]["status"] = "completed"
@@ -647,8 +658,8 @@ def test_private_dataclass_repr_is_redacted() -> None:
 @pytest.mark.parametrize(
     "document",
     (
-        '{"schemaVersion":2,"schemaVersion":2,"recoveries":[]}',
-        '{"schemaVersion":2,"recoveries":[{"recovery":{},"recovery":{}}]}',
+        '{"schemaVersion":3,"schemaVersion":3,"recoveries":[]}',
+        '{"schemaVersion":3,"recoveries":[{"recovery":{},"recovery":{}}]}',
     ),
 )
 def test_loader_rejects_duplicate_json_keys_at_any_level(tmp_path, document: str) -> None:
@@ -694,6 +705,56 @@ def _ready_record() -> subject.MetadataRecoveryStateRecord:
         criteria_hash=pending.criteria_hash,
         authorization_ref=pending.authorization_ref,
         package_ids=PACKAGE_IDS,
+    )
+
+
+def test_record_count_round_trips_not_reported_and_known_integer(tmp_path) -> None:
+    initial = _pending_record()
+    due = initial.recovery.next_check_at
+    assert due is not None
+    pending = replace(
+        initial,
+        recovery=lifecycle.record_pending_verification(initial.recovery, checked_at=due),
+    )
+    unknown_ready = _finished_record(initial, PACKAGE_IDS, None)
+    unknown_no_data = _finished_record(initial, (), None)
+    known_ready = _ready_record()
+
+    for record, expected in (
+        (initial, "not_reported"),
+        (pending, "not_reported"),
+        (unknown_ready, "not_reported"),
+        (unknown_no_data, "not_reported"),
+        (known_ready, 2),
+    ):
+        document = _state_document(record)
+        assert document["recoveries"][0]["recovery"]["recordCount"] == expected
+        _write_document(tmp_path, document)
+        assert subject.list_metadata_recovery_states(tmp_path) == (record,)
+
+
+def _finished_record(
+    pending: subject.MetadataRecoveryStateRecord,
+    package_ids: tuple[str, ...],
+    record_count: int | None,
+) -> subject.MetadataRecoveryStateRecord:
+    recovery = lifecycle.record_finished_verification(
+        pending.recovery,
+        checked_at=START,
+        package_refs=tuple(subject.package_ref(value) for value in package_ids),
+        record_count=record_count,
+    )
+    return subject.new_metadata_recovery_state(
+        recovery=recovery,
+        id_solicitud=pending.id_solicitud,
+        profile_id=pending.profile_id,
+        direction=pending.direction,
+        kind=pending.kind,
+        fecha_inicial=pending.fecha_inicial,
+        fecha_final=pending.fecha_final,
+        criteria_hash=pending.criteria_hash,
+        authorization_ref=pending.authorization_ref,
+        package_ids=package_ids,
     )
 
 
@@ -763,7 +824,7 @@ def _artifact(
 
 
 def _state_document(record: subject.MetadataRecoveryStateRecord) -> dict[str, object]:
-    return {"schemaVersion": 2, "recoveries": [record.to_private_document()]}
+    return {"schemaVersion": 3, "recoveries": [record.to_private_document()]}
 
 
 def _write_document(tmp_path: Path, document: dict[str, object]) -> None:

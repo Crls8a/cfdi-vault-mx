@@ -60,9 +60,9 @@ def _zip() -> bytes:
 
 
 def _verification(*, packages: tuple[str, ...] = (), action=SatOutcomeAction.FINISHED,
-                  request_id: str = REQUEST) -> SatVerificationResult:
+                  request_id: str = REQUEST, sat_code: str = "5000") -> SatVerificationResult:
     state_value = SatRequestState.FINISHED if action is SatOutcomeAction.FINISHED else SatRequestState.IN_PROCESS
-    return SatVerificationResult(request_id, state_value, "5000", "Synthetic", packages, action)
+    return SatVerificationResult(request_id, state_value, sat_code, "Synthetic", packages, action)
 
 
 def _download(package_id: str, content: bytes | None = None) -> SatDownloadResult:
@@ -127,7 +127,22 @@ def test_finished_without_packages_is_no_data(tmp_path) -> None:
     _saved(tmp_path)
     outcome = _advance(tmp_path, _Verifier(_verification()), _Downloader(), NOW + timedelta(minutes=5))
     assert outcome.recovery["status"] == "no_data"
+    assert outcome.recovery["recordCount"] == "not_reported"
     assert outcome.download_attempts == 0
+
+
+def test_sat_no_data_code_never_writes_an_invented_zero(tmp_path) -> None:
+    _saved(tmp_path)
+    outcome = _advance(
+        tmp_path,
+        _Verifier(_verification(sat_code="5004")),
+        _Downloader(),
+        NOW + timedelta(minutes=5),
+    )
+
+    assert outcome.recovery["status"] == "no_data"
+    assert outcome.recovery["recordCount"] == "not_reported"
+    assert state.load_metadata_recovery_state(tmp_path, RUN_REF).recovery.record_count is None
 
 
 def test_two_packages_download_once_in_binding_order_and_terminal_is_idempotent(tmp_path) -> None:
@@ -139,6 +154,8 @@ def test_two_packages_download_once_in_binding_order_and_terminal_is_idempotent(
     assert downloader.calls == list(PACKAGES)
     assert (outcome.verify_count, outcome.download_attempts) == (1, 2)
     loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
+    assert loaded.recovery.record_count is None
+    assert outcome.recovery["recordCount"] == "not_reported"
     assert len(loaded.artifact_bindings) == 2
     assert all(raw not in repr(outcome) for raw in (REQUEST, *PACKAGES))
     repeated = _advance(tmp_path, _Verifier(ValueError()), _Downloader(), NOW + timedelta(hours=1))
@@ -149,7 +166,7 @@ def test_restart_with_claimed_download_becomes_uncertain_without_sat_call(tmp_pa
     record = _saved(tmp_path)
     ready = lifecycle.record_finished_verification(
         record.recovery, checked_at=NOW + timedelta(minutes=5),
-        package_refs=(state.package_ref(PACKAGES[0]),), record_count=0,
+        package_refs=(state.package_ref(PACKAGES[0]),), record_count=None,
     )
     claimed = lifecycle.begin_package_download(ready, ready.packages[0].package_ref)
     record = replace(record, recovery=claimed,

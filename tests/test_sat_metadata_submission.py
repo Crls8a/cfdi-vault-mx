@@ -41,6 +41,9 @@ def test_accepted_request_is_claimed_before_network_and_reused_with_new_authoriz
     )
 
     assert accepted.status == repeated.status == subject.SubmissionStatus.ACCEPTED and requester.submit_request.call_count == 1
+    saved = recovery_state.load_metadata_recovery_state(tmp_path, accepted.recovery_ref)
+    assert saved.recovery.record_count is None
+    assert saved.to_redacted_document()["recordCount"] == "not_reported"
     serialized = repr(accepted.to_redacted_document())
     for private in ("profile-synthetic", query.criteria_hash(), "authorization-synthetic-a", "synthetic-request-alpha"):
         assert private not in serialized
