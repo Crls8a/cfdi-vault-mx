@@ -14,6 +14,8 @@ def test_help_command_lists_recovery_flow() -> None:
     assert "download status" in result.output
     assert "download live-smoke" in result.output
     assert "sat auth-smoke" in result.output
+    assert "sat metadata-recover-live" in result.output
+    assert "sat metadata-recovery-status" in result.output
     assert "sat metadata-window-plan" in result.output
     assert "sat verify-live-gate" in result.output
     assert "sat inspect-auth-contract" in result.output
@@ -53,6 +55,8 @@ def test_cli_subcommand_help_builds_for_setup_and_worker() -> None:
         ["download", "status", "--help"],
         ["download", "live-smoke", "--help"],
         ["sat", "auth-smoke", "--help"],
+        ["sat", "metadata-recover-live", "--help"],
+        ["sat", "metadata-recovery-status", "--help"],
         ["sat", "metadata-window-plan", "--help"],
         ["sat", "verify-live-gate", "--help"],
         ["sat", "inspect-auth-contract", "--help"],
@@ -67,3 +71,22 @@ def test_cli_subcommand_help_builds_for_setup_and_worker() -> None:
 
         assert result.exit_code == 0, result.output
         assert result.exception is None
+
+
+def test_metadata_recovery_help_documents_required_options_and_safe_output() -> None:
+    runner = CliRunner()
+
+    recover = runner.invoke(app, ["sat", "metadata-recover-live", "--help"])
+    status = runner.invoke(app, ["sat", "metadata-recovery-status", "--help"])
+
+    assert recover.exit_code == 0, recover.output
+    for option in ("--profile", "--direction", "--from", "--to", "--authorization"):
+        assert option in recover.output
+    assert "local state" in recover.output
+    assert "sanitized aggregate output" in recover.output
+
+    assert status.exit_code == 0, status.output
+    for option in ("--profile", "--recovery-ref"):
+        assert option in status.output
+    assert "local persisted recovery state" in status.output
+    assert "sanitized aggregates" in status.output

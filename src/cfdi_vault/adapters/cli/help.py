@@ -114,6 +114,18 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "example": "cfdi-vault sat metadata-request-state --profile default",
     },
     {
+        "command": "sat metadata-recover-live",
+        "purpose": "Submit or resume one permitted Metadata recovery with external local state and sanitized aggregate output.",
+        "when": "Run only with the exact local permit; an existing request is never replaced automatically.",
+        "example": "cfdi-vault sat metadata-recover-live --profile <profile-id> --direction received --from YYYY-MM-DD --to YYYY-MM-DD --authorization <permit-id>",
+    },
+    {
+        "command": "sat metadata-recovery-status",
+        "purpose": "Read local recovery state and print sanitized aggregate progress only.",
+        "when": "Use a local recovery reference to inspect progress without contacting SAT.",
+        "example": "cfdi-vault sat metadata-recovery-status --profile <profile-id> --recovery-ref <recovery-ref>",
+    },
+    {
         "command": "sat metadata-window-plan",
         "purpose": "Derive XML eligibility and select two weekly windows from external SAT metadata without persisting rows.",
         "when": "Run offline after manually exporting received or issued metadata; received is the default direction.",

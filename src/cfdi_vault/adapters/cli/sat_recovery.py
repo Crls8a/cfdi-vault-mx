@@ -52,7 +52,7 @@ def sat_metadata_recover_live(
     to_date: str = typer.Option(..., "--to", help="Inclusive end date: YYYY-MM-DD."),
     authorization: str = typer.Option(..., "--authorization", help="Exact local recovery permit id."),
 ) -> None:
-    """Submit or advance one exact Metadata recovery without replacing its request."""
+    """Submit or advance one permitted Metadata recovery using local state and sanitized aggregate output."""
 
     try:
         query, local_profile = _safe_recovery_query(profile, direction, from_date, to_date)
@@ -91,7 +91,7 @@ def sat_metadata_recovery_status(
     profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
     recovery_ref: str = typer.Option(..., "--recovery-ref", help="Opaque local recovery reference."),
 ) -> None:
-    """Read one persisted recovery and print sanitized aggregates only."""
+    """Read local persisted recovery state and print sanitized aggregates only."""
 
     try:
         local_profile = _safe_recovery_profile(profile)
