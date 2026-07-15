@@ -219,5 +219,87 @@ def _validate_facts(facts: MetadataObservationFacts) -> None:
         and (facts.column_count is None or type(facts.column_count) is int
              and 0 <= facts.column_count <= _MAX_COUNT)
     )
-    if not (scope_valid and stages_valid and bools_valid and counts_valid and aggregates_valid):
+    if not (scope_valid and stages_valid and bools_valid and counts_valid and aggregates_valid
+            and _valid_semantics(facts)):
         raise MetadataObservationProjectionError("facts-invalid")
+
+
+def _valid_semantics(facts: MetadataObservationFacts) -> bool:
+    stages = set(facts.executed_stages)
+    status = facts.lifecycle_status
+    structural = (facts.utf8_sig, facts.delimiter_tilde, facts.parser_compatible,
+                  facts.has_records, facts.column_count)
+    has_structure = any(value is not None for value in structural)
+    downstream = (
+        facts.terminal_status_received or facts.verify_attempts > 0 or facts.package_count > 0
+        or status != "verify_scheduled"
+    )
+    if facts.authentication_accepted is not None and "authenticate" not in stages:
+        return False
+    if facts.request_accepted is not None and "submit" not in stages:
+        return False
+    if facts.request_accepted is True and facts.authentication_accepted is not True:
+        return False
+    if downstream and (facts.authentication_accepted is not True or facts.request_accepted is not True):
+        return False
+    verify_evidence = facts.verify_attempts > 0 or facts.verify_contacts > 0 or facts.terminal_status_received
+    if verify_evidence and not {"wait", "verify"}.issubset(stages):
+        return False
+    if facts.verify_contacts > 0 and not facts.sat_contacted:
+        return False
+    if facts.terminal_status_received and facts.verify_contacts == 0:
+        return False
+    terminal_required = {"packages_ready", "downloading", "completed", "no_data",
+                         "download_uncertain", "download_failed"}
+    if status in terminal_required and not facts.terminal_status_received:
+        return False
+    if facts.terminal_status_received and status in {"verify_scheduled", "pending_after_budget"}:
+        return False
+    package_required = {"packages_ready", "downloading", "completed",
+                        "download_uncertain", "download_failed"}
+    if status in package_required and facts.package_count == 0:
+        return False
+    package_forbidden = {"verify_scheduled", "pending_after_budget", "verify_failed", "no_data"}
+    if status in package_forbidden and any((facts.package_count, facts.downloaded_package_count,
+                                           facts.zip_valid_count, facts.txt_count)):
+        return False
+    if status == "packages_ready" and any((facts.downloaded_package_count, facts.zip_valid_count, facts.txt_count)):
+        return False
+    if status == "verify_failed" and facts.verify_attempts == 0:
+        return False
+    if status == "completed" and not (
+        facts.package_count == facts.downloaded_package_count == facts.zip_valid_count > 0
+        and facts.txt_count > 0
+    ):
+        return False
+    if status in {"downloading", "download_uncertain", "download_failed"} and (
+        facts.package_count == facts.downloaded_package_count == facts.zip_valid_count
+        and facts.txt_count > 0
+    ):
+        return False
+    download_evidence = (
+        facts.downloaded_package_count > 0 or facts.zip_valid_count > 0 or facts.txt_count > 0
+        or status in {"downloading", "completed", "download_uncertain", "download_failed"}
+    )
+    if download_evidence and "download" not in stages:
+        return False
+    if facts.txt_count > 0 and (
+        facts.zip_valid_count == 0 or not {"extract", "inspect"}.issubset(stages)
+    ):
+        return False
+    if has_structure and not (
+        facts.package_count > 0 and facts.downloaded_package_count > 0
+        and facts.zip_valid_count > 0 and facts.txt_count > 0
+        and {"download", "extract", "inspect"}.issubset(stages)
+    ):
+        return False
+    if facts.utf8_sig is False and (
+        facts.delimiter_tilde is True or facts.parser_compatible is True
+        or facts.has_records is True or facts.column_count not in {None, 0}
+    ):
+        return False
+    if facts.delimiter_tilde is True and facts.utf8_sig is not True:
+        return False
+    if facts.parser_compatible is True and facts.column_count == 0:
+        return False
+    return True

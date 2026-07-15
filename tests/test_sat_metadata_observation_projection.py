@@ -78,7 +78,8 @@ def test_partial_or_no_data_evidence_stays_inconclusive() -> None:
     )))
     structural_unknown = _by_code(subject.project_metadata_observations(_facts(
         executed_stages=("authenticate", "submit", "wait", "verify", "download", "extract", "inspect"),
-        lifecycle_status="download_failed", package_count=1, downloaded_package_count=1,
+        lifecycle_status="completed", terminal_status_received=True,
+        package_count=1, downloaded_package_count=1,
         zip_valid_count=1, txt_count=1, utf8_sig=True,
     )))
     assert (accepted["H1"].conclusion, accepted["H1"].next_correction_code,
@@ -88,19 +89,25 @@ def test_partial_or_no_data_evidence_stays_inconclusive() -> None:
 
 
 def test_direct_negative_evidence_refutes_only_supported_hypotheses() -> None:
-    events = _by_code(subject.project_metadata_observations(_facts(
+    h3 = _by_code(subject.project_metadata_observations(_facts(
         executed_stages=("authenticate", "submit", "wait", "verify", "download", "extract", "inspect"),
         lifecycle_status="download_failed", terminal_status_received=True,
         verify_contacts_not_before_due=0, verify_contacts_before_due=1,
-        package_count=1, downloaded_package_count=1, zip_valid_count=0, txt_count=0,
+        package_count=1, downloaded_package_count=1, zip_valid_count=1, txt_count=0,
+    )))
+    h4 = _by_code(subject.project_metadata_observations(_facts(
+        executed_stages=("authenticate", "submit", "wait", "verify", "download", "extract", "inspect"),
+        lifecycle_status="completed", terminal_status_received=True,
+        verify_contacts_not_before_due=0, verify_contacts_before_due=1,
+        package_count=1, downloaded_package_count=1, zip_valid_count=1, txt_count=1,
         utf8_sig=False, delimiter_tilde=False, parser_compatible=False,
     )))
-    assert (events["H1"].conclusion, events["H2"].conclusion,
-            events["H3"].conclusion, events["H3"].next_correction_code) == (
+    assert (h3["H1"].conclusion, h3["H2"].conclusion,
+            h3["H3"].conclusion, h3["H3"].next_correction_code) == (
                 "inconclusive", "confirmed", "refuted", "package")
-    assert (events["H4"].conclusion, events["H4"].next_correction_code,
-            events["H5"].conclusion, events["H5"].next_correction_code) == (
-                "refuted", "parser", "refuted", "scheduler")
+    assert (h4["H3"].conclusion, h4["H4"].conclusion, h4["H4"].next_correction_code,
+            h4["H5"].conclusion, h4["H5"].next_correction_code) == (
+                "confirmed", "refuted", "parser", "refuted", "scheduler")
 
 
 def test_h5_requires_explicit_due_evidence_and_completion() -> None:
@@ -121,8 +128,10 @@ def test_h5_requires_explicit_due_evidence_and_completion() -> None:
     "changes",
     (
         {"lifecycle_transitioned": False},
-        {"sat_contacted": False},
-        {"lifecycle_transitioned": False, "sat_contacted": False, "executed_stages": ()},
+        {"sat_contacted": False, "verify_contacts": 0, "verify_contacts_not_before_due": 0},
+        {"lifecycle_transitioned": False, "sat_contacted": False, "executed_stages": (),
+         "authentication_accepted": None, "request_accepted": None, "verify_attempts": 0,
+         "verify_contacts": 0, "verify_contacts_not_before_due": 0},
     ),
 )
 def test_idle_no_due_or_no_contact_projects_no_event(changes) -> None:
@@ -145,6 +154,62 @@ def test_schema_is_immutable_redacted_and_rejects_scope_or_aggregate_mixing() ->
         subject.MetadataObservationFacts(private_id="forbidden")
 
 
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"lifecycle_status": "completed", "terminal_status_received": True,
+         "authentication_accepted": False, "package_count": 1, "downloaded_package_count": 1,
+         "zip_valid_count": 1, "txt_count": 1,
+         "executed_stages": ("authenticate", "submit", "wait", "verify", "download", "extract", "inspect")},
+        {"lifecycle_status": "completed", "terminal_status_received": True,
+         "request_accepted": False, "package_count": 1, "downloaded_package_count": 1,
+         "zip_valid_count": 1, "txt_count": 1,
+         "executed_stages": ("authenticate", "submit", "wait", "verify", "download", "extract", "inspect")},
+        {"lifecycle_status": "completed", "terminal_status_received": True},
+        {"lifecycle_status": "completed", "terminal_status_received": True,
+         "package_count": 1, "downloaded_package_count": 1, "zip_valid_count": 1, "txt_count": 1,
+         "executed_stages": ("authenticate", "submit", "wait", "verify", "download")},
+        {"lifecycle_status": "download_failed", "terminal_status_received": True,
+         "package_count": 1, "downloaded_package_count": 1, "zip_valid_count": 1, "txt_count": 1,
+         "executed_stages": ("authenticate", "submit", "wait", "verify", "download", "extract", "inspect")},
+        {"lifecycle_status": "no_data", "terminal_status_received": True, "package_count": 1},
+        {"terminal_status_received": True, "verify_attempts": 0, "verify_contacts": 0,
+         "verify_contacts_not_before_due": 0},
+        {"verify_contacts": 0, "verify_contacts_not_before_due": 0,
+         "verify_contacts_due_unknown": 1},
+        {"verify_contacts_before_due": 1, "verify_contacts_not_before_due": 0,
+         "executed_stages": ("authenticate", "submit", "verify")},
+        {"package_count": 1},
+        {"package_count": 1, "downloaded_package_count": 1, "zip_valid_count": 1},
+        {"package_count": 1, "downloaded_package_count": 1, "zip_valid_count": 1,
+         "txt_count": 1, "executed_stages": ("authenticate", "submit", "wait", "verify", "download")},
+        {"utf8_sig": True, "delimiter_tilde": True, "parser_compatible": True,
+         "executed_stages": ("authenticate", "submit", "wait", "verify", "download", "extract", "inspect")},
+        {"authentication_accepted": False, "request_accepted": True},
+    ),
+)
+def test_impossible_cross_field_facts_fail_closed(changes) -> None:
+    with pytest.raises(subject.MetadataObservationProjectionError, match="facts-invalid"):
+        _facts(**changes)
+
+
+def test_incomplete_but_possible_error_and_pending_evidence_remains_inconclusive() -> None:
+    download_error = _by_code(subject.project_metadata_observations(_facts(
+        lifecycle_status="download_failed", terminal_status_received=True, package_count=1,
+        executed_stages=("authenticate", "submit", "wait", "verify", "download"),
+    )))
+    pending_unknown = _by_code(subject.project_metadata_observations(_facts(
+        verify_contacts_not_before_due=0, verify_contacts_due_unknown=1,
+    )))
+    auth_failure = _by_code(subject.project_metadata_observations(_facts(
+        executed_stages=("authenticate",), authentication_accepted=False, request_accepted=None,
+        verify_attempts=0, verify_contacts=0, verify_contacts_not_before_due=0,
+    )))
+    assert download_error["H3"].conclusion == "inconclusive"
+    assert pending_unknown["H5"].conclusion == "inconclusive"
+    assert auth_failure["H1"].conclusion == "inconclusive"
+
+
 def test_stability_needs_distinct_execution_with_exact_reproducible_identity() -> None:
     scope_marker = object()
     prior = _facts(reducer_scope=scope_marker)
@@ -163,12 +228,8 @@ def test_stability_needs_distinct_execution_with_exact_reproducible_identity() -
         replace(current, tested_commit="b" * 40),
         replace(current, entry_point="metadata-recovery-runner"),
         replace(current, direction="issued"),
+        replace(current, lifecycle_status="pending_after_budget"),
     ):
         assert all(event.stability == "observed_once" for event in subject.project_metadata_observations(
             changed, prior_facts=(prior,),
         ))
-    changed_result = _by_code(subject.project_metadata_observations(
-        replace(current, request_accepted=False), prior_facts=(prior,),
-    ))
-    assert changed_result["H1"].stability == "observed_once"
-    assert changed_result["H5"].stability == "stable"
