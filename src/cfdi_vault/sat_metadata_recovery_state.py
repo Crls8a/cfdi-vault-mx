@@ -421,11 +421,11 @@ def _exclusive_state_lock(path: Path):
             flags |= os.O_NOFOLLOW
         descriptor = os.open(lock, flags, 0o600)
         _validate_open_lock(lock, path.parent, descriptor)
+        _acquire_advisory_lock(descriptor)
         if os.fstat(descriptor).st_size < 1:
             os.lseek(descriptor, 0, os.SEEK_SET)
             os.write(descriptor, b"\0")
             os.fsync(descriptor)
-        _acquire_advisory_lock(descriptor)
     except MetadataRecoveryStateError:
         if descriptor is not None:
             os.close(descriptor)

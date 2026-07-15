@@ -1,4 +1,6 @@
 import json
+import multiprocessing
+import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -259,6 +261,42 @@ def test_save_lock_is_exclusive_for_the_entire_transaction(tmp_path, monkeypatch
     assert _lock_path(tmp_path).exists()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows byte-range lock regression")
+def test_windows_empty_lock_contention_is_reported_busy(tmp_path) -> None:
+    lock = _lock_path(tmp_path)
+    lock.parent.mkdir(parents=True)
+    lock.touch()
+    context = multiprocessing.get_context("spawn")
+    ready, release = context.Event(), context.Event()
+    process = context.Process(
+        target=_hold_empty_lock_in_process,
+        args=(str(lock), ready, release),
+    )
+    process.start()
+    try:
+        assert ready.wait(timeout=5)
+        with pytest.raises(subject.MetadataRecoveryStateError, match="recovery-state-busy"):
+            subject.save_metadata_recovery_state(tmp_path, _pending_record())
+    finally:
+        release.set()
+        process.join(timeout=5)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+
+    assert process.exitcode == 0
+
+
+def test_empty_lock_initialization_io_failure_is_lock_failed(tmp_path, monkeypatch) -> None:
+    lock = _lock_path(tmp_path)
+    lock.parent.mkdir(parents=True)
+    lock.touch()
+    monkeypatch.setattr(subject.os, "write", Mock(side_effect=PermissionError("synthetic denial")))
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="recovery-state-lock-failed"):
+        subject.save_metadata_recovery_state(tmp_path, _pending_record())
+
+
 def test_sequential_save_reuses_and_retains_stable_lock_file(tmp_path) -> None:
     lock = _lock_path(tmp_path)
     lock.parent.mkdir(parents=True)
@@ -438,3 +476,15 @@ def _write_document(tmp_path: Path, document: dict[str, object]) -> None:
 def _lock_path(storage_root: Path, *, repo_root: Path | None = None) -> Path:
     path = subject.metadata_recovery_state_path(storage_root, repo_root=repo_root)
     return path.with_name(f".{path.name}.lock")
+
+
+def _hold_empty_lock_in_process(lock_path: str, ready, release) -> None:
+    descriptor = os.open(lock_path, os.O_RDWR)
+    try:
+        subject._acquire_advisory_lock(descriptor)
+        ready.set()
+        if not release.wait(timeout=10):
+            raise RuntimeError("synthetic lock-holder timeout")
+        subject._release_advisory_lock(descriptor)
+    finally:
+        os.close(descriptor)
