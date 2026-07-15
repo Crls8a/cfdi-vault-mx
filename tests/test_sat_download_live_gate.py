@@ -17,7 +17,12 @@ from cfdi_vault.sat_download_live_gate import (
     DownloadWsdlCheckResult,
     check_download_wsdl_endpoint,
 )
-from cfdi_vault.sat_live_request_state import PACKAGE_READY, persist_live_metadata_request, redact_package_ref, upsert_live_metadata_request
+from cfdi_vault.sat_live_request_state import (
+    PACKAGE_READY,
+    persist_live_metadata_request,
+    redact_package_ref,
+    upsert_live_metadata_request,
+)
 from cfdi_vault.sat_package_download_offline import build_synthetic_package_zip
 from tests.test_cli_download import (
     _assert_no_profile_secrets_or_paths,
@@ -27,6 +32,13 @@ from tests.test_cli_download import (
     _weekly_metadata_query,
     _write_ready_setup_profile,
 )
+
+
+def test_package_download_failure_stage_mapping_requires_actual_live_io() -> None:
+    assert cli_module._failure_stage_has_live_io("package_download_build") is False
+    assert cli_module._failure_stage_has_live_io("package_download_transport") is True
+    assert cli_module._failure_stage_has_live_io("package_download_parse") is True
+    assert cli_module._failure_stage_has_live_io("package_download") is True
 
 
 def test_cli_download_live_gate_blocks_without_required_preflight(tmp_path: Path, monkeypatch) -> None:

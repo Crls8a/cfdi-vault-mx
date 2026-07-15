@@ -39,6 +39,25 @@ from cfdi_vault.sat_verify_live_gate import (
 from .common import *
 from .sat_common import _is_backfill_submit_range, _query_from_live_request_record
 
+_LIVE_IO_FAILURE_STAGES = frozenset(
+    {
+        "auth_transport",
+        "auth_response_parse",
+        "token_extract",
+        "metadata_request_transport",
+        "metadata_request_parse",
+        "verify_transport",
+        "verify_response_parse",
+        "package_download",
+        "package_download_transport",
+        "package_download_parse",
+    }
+)
+
+
+def _failure_stage_has_live_io(stage: str) -> bool:
+    return stage in _LIVE_IO_FAILURE_STAGES
+
 
 def _deny_package_download(reason: str) -> None:
     typer.echo("error=package_download_denied", err=True)
@@ -571,13 +590,7 @@ def sat_verify_live_gate(
                     verify_elapsed_ms = result.duration_ms
                     live_executed = True
                 except SatLiveSmokeError as exc:
-                    live_executed = exc.failed_stage in {
-                        "auth_transport",
-                        "auth_response_parse",
-                        "token_extract",
-                        "verify_transport",
-                        "verify_response_parse",
-                    }
+                    live_executed = _failure_stage_has_live_io(exc.failed_stage)
                     error_kind = exc.error_kind
                     verify_elapsed_ms = exc.diagnostic.duration_ms if exc.failed_stage == "verify_transport" else None
             else:
@@ -709,13 +722,7 @@ def sat_download_live_gate(
                     elif package_id is None:
                         error_kind = "package-ref-not-in-live-verify"
                 except SatLiveSmokeError as exc:
-                    live_executed = exc.failed_stage in {
-                        "auth_transport",
-                        "auth_response_parse",
-                        "token_extract",
-                        "verify_transport",
-                        "verify_response_parse",
-                    }
+                    live_executed = _failure_stage_has_live_io(exc.failed_stage)
                     error_kind = exc.error_kind
             elif package_id is not None:
                 gate = evaluate_package_download_gate(record.sat_estado_solicitud or "3", record.package_ids)
@@ -760,12 +767,7 @@ def sat_download_live_gate(
                         elif not inspection.zip_valid:
                             error_kind = "zip-invalid"
                     except SatLiveSmokeError as exc:
-                        live_executed = exc.failed_stage in {
-                            "auth_transport",
-                            "auth_response_parse",
-                            "token_extract",
-                            "package_download",
-                        }
+                        live_executed = _failure_stage_has_live_io(exc.failed_stage)
                         error_kind = exc.error_kind
                 else:
                     error_kind = oracle.reason

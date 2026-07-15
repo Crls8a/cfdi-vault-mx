@@ -489,7 +489,7 @@ class SatLiveV15MetadataAdapter:
                 "SAT request response could not be parsed",
                 stage="metadata_request_parse",
                 error_kind=_response_error_kind(response),
-                effect_unknown=True,
+                effect_unknown=_response_effect_unknown(response),
                 safe_hint=PARSE_HINT,
                 soap_fault_code=_soap_fault_code(response),
                 payload_size=len(response),
@@ -541,7 +541,7 @@ class SatLiveV15MetadataAdapter:
                 "SAT package download response could not be parsed",
                 stage="package_download_parse",
                 error_kind=_response_error_kind(response),
-                effect_unknown=True,
+                effect_unknown=_response_effect_unknown(response),
                 safe_hint=PARSE_HINT,
                 soap_fault_code=_soap_fault_code(response),
                 payload_size=len(response),
@@ -586,7 +586,32 @@ class SatLiveV15MetadataAdapter:
                 )
             )
         except HTTPError as exc:
-            response_body = exc.read(8192)
+            try:
+                response_body = exc.read(8192)
+            except Exception as read_exc:
+                failure = _classify_transport_failure(read_exc)
+                error_kind = (
+                    "verify_read_timeout"
+                    if stage == "verify_transport" and failure.error_kind == "timeout"
+                    else failure.error_kind
+                )
+                raise SatLiveSmokeError(
+                    "SAT transport failed while reading an error response",
+                    stage=stage,
+                    error_kind=error_kind,
+                    effect_unknown=_transport_effect_unknown(stage, failure),
+                    safe_hint=TRANSPORT_HINT,
+                    endpoint=endpoint_label,
+                    http_status=exc.code,
+                    payload_size=len(body),
+                    envelope_sha256=_digest(body),
+                    exception_class=failure.exception_class,
+                    exception_errno=failure.exception_errno,
+                    transport_layer=failure.transport_layer,
+                    duration_ms=_elapsed_ms(started),
+                    operation=operation,
+                    **_readiness_error_fields(readiness),
+                ) from None
             raise SatLiveSmokeError(
                 "SAT transport returned a non-success status",
                 stage=stage,
@@ -1400,7 +1425,19 @@ def _classify_transport_exception(exc: BaseException) -> str:
 
 
 def _root_transport_exception(exc: BaseException) -> BaseException:
-    if isinstance(exc, (SoapConnectTimeout, SoapReadTimeout)):
+    if isinstance(
+        exc,
+        (
+            SoapConnectTimeout,
+            SoapReadTimeout,
+            ssl.SSLError,
+            TimeoutError,
+            socket.timeout,
+            RemoteDisconnected,
+            EOFError,
+            ConnectionResetError,
+        ),
+    ):
         return exc
     if isinstance(exc, URLError) and isinstance(exc.reason, BaseException):
         return _root_transport_exception(exc.reason)
@@ -1431,6 +1468,47 @@ def _auth_parse_failure(exc: BaseException) -> tuple[str, str]:
     return "auth_response_parse", "token_parse_failed"
 def _response_error_kind(response: bytes) -> str:
     return "soap_fault" if _soap_fault_code(response) else "unexpected_http_response"
+
+
+def _response_effect_unknown(response: bytes) -> bool:
+    return not _response_establishes_outcome(response)
+
+
+def _response_establishes_outcome(response: bytes) -> bool:
+    root = _parse_xml_or_none(response)
+    if root is None:
+        return False
+    result_names = {
+        "SolicitaDescargaResult",
+        "SolicitaDescargaEmitidosResult",
+        "SolicitaDescargaRecibidosResult",
+        "SolicitaDescargaFolioResult",
+        "RequestDownloadResult",
+        "DescargaResult",
+        "DescargarResult",
+        "DownloadResult",
+        "RespuestaDescargaMasivaTercerosSalida",
+    }
+    status_names = {"CodEstatus", "CodigoEstatus", "StatusCode"}
+    for item in root.iter():
+        if not isinstance(item.tag, str):
+            continue
+        local_name = etree.QName(item).localname
+        if local_name == "Fault":
+            return True
+        if local_name not in result_names:
+            continue
+        if any(item.get(name) for name in status_names):
+            return True
+        for child in item.iterdescendants():
+            if not isinstance(child.tag, str):
+                continue
+            child_name = etree.QName(child).localname
+            if child_name in status_names and _text(child):
+                return True
+            if local_name == "RespuestaDescargaMasivaTercerosSalida" and child_name == "Paquete" and _text(child):
+                return True
+    return False
 
 
 def _http_response_error_kind(response: bytes) -> str:

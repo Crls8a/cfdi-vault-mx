@@ -5,7 +5,7 @@ import hashlib
 import ssl
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 import pytest
 from cryptography import x509
@@ -215,6 +215,113 @@ def test_submit_effect_is_unknown_only_after_ambiguous_post(tmp_path: Path) -> N
     with pytest.raises(SatLiveSmokeError) as http_exc:
         _neutral_adapter(tmp_path, definitive, material=_material()).submit_request(_query())
     assert http_exc.value.effect_unknown is False
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected_stage", "expected_effect_unknown"),
+    [
+        ("auth", "auth_transport", False),
+        ("request", "metadata_request_transport", True),
+        ("verify", "verify_transport", False),
+        ("download", "package_download_transport", True),
+    ],
+)
+@pytest.mark.parametrize("read_failure", ["timeout", "reset", "remote_closed"])
+def test_http_error_body_read_failure_is_sanitized_with_operation_effect_semantics(
+    tmp_path: Path,
+    operation: str,
+    expected_stage: str,
+    expected_effect_unknown: bool,
+    read_failure: str,
+) -> None:
+    failures = {
+        "timeout": TimeoutError("SENSITIVE RESPONSE READ DETAIL"),
+        "reset": ConnectionResetError("SENSITIVE RESPONSE READ DETAIL"),
+        "remote_closed": EOFError("SENSITIVE RESPONSE READ DETAIL"),
+    }
+    failure = _http_error_with_failing_body(failures[read_failure])
+    transport = _FailAfterAuthTransport(failure) if operation != "auth" else _AlwaysFailTransport(failure)
+    adapter = _neutral_adapter(tmp_path, transport, material=_material())
+
+    with pytest.raises(SatLiveSmokeError) as exc:
+        if operation == "auth":
+            adapter._authenticate()
+        elif operation == "request":
+            adapter.submit_request(_query())
+        elif operation == "verify":
+            adapter.verify_request("SYN-REQ-HTTP-READ")
+        else:
+            adapter.download_package("SYN-PKG-HTTP-READ")
+
+    assert (exc.value.failed_stage, exc.value.effect_unknown) == (
+        expected_stage,
+        expected_effect_unknown,
+    )
+    expected_kind = {
+        "timeout": "verify_read_timeout" if operation == "verify" else "timeout",
+        "reset": "connection_reset_during_post",
+        "remote_closed": "remote_closed_connection",
+    }[read_failure]
+    assert exc.value.error_kind == expected_kind
+    assert exc.value.diagnostic.http_status == 500
+    assert "SENSITIVE" not in str(exc.value)
+    assert "SENSITIVE" not in repr(exc.value.diagnostic)
+
+
+@pytest.mark.parametrize("operation", ["request", "download"])
+def test_recognizable_soap_fault_parse_failure_has_definitive_effect(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    fault = _soap(
+        "<soap:Fault><faultcode>soap:Server</faultcode>"
+        "<faultstring>SENSITIVE SAT DETAIL</faultstring></soap:Fault>"
+    )
+    adapter = _neutral_adapter(
+        tmp_path,
+        FakeSoapTransport([_auth_response(), SoapTransportResponse(200, body=fault)]),
+        material=_material(),
+    )
+
+    with pytest.raises(SatLiveSmokeError) as exc:
+        if operation == "request":
+            adapter.submit_request(_query())
+        else:
+            adapter.download_package("SYN-PKG-SOAP-FAULT")
+
+    assert exc.value.effect_unknown is False
+    assert exc.value.error_kind == "soap_fault"
+    assert "SENSITIVE" not in str(exc.value)
+
+
+@pytest.mark.parametrize("operation", ["request", "download"])
+def test_recognizable_sat_status_parse_failure_has_definitive_effect(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    if operation == "request":
+        response = _soap(
+            '<sat:SolicitaDescargaRecibidosResult CodEstatus="5000" '
+            'Mensaje="SENSITIVE accepted without id" />'
+        )
+    else:
+        response = _soap(
+            '<sat:DescargaResult CodEstatus="5000">not-valid-base64</sat:DescargaResult>'
+        )
+    adapter = _neutral_adapter(
+        tmp_path,
+        FakeSoapTransport([_auth_response(), SoapTransportResponse(200, body=response)]),
+        material=_material(),
+    )
+
+    with pytest.raises(SatLiveSmokeError) as exc:
+        if operation == "request":
+            adapter.submit_request(_query())
+        else:
+            adapter.download_package("SYN-PKG-DEFINITIVE")
+
+    assert exc.value.effect_unknown is False
+    assert "SENSITIVE" not in str(exc.value)
 
 
 def test_package_download_uses_precise_stages_and_effect_semantics(
@@ -766,6 +873,35 @@ class _FailAfterAuthTransport(FakeSoapTransport):
             self.requests.append(request)
             raise self._failure
         return super().send(request)
+
+
+class _AlwaysFailTransport:
+    def __init__(self, failure: BaseException) -> None:
+        self._failure = failure
+
+    def send(self, _request: object) -> object:
+        raise self._failure
+
+
+class _FailingHttpBody:
+    def __init__(self, failure: BaseException) -> None:
+        self._failure = failure
+
+    def read(self, _amount: int = -1) -> bytes:
+        raise self._failure
+
+    def close(self) -> None:
+        return None
+
+
+def _http_error_with_failing_body(failure: BaseException) -> HTTPError:
+    return HTTPError(
+        "https://synthetic.invalid",
+        500,
+        "SENSITIVE HTTP DETAIL",
+        hdrs=None,
+        fp=_FailingHttpBody(failure),  # type: ignore[arg-type]
+    )
 
 
 def _neutral_adapter(
