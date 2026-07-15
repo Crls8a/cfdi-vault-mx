@@ -20,6 +20,14 @@ _TERMINAL = frozenset({
     RecoveryStatus.COMPLETED, RecoveryStatus.NO_DATA, RecoveryStatus.PENDING_AFTER_BUDGET,
     RecoveryStatus.VERIFY_FAILED, RecoveryStatus.DOWNLOAD_UNCERTAIN, RecoveryStatus.DOWNLOAD_FAILED,
 })
+_TRANSIENT_VERIFY_ERROR_KINDS = frozenset({
+    "connect_timeout",
+    "timeout",
+    "verify_read_timeout",
+    "remote_closed_connection",
+    "connection_reset_during_post",
+    "proxy_connect_failed",
+})
 
 
 @dataclass(frozen=True)
@@ -32,47 +40,59 @@ class MetadataRecoveryAdvanceOutcome:
     download_attempts: int
     error_kind: str | None = None
 
+
+@dataclass
+class _SatCallAudit:
+    """Retain call evidence even when later local processing or persistence fails."""
+
+    sat_contacted: bool = False
+    verify_count: int = 0
+    download_attempts: int = 0
+
+
 def advance_metadata_recovery_once(
     *, storage_root: str | Path, recovery_ref: str, verifier: SatVerificationPort,
     downloader: SatDownloadPort, package_storage: PackageStorage, now: datetime,
     repo_root: str | Path | None = None,
 ) -> MetadataRecoveryAdvanceOutcome:
     """Advance one recovery while a crash-safe operation lock prevents duplicate SAT I/O."""
+    audit = _SatCallAudit()
     try:
         with state.metadata_recovery_operation_lock(storage_root, repo_root=repo_root):
-            return _advance(storage_root, recovery_ref, verifier, downloader, package_storage, now, repo_root)
+            return _advance(
+                storage_root, recovery_ref, verifier, downloader, package_storage,
+                now, repo_root, audit,
+            )
     except state.MetadataRecoveryStateError as exc:
         kind = "busy" if exc.reason == "recovery-state-busy" else "state_failed"
-        return MetadataRecoveryAdvanceOutcome(None, False, 0, 0, kind)
+        return _failed_out(audit, kind)
     except Exception:
-        return MetadataRecoveryAdvanceOutcome(None, False, 0, 0, "runner_failed")
+        return _failed_out(audit, "runner_failed")
 
 
-def _advance(root, recovery_ref, verifier, downloader, package_storage, now, repo_root):
+def _advance(root, recovery_ref, verifier, downloader, package_storage, now, repo_root, audit):
     record = state.load_metadata_recovery_state(root, recovery_ref, repo_root=repo_root)
     recovery = record.recovery
     if recovery.status in _TERMINAL:
-        return _out(record)
+        return _out(record, audit)
     expired = lifecycle.apply_recovery_deadline(recovery, now=now)
     if expired != recovery:
         record = replace(record, recovery=expired)
         state.save_metadata_recovery_state(root, record, repo_root=repo_root)
-        return _out(record)
+        return _out(record, audit)
     claimed = next((item for item in recovery.packages
                     if item.status is PackageRecoveryStatus.DOWNLOADING), None)
     if claimed is not None:
         recovery = lifecycle.record_package_download(recovery, claimed.package_ref, uncertain=True)
         record = replace(record, recovery=recovery)
         state.save_metadata_recovery_state(root, record, repo_root=repo_root)
-        return _out(record, error="download_uncertain")
-    contacted = False
-    verifies = 0
-    downloads = 0
+        return _out(record, audit, error="download_uncertain")
     error = None
     if recovery.status is RecoveryStatus.VERIFY_SCHEDULED:
         if recovery.next_check_at is None or now < recovery.next_check_at:
-            return _out(record)
-        contacted, verifies = True, 1
+            return _out(record, audit)
+        audit.sat_contacted = True
+        audit.verify_count += 1
         try:
             result = verifier.verify_request(record.id_solicitud)
         except Exception as exc:
@@ -84,11 +104,11 @@ def _advance(root, recovery_ref, verifier, downloader, package_storage, now, rep
                 error = "verify_failed"
             record = replace(record, recovery=recovery)
             state.save_metadata_recovery_state(root, record, repo_root=repo_root)
-            return _out(record, contacted, verifies, error=error)
+            return _out(record, audit, error=error)
         record, error = _apply_verification(record, result, now)
         state.save_metadata_recovery_state(root, record, repo_root=repo_root)
         if record.recovery.status not in {RecoveryStatus.PACKAGES_READY, RecoveryStatus.DOWNLOADING}:
-            return _out(record, contacted, verifies, error=error)
+            return _out(record, audit, error=error)
     for ordinal, binding in enumerate(record.package_bindings, start=1):
         package = next(item for item in record.recovery.packages
                        if item.package_ref == binding.package_ref)
@@ -97,19 +117,22 @@ def _advance(root, recovery_ref, verifier, downloader, package_storage, now, rep
         recovery = lifecycle.begin_package_download(record.recovery, binding.package_ref)
         record = replace(record, recovery=recovery)
         state.save_metadata_recovery_state(root, record, repo_root=repo_root)
-        contacted, downloads = True, downloads + 1
+        audit.sat_contacted = True
+        audit.download_attempts += 1
         try:
             result = downloader.download_package(binding.id_paquete)
         except Exception as exc:
             uncertain = getattr(exc, "effect_unknown", None) is not False
             record = _finish_download(record, binding.package_ref, uncertain=uncertain)
             state.save_metadata_recovery_state(root, record, repo_root=repo_root)
-            return _out(record, contacted, verifies, downloads,
-                        "download_uncertain" if uncertain else "download_failed")
+            return _out(
+                record, audit,
+                error="download_uncertain" if uncertain else "download_failed",
+            )
         if not _valid_download(result, binding.id_paquete):
             record = _finish_download(record, binding.package_ref, uncertain=False)
             state.save_metadata_recovery_state(root, record, repo_root=repo_root)
-            return _out(record, contacted, verifies, downloads, "download_failed")
+            return _out(record, audit, error="download_failed")
         try:
             processed = process_metadata_package(recovery_ref, ordinal, result.content, package_storage)
             artifact = MetadataPackageArtifactState.from_processed(binding.package_ref, processed)
@@ -118,12 +141,12 @@ def _advance(root, recovery_ref, verifier, downloader, package_storage, now, rep
             )
             record = replace(record, recovery=recovery,
                              artifact_bindings=(*record.artifact_bindings, artifact))
-            state.save_metadata_recovery_state(root, record, repo_root=repo_root)
         except Exception:
             record = _finish_download(record, binding.package_ref, uncertain=False)
             state.save_metadata_recovery_state(root, record, repo_root=repo_root)
-            return _out(record, contacted, verifies, downloads, "download_failed")
-    return _out(record, contacted, verifies, downloads, error)
+            return _out(record, audit, error="download_failed")
+        state.save_metadata_recovery_state(root, record, repo_root=repo_root)
+    return _out(record, audit, error=error)
 
 
 def _apply_verification(record, result, now):
@@ -154,11 +177,12 @@ def _apply_verification(record, result, now):
 
 
 def _retryable_verification(exc: Exception) -> bool:
+    error_kind = getattr(exc, "error_kind", None)
     return bool(
         (isinstance(exc, SatError) and exc.retryable)
         or isinstance(exc, (TimeoutError, ConnectionError))
         or getattr(exc, "retryable", False) is True
-        or getattr(exc, "failed_stage", None) == "verify_transport"
+        or (type(error_kind) is str and error_kind in _TRANSIENT_VERIFY_ERROR_KINDS)
     )
 
 
@@ -178,7 +202,14 @@ def _finish_download(record, package_ref, *, uncertain):
     return replace(record, recovery=recovery)
 
 
-def _out(record, contacted=False, verifies=0, downloads=0, error=None):
+def _failed_out(audit, error):
     return MetadataRecoveryAdvanceOutcome(
-        record.to_redacted_document(), contacted, verifies, downloads, error,
+        None, audit.sat_contacted, audit.verify_count, audit.download_attempts, error,
+    )
+
+
+def _out(record, audit, error=None):
+    return MetadataRecoveryAdvanceOutcome(
+        record.to_redacted_document(), audit.sat_contacted,
+        audit.verify_count, audit.download_attempts, error,
     )

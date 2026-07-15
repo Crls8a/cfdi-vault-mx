@@ -14,6 +14,7 @@ import cfdi_vault.sat_metadata_recovery_state as state
 from cfdi_vault.domain import SatRequestState
 from cfdi_vault.package_processor import MemoryPackageStorage
 from cfdi_vault.sat_contract import SatDownloadResult, SatOutcomeAction, SatVerificationError, SatVerificationResult
+from cfdi_vault.sat_live_smoke import SatLiveSmokeError
 from cfdi_vault.sat_metadata_recovery_runner import advance_metadata_recovery_once
 
 NOW = datetime(2026, 6, 30, tzinfo=timezone.utc)
@@ -123,6 +124,37 @@ def test_verify_exception_and_mismatch_classification(tmp_path, result, expected
         assert loaded.recovery.next_check_at == NOW + timedelta(minutes=20)
 
 
+@pytest.mark.parametrize(
+    ("error_kind", "expected"),
+    [
+        ("connect_timeout", "verify_scheduled"),
+        ("timeout", "verify_scheduled"),
+        ("verify_read_timeout", "verify_scheduled"),
+        ("remote_closed_connection", "verify_scheduled"),
+        ("connection_reset_during_post", "verify_scheduled"),
+        ("proxy_connect_failed", "verify_scheduled"),
+        ("http_status_error", "verify_failed"),
+        ("soap_fault", "verify_failed"),
+        ("tls_handshake_failed", "verify_failed"),
+        ("certificate_verify_failed", "verify_failed"),
+        ("client_configuration_error", "verify_failed"),
+        ("envelope_build_failed", "verify_failed"),
+        ("xmlsig_failed", "verify_failed"),
+        ("unexpected_http_response", "verify_failed"),
+    ],
+)
+def test_live_verify_errors_use_exact_transient_allowlist(tmp_path, error_kind, expected) -> None:  # type: ignore[no-untyped-def]
+    _saved(tmp_path)
+    failure = SatLiveSmokeError(
+        "synthetic safe failure", stage="verify_transport", error_kind=error_kind,
+    )
+
+    outcome = _advance(tmp_path, _Verifier(failure), _Downloader(), NOW + timedelta(minutes=5))
+
+    assert outcome.recovery["status"] == expected
+    assert (outcome.sat_contacted, outcome.verify_count) == (True, 1)
+
+
 def test_finished_without_packages_is_no_data(tmp_path) -> None:
     _saved(tmp_path)
     outcome = _advance(tmp_path, _Verifier(_verification()), _Downloader(), NOW + timedelta(minutes=5))
@@ -196,6 +228,23 @@ def test_download_failures_are_terminal_and_redacted(tmp_path, result, expected)
     assert "PRIVATE" not in repr(outcome)
 
 
+def test_download_audit_survives_artifact_persistence_failure(tmp_path) -> None:
+    class FailingStorage:
+        def write_bytes_idempotent(self, key: str, content: bytes):  # type: ignore[no-untyped-def]
+            raise RuntimeError("PRIVATE")
+
+    _saved(tmp_path)
+    outcome = _advance(
+        tmp_path, _Verifier(_verification(packages=(PACKAGES[0],))),
+        _Downloader({PACKAGES[0]: _download(PACKAGES[0])}),
+        NOW + timedelta(minutes=5), storage=FailingStorage(),
+    )
+
+    assert outcome.error_kind == "download_failed"
+    assert (outcome.sat_contacted, outcome.verify_count, outcome.download_attempts) == (True, 1, 1)
+    assert "PRIVATE" not in repr(outcome)
+
+
 def test_operation_lock_prevents_concurrent_duplicate_verification(tmp_path) -> None:
     _saved(tmp_path)
     entered, release = Event(), Event()
@@ -217,3 +266,63 @@ def test_operation_lock_prevents_concurrent_duplicate_verification(tmp_path) -> 
     assert busy.error_kind == "busy"
     assert (busy.sat_contacted, busy.verify_count, busy.download_attempts) == (False, 0, 0)
     assert verifier.calls == [REQUEST]
+
+
+def test_verify_audit_survives_state_save_failure_after_contact(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    _saved(tmp_path)
+    verifier = _Verifier(_verification())
+
+    def fail_save(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise state.MetadataRecoveryStateError("synthetic-save-failed")
+
+    monkeypatch.setattr(state, "save_metadata_recovery_state", fail_save)
+    outcome = _advance(tmp_path, verifier, _Downloader(), NOW + timedelta(minutes=5))
+
+    assert outcome.error_kind == "state_failed"
+    assert (outcome.sat_contacted, outcome.verify_count, outcome.download_attempts) == (True, 1, 0)
+    assert verifier.calls == [REQUEST]
+    assert "synthetic-save-failed" not in repr(outcome)
+    assert REQUEST not in repr(outcome)
+
+
+def test_download_audit_survives_state_save_failure_after_contact(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    record = _saved(tmp_path)
+    package_ref = state.package_ref(PACKAGES[0])
+    ready = lifecycle.record_finished_verification(
+        record.recovery, checked_at=NOW + timedelta(minutes=5),
+        package_refs=(package_ref,), record_count=None,
+    )
+    state.save_metadata_recovery_state(tmp_path, replace(
+        record, recovery=ready,
+        package_bindings=(state.PackageIdBinding(package_ref, PACKAGES[0]),),
+    ))
+    downloader = _Downloader({PACKAGES[0]: _download(PACKAGES[0])})
+    real_save = state.save_metadata_recovery_state
+    calls = 0
+
+    def fail_second_save(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise state.MetadataRecoveryStateError("synthetic-save-failed")
+        return real_save(*args, **kwargs)
+
+    monkeypatch.setattr(state, "save_metadata_recovery_state", fail_second_save)
+    outcome = _advance(tmp_path, _Verifier(ValueError()), downloader, NOW + timedelta(minutes=6))
+
+    assert outcome.error_kind == "state_failed"
+    assert (outcome.sat_contacted, outcome.verify_count, outcome.download_attempts) == (True, 0, 1)
+    assert downloader.calls == [PACKAGES[0]]
+    assert "synthetic-save-failed" not in repr(outcome)
+    assert PACKAGES[0] not in repr(outcome)
+
+
+def test_pre_contact_state_failure_has_zero_audit_counts(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def fail_load(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise state.MetadataRecoveryStateError("synthetic-load-failed")
+
+    monkeypatch.setattr(state, "load_metadata_recovery_state", fail_load)
+    outcome = _advance(tmp_path, _Verifier(ValueError()), _Downloader(), NOW)
+
+    assert outcome.error_kind == "state_failed"
+    assert (outcome.sat_contacted, outcome.verify_count, outcome.download_attempts) == (False, 0, 0)
