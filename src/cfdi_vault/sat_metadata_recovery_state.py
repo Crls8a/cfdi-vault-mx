@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 from collections.abc import Mapping
@@ -113,19 +114,7 @@ def metadata_recovery_state_path(
     storage_root: str | Path, *, repo_root: str | Path | None = None,
 ) -> Path:
     """Return the fixed, non-sensitive state path under configured storage."""
-    root = Path(storage_root).expanduser()
-    repository = Path(repo_root).expanduser() if repo_root is not None else _REPO_ROOT
-    if not root.is_absolute() or not repository.is_absolute():
-        raise MetadataRecoveryStateError("storage-root-not-absolute")
-    resolution_failed = False
-    try:
-        root, repository = root.resolve(), repository.resolve()
-    except (OSError, RuntimeError):
-        resolution_failed = True
-    if resolution_failed:
-        raise MetadataRecoveryStateError("recovery-state-path-invalid")
-    if root == repository or repository in root.parents:
-        raise MetadataRecoveryStateError("storage-root-inside-repository")
+    root = _canonical_storage_root(storage_root, repo_root=repo_root)
     return root / "state" / "sat-metadata-recoveries.json"
 
 
@@ -402,48 +391,132 @@ def _resolved_state_path(
     repo_root: str | Path | None,
     create_parent: bool,
 ) -> Path:
-    path = metadata_recovery_state_path(storage_root, repo_root=repo_root)
+    root = _canonical_storage_root(storage_root, repo_root=repo_root)
+    path = root / "state" / "sat-metadata-recoveries.json"
     repository = Path(repo_root).expanduser() if repo_root is not None else _REPO_ROOT
-    resolution_failed = False
     try:
         if create_parent:
             path.parent.mkdir(parents=True, exist_ok=True)
+        parent = path.parent.resolve(strict=False)
         resolved = path.resolve(strict=False)
-        repository = repository.resolve()
+        repository = repository.resolve(strict=False)
     except (OSError, RuntimeError):
-        resolution_failed = True
-    if resolution_failed:
         raise MetadataRecoveryStateError("recovery-state-path-invalid")
-    if resolved == repository or repository in resolved.parents:
+    if _is_within(parent, repository) or _is_within(resolved, repository):
         raise MetadataRecoveryStateError("storage-root-inside-repository")
+    if not _is_within(parent, root) or not _is_within(resolved, root):
+        raise MetadataRecoveryStateError("recovery-state-path-invalid")
     return resolved
 
 
 @contextmanager
 def _exclusive_state_lock(path: Path):
-    """Hold a fail-closed sibling claim across the read-validate-write transaction."""
+    """Hold a stable OS advisory lock across the full state transaction."""
     lock = path.with_name(f".{path.name}.lock")
-    reason: str | None = None
+    descriptor: int | None = None
     try:
-        descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        os.close(descriptor)
-    except FileExistsError:
-        reason = "recovery-state-locked"
+        _validate_auxiliary_path(lock, path.parent)
+        flags = os.O_CREAT | os.O_RDWR
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(lock, flags, 0o600)
+        _validate_open_lock(lock, path.parent, descriptor)
+        if os.fstat(descriptor).st_size < 1:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            os.write(descriptor, b"\0")
+            os.fsync(descriptor)
+        _acquire_advisory_lock(descriptor)
+    except MetadataRecoveryStateError:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise
     except OSError:
-        reason = "recovery-state-lock-failed"
-    if reason is not None:
-        raise MetadataRecoveryStateError(reason)
+        if descriptor is not None:
+            os.close(descriptor)
+        raise MetadataRecoveryStateError("recovery-state-lock-failed") from None
     try:
         yield
     finally:
         body_failed = sys.exc_info()[0] is not None
         release_failed = False
         try:
-            lock.unlink()
+            _release_advisory_lock(descriptor)
+        except OSError:
+            release_failed = True
+        try:
+            os.close(descriptor)
         except OSError:
             release_failed = True
         if release_failed and not body_failed:
-            raise MetadataRecoveryStateError("recovery-state-lock-release-failed")
+            raise MetadataRecoveryStateError("recovery-state-lock-release-failed") from None
+
+
+def _canonical_storage_root(
+    storage_root: str | Path, *, repo_root: str | Path | None,
+) -> Path:
+    root = Path(storage_root).expanduser()
+    repository = Path(repo_root).expanduser() if repo_root is not None else _REPO_ROOT
+    if not root.is_absolute() or not repository.is_absolute():
+        raise MetadataRecoveryStateError("storage-root-not-absolute")
+    try:
+        root, repository = root.resolve(strict=False), repository.resolve(strict=False)
+    except (OSError, RuntimeError):
+        raise MetadataRecoveryStateError("recovery-state-path-invalid") from None
+    if root == repository or repository in root.parents:
+        raise MetadataRecoveryStateError("storage-root-inside-repository")
+    return root
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def _validate_auxiliary_path(path: Path, parent: Path) -> None:
+    try:
+        if path.is_symlink() or not _is_within(path.resolve(strict=False), parent.resolve(strict=True)):
+            raise MetadataRecoveryStateError("recovery-state-path-invalid")
+    except (OSError, RuntimeError):
+        raise MetadataRecoveryStateError("recovery-state-path-invalid") from None
+
+
+def _validate_open_lock(path: Path, parent: Path, descriptor: int) -> None:
+    """Reject a swapped or linked lock target after opening its descriptor."""
+    _validate_auxiliary_path(path, parent)
+    try:
+        named, opened = os.stat(path, follow_symlinks=False), os.fstat(descriptor)
+    except OSError:
+        raise MetadataRecoveryStateError("recovery-state-path-invalid") from None
+    if stat.S_ISLNK(named.st_mode) or (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+        raise MetadataRecoveryStateError("recovery-state-path-invalid")
+
+
+def _acquire_advisory_lock(descriptor: int) -> None:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, PermissionError):
+        raise MetadataRecoveryStateError("recovery-state-busy") from None
+    except OSError:
+        raise MetadataRecoveryStateError("recovery-state-lock-failed") from None
+
+
+def _release_advisory_lock(descriptor: int) -> None:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
 
 
 def _read_state(path: Path) -> dict[str, object]:
@@ -476,7 +549,12 @@ def _write_state(path: Path, records: list[MetadataRecoveryStateRecord]) -> None
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="\n", prefix=f".{path.name}.tmp-", dir=path.parent, delete=False) as stream:
             tmp = Path(stream.name)
             stream.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        _validate_auxiliary_path(tmp, path.parent)
         os.replace(tmp, path)
+    except MetadataRecoveryStateError:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
+        raise
     except (OSError, TypeError, ValueError):
         write_failed = True
     if write_failed:

@@ -36,6 +36,7 @@ def test_private_state_round_trips_exact_lifecycle_and_package_bindings(tmp_path
     assert subject.list_metadata_recovery_states(tmp_path) == (record,)
     assert subject.metadata_recovery_state_path(tmp_path).name == "sat-metadata-recoveries.json"
     assert subject.metadata_recovery_state_path(tmp_path).read_bytes() == first
+    assert _lock_path(tmp_path).exists()
 
 
 def test_redacted_state_excludes_all_private_resume_values() -> None:
@@ -177,6 +178,53 @@ def test_save_rejects_state_directory_symlinked_into_repository(tmp_path) -> Non
     assert not (repo_root / "sat-metadata-recoveries.json").exists()
 
 
+def test_configured_storage_root_symlink_uses_its_external_target(tmp_path) -> None:
+    repo_root = tmp_path / "checkout"
+    repo_root.mkdir()
+    target = tmp_path / "canonical-storage"
+    target.mkdir()
+    configured = tmp_path / "configured-storage"
+    configured.symlink_to(target, target_is_directory=True)
+
+    subject.save_metadata_recovery_state(configured, _pending_record(), repo_root=repo_root)
+
+    assert subject.metadata_recovery_state_path(configured, repo_root=repo_root).is_relative_to(target.resolve())
+    assert subject.list_metadata_recovery_states(configured, repo_root=repo_root) == (_pending_record(),)
+
+
+def test_save_rejects_state_directory_symlinked_to_other_external_root(tmp_path) -> None:
+    repo_root = tmp_path / "checkout"
+    repo_root.mkdir()
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    other = tmp_path / "other-external"
+    other.mkdir()
+    (storage / "state").symlink_to(other, target_is_directory=True)
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="recovery-state-path-invalid"):
+        subject.save_metadata_recovery_state(storage, _pending_record(), repo_root=repo_root)
+
+    assert not (other / "sat-metadata-recoveries.json").exists()
+
+
+def test_save_rejects_state_file_symlinked_to_other_external_root(tmp_path) -> None:
+    repo_root = tmp_path / "checkout"
+    repo_root.mkdir()
+    storage = tmp_path / "storage"
+    state = storage / "state"
+    state.mkdir(parents=True)
+    other = tmp_path / "other-external"
+    other.mkdir()
+    target = other / "private.json"
+    target.write_text("synthetic sentinel", encoding="utf-8")
+    (state / "sat-metadata-recoveries.json").symlink_to(target)
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="recovery-state-path-invalid"):
+        subject.save_metadata_recovery_state(storage, _pending_record(), repo_root=repo_root)
+
+    assert target.read_text(encoding="utf-8") == "synthetic sentinel"
+
+
 def test_save_lock_is_exclusive_for_the_entire_transaction(tmp_path, monkeypatch) -> None:
     first, second_id = _pending_record(), "synthetic-request-beta"
     second = replace(
@@ -200,34 +248,53 @@ def test_save_lock_is_exclusive_for_the_entire_transaction(tmp_path, monkeypatch
         future = pool.submit(subject.save_metadata_recovery_state, tmp_path, first)
         entered.wait()
         try:
-            with pytest.raises(subject.MetadataRecoveryStateError, match="recovery-state-locked"):
+            assert _lock_path(tmp_path).exists()
+            with pytest.raises(subject.MetadataRecoveryStateError, match="recovery-state-busy"):
                 subject.save_metadata_recovery_state(tmp_path, second)
         finally:
             release.set()
         future.result()
 
     assert subject.list_metadata_recovery_states(tmp_path) == (first,)
+    assert _lock_path(tmp_path).exists()
 
 
-def test_save_never_removes_a_preexisting_lock_or_writes_through_it(tmp_path) -> None:
-    path = subject.metadata_recovery_state_path(tmp_path)
-    path.parent.mkdir(parents=True)
-    lock = path.with_name(f".{path.name}.lock")
+def test_sequential_save_reuses_and_retains_stable_lock_file(tmp_path) -> None:
+    lock = _lock_path(tmp_path)
+    lock.parent.mkdir(parents=True)
     lock.touch()
 
-    with pytest.raises(subject.MetadataRecoveryStateError, match="recovery-state-locked"):
-        subject.save_metadata_recovery_state(tmp_path, _pending_record())
+    subject.save_metadata_recovery_state(tmp_path, _pending_record())
+    subject.save_metadata_recovery_state(tmp_path, _pending_record())
 
-    assert lock.exists() and not path.exists()
+    assert lock.exists() and lock.stat().st_size >= 1
+    assert subject.list_metadata_recovery_states(tmp_path) == (_pending_record(),)
 
 
-def test_save_releases_its_lock_after_an_ordinary_exception(tmp_path, monkeypatch) -> None:
-    path = subject.metadata_recovery_state_path(tmp_path)
+def test_save_releases_ownership_but_retains_lock_after_exception(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(subject, "_write_state", Mock(side_effect=RuntimeError("synthetic write interruption")))
     with pytest.raises(RuntimeError, match="synthetic write interruption"):
         subject.save_metadata_recovery_state(tmp_path, _pending_record())
 
-    assert not path.with_name(f".{path.name}.lock").exists()
+    assert _lock_path(tmp_path).exists()
+
+
+def test_save_rejects_lock_file_symlinked_to_other_external_root(tmp_path) -> None:
+    repo_root = tmp_path / "checkout"
+    repo_root.mkdir()
+    storage = tmp_path / "storage"
+    lock = _lock_path(storage, repo_root=repo_root)
+    lock.parent.mkdir(parents=True)
+    other = tmp_path / "other-external"
+    other.mkdir()
+    target = other / "foreign.lock"
+    target.write_bytes(b"x")
+    lock.symlink_to(target)
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="recovery-state-path-invalid"):
+        subject.save_metadata_recovery_state(storage, _pending_record(), repo_root=repo_root)
+
+    assert target.read_bytes() == b"x"
 
 
 @pytest.mark.parametrize(
@@ -366,3 +433,8 @@ def _write_document(tmp_path: Path, document: dict[str, object]) -> None:
     path = subject.metadata_recovery_state_path(tmp_path)
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(document), encoding="utf-8")
+
+
+def _lock_path(storage_root: Path, *, repo_root: Path | None = None) -> Path:
+    path = subject.metadata_recovery_state_path(storage_root, repo_root=repo_root)
+    return path.with_name(f".{path.name}.lock")
