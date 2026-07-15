@@ -1,19 +1,21 @@
 """Guarded live SAT metadata adapter: auth/request/verify/package with explicit CLI gates."""
 from __future__ import annotations
+
 import base64
-from copy import deepcopy
 import errno
 import hashlib
-from http.client import RemoteDisconnected
 import os
 import socket
 import ssl
 import time
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
+from http.client import RemoteDisconnected
 from urllib.error import HTTPError, URLError
 from uuid import uuid4
+
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -21,14 +23,15 @@ from cryptography.hazmat.primitives.serialization import load_der_private_key, l
 from lxml import etree
 from signxml import XMLSigner, methods
 from signxml.algorithms import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
+
 from cfdi_vault.domain import DownloadDirection, DownloadQuery
 from cfdi_vault.sat_auth_constants import (
     AUTH_ACCEPT,
     AUTH_CONTENT_TYPE,
-    AUTH_ENVELOPE_VARIANTS,
     AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
-    AUTH_ENVELOPE_VARIANT_SECURITY_ONLY,
     AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION,
+    AUTH_ENVELOPE_VARIANT_SECURITY_ONLY,
+    AUTH_ENVELOPE_VARIANTS,
     AUTH_NAMESPACE,
     AUTH_OPERATION,
     AUTH_SOAP_ACTION,
@@ -36,7 +39,7 @@ from cfdi_vault.sat_auth_constants import (
 )
 from cfdi_vault.sat_auth_endpoints import DEFAULT_AUTH_ENDPOINT, resolve_auth_endpoint
 from cfdi_vault.sat_auth_http import build_soap11_headers
-from cfdi_vault.sat_contract import SatOutcomeAction, SatRequestResult, SatVerificationResult
+from cfdi_vault.sat_contract import SatDownloadResult, SatOutcomeAction, SatRequestResult, SatVerificationResult
 from cfdi_vault.sat_soap_parse import (
     SatSoapParseError,
     parse_authentication_response,
@@ -47,6 +50,7 @@ from cfdi_vault.sat_soap_parse import (
 from cfdi_vault.sat_transport import SoapConnectTimeout, SoapReadTimeout, SoapTransportPort, SoapTransportRequest
 from cfdi_vault.secrets import CredentialKind, CredentialProviderError, CredentialReference
 from cfdi_vault.setup_core import ExistenceProvider, LocalProfile
+
 SOAP11_NS = "http://schemas.xmlsoap.org/soap/envelope/"
 SAT_REQUEST_NS = "http://DescargaMasivaTerceros.sat.gob.mx"
 SAT_AUTH_NS = AUTH_NAMESPACE
@@ -79,6 +83,7 @@ class SatLiveDiagnosticEntry:
     status: str
     error_kind: str | None = None
     safe_hint: str | None = None
+    effect_unknown: bool = False
     duration_ms: int | None = None
     endpoint: str | None = None
     http_status: int | None = None
@@ -123,6 +128,7 @@ class SatLiveSmokeError(RuntimeError):
         stage: str = "unknown",
         error_kind: str = "unknown_live_adapter_failure",
         safe_hint: str = SAFE_LIVE_ERROR_HINT,
+        effect_unknown: bool = False,
         endpoint: str | None = None,
         http_status: int | None = None,
         soap_fault_code: str | None = None,
@@ -159,11 +165,13 @@ class SatLiveSmokeError(RuntimeError):
         has_signature: bool | None = None,
         endpoint_url_ok: bool | None = None,
     ) -> None:
+        self.effect_unknown = effect_unknown
         self.diagnostic = SatLiveDiagnosticEntry(
             stage=stage,
             status="failed",
             error_kind=error_kind,
             safe_hint=safe_hint,
+            effect_unknown=effect_unknown,
             duration_ms=duration_ms,
             endpoint=endpoint,
             http_status=http_status,
@@ -356,7 +364,9 @@ def _redact_identifier(value: str) -> str:
     if len(value) <= 8:
         return "<redacted>"
     return f"{value[:4]}...{value[-4:]}"
-class SatLiveMetadataSmokeAdapter:
+class SatLiveV15MetadataAdapter:
+    """Internal real SAT v1.5 metadata adapter for request, verify, and download ports."""
+
     def __init__(
         self,
         *,
@@ -370,6 +380,8 @@ class SatLiveMetadataSmokeAdapter:
         read_timeout_seconds: float | None = None,
         auth_envelope_variant: str = DEFAULT_AUTH_ENVELOPE_VARIANT,
         wcf_action_header_enabled: bool = True,
+        max_range_days: int = 1,
+        _credential_purpose: str = "sat-metadata-recovery",
     ) -> None:
         self._profile = profile
         self._provider = provider
@@ -386,62 +398,15 @@ class SatLiveMetadataSmokeAdapter:
         self._read_timeout_seconds = read_timeout_seconds
         self._auth_envelope_variant = _validated_auth_envelope_variant(auth_envelope_variant)
         self._wcf_action_header_enabled = wcf_action_header_enabled
-    def auth_smoke(self) -> SatLiveSmokeSummary:
-        self._authenticate()
-        return SatLiveSmokeSummary(result="auth-ok", auth="authenticated")
-    def metadata_smoke(self, query: DownloadQuery) -> SatLiveSmokeSummary:
+        self._max_range_days = max_range_days
+        self._credential_purpose = _credential_purpose
+
+    def submit_request(self, query: DownloadQuery) -> SatRequestResult:
+        """Authenticate and submit exactly one metadata request."""
+
         self._require_metadata_only(query)
         authorization = self._authenticate()
-        attempt = self._send_request(authorization, query)
-        request_result = attempt.result
-        request_status = request_result.action.value
-        if request_result.action != SatOutcomeAction.ACCEPTED:
-            return _request_summary("request-not-accepted", attempt)
-        verification = self._send_verification(authorization, request_result.request_id)
-        return SatLiveSmokeSummary(
-            result="metadata-smoke-ok",
-            auth="authenticated",
-            request=request_status,
-            verification=verification.action.value,
-            operation=attempt.operation.value,
-            id_solicitud=request_result.request_id,
-            id_solicitud_redacted=_redact_identifier(request_result.request_id),
-            sat_state=verification.state.value,
-            sat_code=verification.sat_code,
-            sat_message=verification.message,
-            package_count=len(verification.package_ids),
-            request_body_bytes_len=attempt.request_body_bytes_len,
-            envelope_sha256=attempt.envelope_sha256,
-            signed_reference_count=attempt.signed_reference_count,
-        )
-
-    def metadata_request_smoke(self, query: DownloadQuery, *, max_range_days: int = 1) -> SatLiveSmokeSummary:
-        """Run guarded auth + SAT v1.5 metadata request only; no verify or package download."""
-
-        self._require_metadata_only(query, max_range_days=max_range_days)
-        authorization = self._authenticate()
-        attempt = self._send_request(authorization, query)
-        result = "metadata-request-submitted" if attempt.result.action == SatOutcomeAction.ACCEPTED else "request-not-accepted"
-        return _request_summary(result, attempt)
-
-    def metadata_verify_smoke(self, request_id: str) -> SatLiveSmokeSummary:
-        """Run guarded auth + SAT verification for one stored request id; no request/download."""
-
-        verification = self.verify_request(request_id)
-        normalized_request_id = request_id.strip()
-        return SatLiveSmokeSummary(
-            result="metadata-verify-ok",
-            auth="authenticated",
-            request="not_run",
-            verification=verification.action.value,
-            operation="VerificaSolicitudDescarga",
-            id_solicitud=normalized_request_id,
-            id_solicitud_redacted=_redact_identifier(normalized_request_id),
-            sat_state=verification.state.value,
-            sat_code=verification.sat_code,
-            sat_message=verification.message,
-            package_count=len(verification.package_ids),
-        )
+        return self._send_request(authorization, query).result
 
     def verify_request(self, request_id: str) -> SatVerificationResult:
         """Verify one stored request id for the scheduler port; no request/download."""
@@ -457,7 +422,7 @@ class SatLiveMetadataSmokeAdapter:
         authorization = self._authenticate()
         return self._send_verification(authorization, normalized_request_id)
 
-    def download_package(self, package_id: str):
+    def download_package(self, package_id: str) -> SatDownloadResult:
         """Download one stored package id; no request or verify."""
 
         normalized_package_id = package_id.strip()
@@ -496,7 +461,7 @@ class SatLiveMetadataSmokeAdapter:
                 payload_size=len(response),
                 duration_ms=_elapsed_ms(started),
             ) from None
-    def _send_request(self, authorization: str, query: DownloadQuery):
+    def _send_request(self, authorization: str, query: DownloadQuery) -> SatLiveRequestAttempt:
         operation = resolve_v15_request_operation(query)
         body = _build_stage("metadata_request_build", lambda: _build_request_envelope(query, self._load_material(), operation=operation))
         envelope_sha256 = _digest(body)
@@ -524,13 +489,14 @@ class SatLiveMetadataSmokeAdapter:
                 "SAT request response could not be parsed",
                 stage="metadata_request_parse",
                 error_kind=_response_error_kind(response),
+                effect_unknown=True,
                 safe_hint=PARSE_HINT,
                 soap_fault_code=_soap_fault_code(response),
                 payload_size=len(response),
                 duration_ms=_elapsed_ms(started),
                 operation=operation.value,
             ) from None
-    def _send_verification(self, authorization: str, request_id: str):
+    def _send_verification(self, authorization: str, request_id: str) -> SatVerificationResult:
         body = _build_stage("verify_request_build", lambda: _build_verify_envelope(request_id, self._profile.rfc, self._load_material()))
         response = self._send(
             self._endpoints.verify,
@@ -554,14 +520,17 @@ class SatLiveMetadataSmokeAdapter:
                 duration_ms=_elapsed_ms(started),
             ) from None
 
-    def _send_package_download(self, authorization: str, package_id: str):
-        body = _build_stage("package_download", lambda: _build_package_download_envelope(package_id, self._profile.rfc, self._load_material()))
+    def _send_package_download(self, authorization: str, package_id: str) -> SatDownloadResult:
+        body = _build_stage(
+            "package_download_build",
+            lambda: _build_package_download_envelope(package_id, self._profile.rfc, self._load_material()),
+        )
         response = self._send(
             self._endpoints.download,
             DOWNLOAD_ACTION,
             body,
             authorization=authorization,
-            stage="package_download",
+            stage="package_download_transport",
             endpoint_label="package_download",
         )
         started = time.perf_counter()
@@ -570,8 +539,9 @@ class SatLiveMetadataSmokeAdapter:
         except (SatSoapParseError, ValueError):
             raise SatLiveSmokeError(
                 "SAT package download response could not be parsed",
-                stage="package_download",
+                stage="package_download_parse",
                 error_kind=_response_error_kind(response),
+                effect_unknown=True,
                 safe_hint=PARSE_HINT,
                 soap_fault_code=_soap_fault_code(response),
                 payload_size=len(response),
@@ -637,6 +607,7 @@ class SatLiveMetadataSmokeAdapter:
                 "SAT transport failed",
                 stage=stage,
                 error_kind=error_kind,
+                effect_unknown=_transport_effect_unknown(stage, failure),
                 safe_hint=TRANSPORT_HINT,
                 endpoint=endpoint_label,
                 payload_size=len(body),
@@ -665,19 +636,118 @@ class SatLiveMetadataSmokeAdapter:
         return response.body
     def _load_material(self) -> SatEfirmMaterial:
         if self._material is None:
-            self._material = load_sat_efirma_material(self._profile, self._provider)  # type: ignore[misc]
+            self._material = load_sat_efirma_material(
+                self._profile,
+                self._provider,  # type: ignore[arg-type]
+                purpose=self._credential_purpose,
+            )
         return self._material
-    @staticmethod
-    def _require_metadata_only(query: DownloadQuery, *, max_range_days: int = 1) -> None:
+
+    def _require_metadata_only(self, query: DownloadQuery, *, max_range_days: int | None = None) -> None:
         if query.request_type.value != "metadata":
             raise SatLiveSmokeError(
-                "live smoke requires metadata-only query",
+                "live SAT adapter requires metadata-only query",
                 stage="preflight",
                 error_kind="guard_failed",
-                safe_hint="metadata-only live smoke is required",
+                safe_hint="metadata-only live request is required",
             )
-        _validate_v15_live_metadata_query(query, max_range_days=max_range_days)
-def load_sat_efirma_material(profile: LocalProfile, provider: ExistenceProvider) -> SatEfirmMaterial:
+        _validate_v15_live_metadata_query(
+            query,
+            max_range_days=self._max_range_days if max_range_days is None else max_range_days,
+        )
+
+
+class SatLiveMetadataSmokeAdapter(SatLiveV15MetadataAdapter):
+    """Backward-compatible experimental smoke wrapper over the neutral v1.5 adapter."""
+
+    def __init__(
+        self,
+        *,
+        profile: LocalProfile,
+        provider: ExistenceProvider,
+        transport: SoapTransportPort,
+        material: SatEfirmMaterial | None = None,
+        endpoints: SatLiveSmokeEndpoints | None = None,
+        timeout_seconds: float = 60,
+        connect_timeout_seconds: float | None = None,
+        read_timeout_seconds: float | None = None,
+        auth_envelope_variant: str = DEFAULT_AUTH_ENVELOPE_VARIANT,
+        wcf_action_header_enabled: bool = True,
+    ) -> None:
+        super().__init__(
+            profile=profile,
+            provider=provider,
+            transport=transport,
+            material=material,
+            endpoints=endpoints,
+            timeout_seconds=timeout_seconds,
+            connect_timeout_seconds=connect_timeout_seconds,
+            read_timeout_seconds=read_timeout_seconds,
+            auth_envelope_variant=auth_envelope_variant,
+            wcf_action_header_enabled=wcf_action_header_enabled,
+            _credential_purpose="sat-live-smoke",
+        )
+
+    def auth_smoke(self) -> SatLiveSmokeSummary:
+        self._authenticate()
+        return SatLiveSmokeSummary(result="auth-ok", auth="authenticated")
+
+    def metadata_smoke(self, query: DownloadQuery) -> SatLiveSmokeSummary:
+        self._require_metadata_only(query)
+        authorization = self._authenticate()
+        attempt = self._send_request(authorization, query)
+        request_result = attempt.result
+        if request_result.action != SatOutcomeAction.ACCEPTED:
+            return _request_summary("request-not-accepted", attempt)
+        verification = self._send_verification(authorization, request_result.request_id)
+        return SatLiveSmokeSummary(
+            result="metadata-smoke-ok",
+            auth="authenticated",
+            request=request_result.action.value,
+            verification=verification.action.value,
+            operation=attempt.operation.value,
+            id_solicitud=request_result.request_id,
+            id_solicitud_redacted=_redact_identifier(request_result.request_id),
+            sat_state=verification.state.value,
+            sat_code=verification.sat_code,
+            sat_message=verification.message,
+            package_count=len(verification.package_ids),
+            request_body_bytes_len=attempt.request_body_bytes_len,
+            envelope_sha256=attempt.envelope_sha256,
+            signed_reference_count=attempt.signed_reference_count,
+        )
+
+    def metadata_request_smoke(self, query: DownloadQuery, *, max_range_days: int = 1) -> SatLiveSmokeSummary:
+        self._require_metadata_only(query, max_range_days=max_range_days)
+        authorization = self._authenticate()
+        attempt = self._send_request(authorization, query)
+        result = "metadata-request-submitted" if attempt.result.action == SatOutcomeAction.ACCEPTED else "request-not-accepted"
+        return _request_summary(result, attempt)
+
+    def metadata_verify_smoke(self, request_id: str) -> SatLiveSmokeSummary:
+        verification = self.verify_request(request_id)
+        normalized_request_id = request_id.strip()
+        return SatLiveSmokeSummary(
+            result="metadata-verify-ok",
+            auth="authenticated",
+            request="not_run",
+            verification=verification.action.value,
+            operation="VerificaSolicitudDescarga",
+            id_solicitud=normalized_request_id,
+            id_solicitud_redacted=_redact_identifier(normalized_request_id),
+            sat_state=verification.state.value,
+            sat_code=verification.sat_code,
+            sat_message=verification.message,
+            package_count=len(verification.package_ids),
+        )
+
+
+def load_sat_efirma_material(
+    profile: LocalProfile,
+    provider: ExistenceProvider,
+    *,
+    purpose: str = "sat-live-smoke",
+) -> SatEfirmMaterial:
     started = time.perf_counter()
     try:
         cert_bytes = profile.certificate_path.read_bytes()
@@ -694,7 +764,7 @@ def load_sat_efirma_material(profile: LocalProfile, provider: ExistenceProvider)
     try:
         phrase = provider.resolve(
             CredentialReference(uri=profile.phrase_ref, kind=CredentialKind.PHRASE),
-            purpose="sat-live-smoke",
+            purpose=purpose,
         ).reveal()
     except CredentialProviderError:
         raise SatLiveSmokeError(
@@ -1315,6 +1385,14 @@ def _classify_transport_failure(exc: BaseException) -> TransportFailureClassific
     if isinstance(root, URLError):
         return TransportFailureClassification("client_configuration_error", "client", exception_class, exception_errno)
     return TransportFailureClassification("client_configuration_error", "client", exception_class, exception_errno)
+
+
+def _transport_effect_unknown(stage: str, failure: TransportFailureClassification) -> bool:
+    return stage in {"metadata_request_transport", "package_download_transport"} and failure.error_kind in {
+        "timeout",
+        "connection_reset_during_post",
+        "remote_closed_connection",
+    }
 
 
 def _classify_transport_exception(exc: BaseException) -> str:
