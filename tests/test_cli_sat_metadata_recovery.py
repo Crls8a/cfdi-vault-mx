@@ -83,7 +83,7 @@ def test_recover_live_orders_gates_and_prints_only_aggregates(monkeypatch, tmp_p
     monkeypatch.setattr(
         subject,
         "advance_metadata_recovery_once",
-        lambda **_: events.append("advance") or SimpleNamespace(recovery=_document()),
+        lambda **_: events.append("advance") or SimpleNamespace(recovery=_document(recordCount=None)),
     )
 
     result = CliRunner().invoke(_app(), RECOVER_ARGS)
@@ -211,3 +211,30 @@ def test_failed_checkout_guard_precedes_path_permit_storage_and_network(monkeypa
 
     assert result.exit_code == 1
     assert result.output == "error=checkout_not_clean\n"
+
+
+def test_escaping_state_link_stops_before_permit_storage_credentials_or_network(monkeypatch, tmp_path: Path) -> None:
+    storage, outside, repo = tmp_path / "storage", tmp_path / "outside", tmp_path / "repo"
+    storage.mkdir()
+    outside.mkdir()
+    repo.mkdir()
+    try:
+        storage.joinpath("state").symlink_to(outside, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"directory symlink unavailable: {type(exc).__name__}")
+    permit_path = tmp_path / "permit-sentinel.json"
+    permit_path.write_bytes(b"SYNTHETIC_UNCHANGED")
+    profile = SimpleNamespace(profile_id="profile-synthetic", storage_root=storage)
+    monkeypatch.setattr(subject, "_build_profile_download_query_with_profile", lambda **_: (_query(), profile))
+    monkeypatch.setattr(subject, "_checked_recovery_repo_root", lambda: repo)
+    calls: list[str] = []
+    monkeypatch.setattr(subject, "_authorize_metadata_recovery", lambda **_: calls.append("permit"))
+    monkeypatch.setattr(subject, "_new_recovery_storage", lambda _: calls.append("storage"))
+    monkeypatch.setattr(subject, "_new_recovery_adapter", lambda *_: calls.append("credentials"))
+    args = [*RECOVER_ARGS[:-1], str(permit_path)]
+
+    result = CliRunner().invoke(_app(), args)
+
+    assert result.exit_code == 1
+    assert result.output == "error=recovery-state-path-invalid\n"
+    assert calls == [] and permit_path.read_bytes() == b"SYNTHETIC_UNCHANGED"

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import typer
 
+import cfdi_vault.sat_metadata_recovery_state as recovery_state
 from cfdi_vault.live_permit import (
     METADATA_RECOVERY_LIVE_SCOPE,
     LivePermitError,
@@ -24,7 +25,6 @@ from cfdi_vault.sat_metadata_recovery_runner import advance_metadata_recovery_on
 from cfdi_vault.sat_metadata_recovery_state import (
     MetadataRecoveryStateError,
     load_metadata_recovery_state,
-    metadata_recovery_state_path,
 )
 from cfdi_vault.sat_metadata_submission import MetadataSubmissionError, SubmissionStatus, submit_metadata_recovery_once
 from cfdi_vault.sat_transport import GuardedSoapHttpTransport, LiveSatGuardInput
@@ -134,7 +134,7 @@ def _checked_recovery_repo_root() -> Path:
         raise _RecoveryCliError("sensitive_scanner_failed")
     return root
 def _validate_recovery_state_path(profile, repo_root: Path) -> None:  # type: ignore[no-untyped-def]
-    metadata_recovery_state_path(profile.storage_root, repo_root=repo_root)
+    recovery_state._resolved_state_path(profile.storage_root, repo_root=repo_root, create_parent=False)
 def _authorize_metadata_recovery(*, authorization, profile, query, now, repo_root):  # type: ignore[no-untyped-def]
     expectation = permit_expectation_from_query(METADATA_RECOVERY_LIVE_SCOPE, profile, query)
     current = load_live_execution_permit(authorization)
@@ -165,12 +165,13 @@ def _operation_attempts(document: dict[str, object]) -> int:
     return (verify if type(verify) is int else 0) + attempted
 def _print_recovery_document(document: dict[str, object]) -> None:
     status = str(document["status"])
+    record_count = document.get("recordCount")
     stage = "waiting_verify" if status == "verify_scheduled" else (
         "downloading" if status in {"packages_ready", "downloading"} else "finished")
     values = (("stage", stage), ("status", status), ("operation_attempts", _operation_attempts(document)),
         ("next_check_at", document.get("nextCheckAt", "")), ("package_count", document.get("packageCount", 0)),
         ("zip_valid_count", document.get("zipValidCount", 0)), ("txt_extracted", document.get("txtCount", 0)),
-        ("record_count", document.get("recordCount", "not_reported")))
+        ("record_count", "not_reported" if record_count is None else record_count))
     for key, value in values:
         typer.echo(f"{key}={value}")
 def _print_submission(status: SubmissionStatus) -> None:
