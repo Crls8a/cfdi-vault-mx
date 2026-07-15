@@ -306,6 +306,9 @@ def _validate_recovery(recovery: MetadataRecovery) -> None:
     valid = {
         RecoveryStatus.VERIFY_SCHEDULED: no_packages and recovery.next_check_at is not None,
         RecoveryStatus.PENDING_AFTER_BUDGET: no_packages and recovery.next_check_at is None,
+        RecoveryStatus.VERIFY_FAILED: no_packages
+        and recovery.next_check_at is None
+        and _verification_failure_possible(recovery),
         RecoveryStatus.NO_DATA: no_packages and recovery.next_check_at is None and recovery.verify_attempts > 0,
         RecoveryStatus.PACKAGES_READY: bool(statuses) and all(s is PackageRecoveryStatus.PENDING for s in statuses),
         RecoveryStatus.DOWNLOADING: bool(statuses)
@@ -342,6 +345,20 @@ def _minimum_next_check(recovery: MetadataRecovery) -> datetime | None:
         if probe.status is not RecoveryStatus.VERIFY_SCHEDULED:
             return None
     return probe.next_check_at
+
+
+def _verification_failure_possible(recovery: MetadataRecovery) -> bool:
+    """Confirm the failed attempt can occur before the seven-day deadline."""
+    if recovery.verify_attempts < 1:
+        return False
+    probe = lifecycle.start_metadata_recovery(recovery.recovery_ref, created_at=recovery.created_at)
+    for _ in range(recovery.verify_attempts - 1):
+        if probe.next_check_at is None:
+            return False
+        probe = lifecycle.record_pending_verification(probe, checked_at=probe.next_check_at)
+        if probe.status is not RecoveryStatus.VERIFY_SCHEDULED:
+            return False
+    return probe.next_check_at is not None and probe.next_check_at < recovery.deadline_at
 
 
 def _validate_replacement(
@@ -405,6 +422,8 @@ def _exact_successor(before: MetadataRecovery, after: MetadataRecovery) -> Metad
             )
         if after.status is RecoveryStatus.PENDING_AFTER_BUDGET:
             return lifecycle.apply_recovery_deadline(before, now=before.deadline_at)
+        if after.status is RecoveryStatus.VERIFY_FAILED:
+            return lifecycle.record_verification_failure(before, checked_at=before.next_check_at)
         if after.status in {RecoveryStatus.PACKAGES_READY, RecoveryStatus.NO_DATA}:
             return lifecycle.record_finished_verification(
                 before,

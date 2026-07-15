@@ -48,6 +48,33 @@ def test_seven_day_deadline_closes_pending_without_replacement() -> None:
         subject.record_pending_verification(recovery, checked_at=START + timedelta(days=7))
 
 
+def test_verification_failure_requires_due_check_and_is_terminal() -> None:
+    recovery = _start()
+    due = recovery.next_check_at
+    assert due is not None
+
+    with pytest.raises(subject.MetadataRecoveryError, match="verification-not-due"):
+        subject.record_verification_failure(recovery, checked_at=due - timedelta(seconds=1))
+
+    failed = subject.record_verification_failure(recovery, checked_at=due)
+    assert failed.status is subject.RecoveryStatus.VERIFY_FAILED
+    assert failed.verify_attempts == 1
+    assert failed.next_check_at is None
+    assert failed.record_count == 0
+    assert failed.packages == ()
+    with pytest.raises(subject.MetadataRecoveryError, match="recovery-terminal"):
+        subject.record_verification_failure(failed, checked_at=due)
+
+
+@pytest.mark.parametrize("elapsed", (timedelta(days=7), timedelta(days=8)))
+def test_deadline_wins_over_verification_failure(elapsed: timedelta) -> None:
+    recovery = subject.record_verification_failure(_start(), checked_at=START + elapsed)
+
+    assert recovery.status is subject.RecoveryStatus.PENDING_AFTER_BUDGET
+    assert recovery.verify_attempts == 0
+    assert recovery.next_check_at is None
+
+
 def test_finished_without_packages_or_records_is_no_data() -> None:
     recovery = subject.record_finished_verification(
         _start(),

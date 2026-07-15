@@ -315,6 +315,51 @@ def test_save_rejects_non_exact_verification_successors(tmp_path) -> None:
             subject.save_metadata_recovery_state(tmp_path, replace(original, recovery=recovery))
 
 
+def test_verify_failed_round_trips_only_as_exact_monotonic_successor(tmp_path) -> None:
+    original = _pending_record()
+    due = original.recovery.next_check_at
+    assert due is not None
+    failed = replace(
+        original,
+        recovery=lifecycle.record_verification_failure(original.recovery, checked_at=due),
+    )
+    subject.save_metadata_recovery_state(tmp_path, original)
+    subject.save_metadata_recovery_state(tmp_path, failed)
+    subject.save_metadata_recovery_state(tmp_path, failed)
+
+    assert subject.load_metadata_recovery_state(tmp_path, original.recovery.recovery_ref) == failed
+    forged = replace(failed, recovery=replace(failed.recovery, verify_attempts=2))
+    with pytest.raises(subject.MetadataRecoveryStateError, match="recovery-state-regression"):
+        subject.save_metadata_recovery_state(tmp_path, forged)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("verifyAttempts", 0),
+        ("verifyAttempts", 27),
+        ("nextCheckAt", (START + timedelta(minutes=5)).isoformat().replace("+00:00", "Z")),
+        ("recordCount", 1),
+    ),
+)
+def test_loader_rejects_malformed_verify_failed_lifecycle(
+    tmp_path, field: str, value: object,
+) -> None:
+    original = _pending_record()
+    due = original.recovery.next_check_at
+    assert due is not None
+    failed = replace(
+        original,
+        recovery=lifecycle.record_verification_failure(original.recovery, checked_at=due),
+    )
+    document = _state_document(failed)
+    document["recoveries"][0]["recovery"][field] = value
+    _write_document(tmp_path, document)
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="recovery-state-invalid"):
+        subject.list_metadata_recovery_states(tmp_path)
+
+
 @pytest.mark.parametrize("operation", ("remove", "reorder"))
 def test_save_rejects_changes_to_observed_package_bindings(tmp_path, operation: str) -> None:
     original = _ready_record()

@@ -37,6 +37,7 @@ class RecoveryStatus(StrEnum):
     COMPLETED = "completed"
     NO_DATA = "no_data"
     PENDING_AFTER_BUDGET = "pending_after_budget"
+    VERIFY_FAILED = "verify_failed"
     DOWNLOAD_UNCERTAIN = "download_uncertain"
     DOWNLOAD_FAILED = "download_failed"
 
@@ -53,7 +54,7 @@ class PackageRecoveryStatus(StrEnum):
 
 _TERMINAL_STATUSES = frozenset({
     RecoveryStatus.COMPLETED, RecoveryStatus.NO_DATA, RecoveryStatus.PENDING_AFTER_BUDGET,
-    RecoveryStatus.DOWNLOAD_UNCERTAIN, RecoveryStatus.DOWNLOAD_FAILED,
+    RecoveryStatus.VERIFY_FAILED, RecoveryStatus.DOWNLOAD_UNCERTAIN, RecoveryStatus.DOWNLOAD_FAILED,
 })
 
 
@@ -159,6 +160,28 @@ def record_pending_verification(
     local_due = checked + delay
     sat_due = _normalize_dt(sat_next_check_at) if sat_next_check_at else local_due
     return replace(recovery, verify_attempts=attempts, next_check_at=max(local_due, sat_due))
+
+
+def record_verification_failure(
+    recovery: MetadataRecovery,
+    *,
+    checked_at: datetime,
+) -> MetadataRecovery:
+    """Close one due verification after a definitive, redacted failure."""
+
+    _require_active(recovery, RecoveryStatus.VERIFY_SCHEDULED)
+    checked = _normalize_dt(checked_at)
+    expired = apply_recovery_deadline(recovery, now=checked)
+    if expired.status is RecoveryStatus.PENDING_AFTER_BUDGET:
+        return expired
+    if recovery.next_check_at is None or checked < recovery.next_check_at:
+        raise MetadataRecoveryError("verification-not-due")
+    return replace(
+        recovery,
+        status=RecoveryStatus.VERIFY_FAILED,
+        verify_attempts=recovery.verify_attempts + 1,
+        next_check_at=None,
+    )
 
 
 def record_finished_verification(
