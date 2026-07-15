@@ -126,6 +126,17 @@ def metadata_recovery_state_path(
     return root / "state" / "sat-metadata-recoveries.json"
 
 
+@contextmanager
+def metadata_recovery_operation_lock(
+    storage_root: str | Path, *, repo_root: str | Path | None = None,
+):
+    """Hold the stable nonblocking lock for one complete recovery advance."""
+    state_path = _resolved_state_path(storage_root, repo_root=repo_root, create_parent=True)
+    anchor = state_path.with_name("sat-metadata-recovery-operation")
+    with _exclusive_state_lock(anchor):
+        yield
+
+
 def save_metadata_recovery_state(
     storage_root: str | Path,
     record: MetadataRecoveryStateRecord,
