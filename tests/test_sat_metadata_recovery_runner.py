@@ -13,7 +13,14 @@ import cfdi_vault.sat_metadata_recovery as lifecycle
 import cfdi_vault.sat_metadata_recovery_state as state
 from cfdi_vault.domain import SatRequestState
 from cfdi_vault.package_processor import MemoryPackageStorage
-from cfdi_vault.sat_contract import SatDownloadResult, SatOutcomeAction, SatVerificationError, SatVerificationResult
+from cfdi_vault.sat_contract import (
+    SatDownloadResult,
+    SatOperation,
+    SatOutcomeAction,
+    SatPackageDownloadError,
+    SatVerificationError,
+    SatVerificationResult,
+)
 from cfdi_vault.sat_live_smoke import SatLiveSmokeError
 from cfdi_vault.sat_metadata_recovery_runner import advance_metadata_recovery_once
 
@@ -105,18 +112,18 @@ def test_not_due_and_deadline_make_no_sat_calls(tmp_path, now, expected) -> None
 
 
 @pytest.mark.parametrize(
-    ("result", "expected"),
+    ("result", "expected", "contacted"),
     [(SatVerificationError(operation="verify", code="timeout", message="safe", retryable=True),
-      "verify_scheduled"),
-     (_verification(action=SatOutcomeAction.IN_PROGRESS), "verify_scheduled"),
-     (ValueError("PRIVATE"), "verify_failed"),
-     (_verification(request_id="mismatched"), "verify_failed")],
+      "verify_scheduled", True),
+     (_verification(action=SatOutcomeAction.IN_PROGRESS), "verify_scheduled", True),
+     (ValueError("PRIVATE"), "verify_failed", False),
+     (_verification(request_id="mismatched"), "verify_failed", True)],
 )
-def test_verify_exception_and_mismatch_classification(tmp_path, result, expected) -> None:  # type: ignore[no-untyped-def]
+def test_verify_exception_and_mismatch_classification(tmp_path, result, expected, contacted) -> None:  # type: ignore[no-untyped-def]
     _saved(tmp_path)
     outcome = _advance(tmp_path, _Verifier(result), _Downloader(), NOW + timedelta(minutes=5))
     assert outcome.recovery["status"] == expected
-    assert (outcome.sat_contacted, outcome.verify_count) == (True, 1)
+    assert (outcome.sat_contacted, outcome.verify_count) == (contacted, 1)
     assert "PRIVATE" not in repr(outcome)
     loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
     assert loaded.recovery.verify_attempts == 1
@@ -153,6 +160,42 @@ def test_live_verify_errors_use_exact_transient_allowlist(tmp_path, error_kind, 
 
     assert outcome.recovery["status"] == expected
     assert (outcome.sat_contacted, outcome.verify_count) == (True, 1)
+
+
+@pytest.mark.parametrize(
+    ("failure", "contacted"),
+    [
+        (SatLiveSmokeError(stage="preflight"), False),
+        (SatLiveSmokeError(stage="secret_resolve"), False),
+        (SatLiveSmokeError(stage="credential_load"), False),
+        (SatLiveSmokeError(stage="certificate_parse"), False),
+        (SatLiveSmokeError(stage="private_key_load"), False),
+        (SatLiveSmokeError(stage="xmlsig_sign"), False),
+        (SatLiveSmokeError(stage="auth_envelope_build"), False),
+        (SatLiveSmokeError(stage="auth_request_readiness"), False),
+        (SatLiveSmokeError(stage="auth_transport"), True),
+        (SatLiveSmokeError(stage="auth_response_parse"), True),
+        (SatLiveSmokeError(stage="token_extract"), True),
+        (SatLiveSmokeError(stage="verify_request_build"), True),
+        (SatLiveSmokeError(stage="verify_request_readiness"), True),
+        (SatLiveSmokeError(stage="verify_transport"), True),
+        (SatLiveSmokeError(stage="verify_response_parse"), True),
+        (SatLiveSmokeError(stage="unknown"), False),
+        (TimeoutError(), True),
+        (ConnectionError(), True),
+        (SatPackageDownloadError(
+            operation=SatOperation.DOWNLOAD, code="synthetic", message="safe",
+        ), False),
+    ],
+)
+def test_verify_contact_requires_explicit_stage_or_matching_contract(
+    tmp_path, failure, contacted,
+) -> None:  # type: ignore[no-untyped-def]
+    _saved(tmp_path)
+
+    outcome = _advance(tmp_path, _Verifier(failure), _Downloader(), NOW + timedelta(minutes=5))
+
+    assert (outcome.sat_contacted, outcome.verify_count) == (contacted, 1)
 
 
 def test_finished_without_packages_is_no_data(tmp_path) -> None:
@@ -212,20 +255,60 @@ def test_restart_with_claimed_download_becomes_uncertain_without_sat_call(tmp_pa
 
 
 @pytest.mark.parametrize(
-    ("result", "expected"),
-    [(TimeoutError("PRIVATE"), "download_uncertain"),
-     (_DefinitiveError("PRIVATE"), "download_failed"),
-     (_download(PACKAGES[0], b"not-a-zip"), "download_failed")],
+    ("result", "expected", "contacted"),
+    [(TimeoutError("PRIVATE"), "download_uncertain", True),
+     (_DefinitiveError("PRIVATE"), "download_failed", True),
+     (_download(PACKAGES[0], b"not-a-zip"), "download_failed", True)],
 )
-def test_download_failures_are_terminal_and_redacted(tmp_path, result, expected) -> None:  # type: ignore[no-untyped-def]
+def test_download_failures_are_terminal_and_redacted(tmp_path, result, expected, contacted) -> None:  # type: ignore[no-untyped-def]
     _saved(tmp_path)
     outcome = _advance(
         tmp_path, _Verifier(_verification(packages=(PACKAGES[0],))),
         _Downloader({PACKAGES[0]: result}), NOW + timedelta(minutes=5),
     )
     assert outcome.recovery["status"] == expected
-    assert outcome.download_attempts == 1
+    assert (outcome.sat_contacted, outcome.download_attempts) == (contacted, 1)
     assert "PRIVATE" not in repr(outcome)
+
+
+@pytest.mark.parametrize(
+    ("failure", "contacted"),
+    [
+        (SatLiveSmokeError(stage="private_key_load", effect_unknown=False), False),
+        (SatLiveSmokeError(stage="auth_transport", effect_unknown=True), True),
+        (SatLiveSmokeError(stage="package_download_build", effect_unknown=False), True),
+        (SatLiveSmokeError(stage="package_download_transport", effect_unknown=True), True),
+        (SatLiveSmokeError(stage="package_download_parse", effect_unknown=True), True),
+        (ConnectionError(), True),
+        (SatPackageDownloadError(
+            operation=SatOperation.DOWNLOAD, code="synthetic", message="safe",
+        ), True),
+        (SatVerificationError(
+            operation=SatOperation.VERIFY, code="synthetic", message="safe",
+        ), False),
+        (_DefinitiveError("PRIVATE"), False),
+    ],
+)
+def test_download_contact_requires_explicit_stage_or_matching_contract(
+    tmp_path, failure, contacted,
+) -> None:  # type: ignore[no-untyped-def]
+    record = _saved(tmp_path)
+    package_ref = state.package_ref(PACKAGES[0])
+    ready = lifecycle.record_finished_verification(
+        record.recovery, checked_at=NOW + timedelta(minutes=5),
+        package_refs=(package_ref,), record_count=None,
+    )
+    state.save_metadata_recovery_state(tmp_path, replace(
+        record, recovery=ready,
+        package_bindings=(state.PackageIdBinding(package_ref, PACKAGES[0]),),
+    ))
+
+    outcome = _advance(
+        tmp_path, _Verifier(ValueError()), _Downloader({PACKAGES[0]: failure}),
+        NOW + timedelta(minutes=6),
+    )
+
+    assert (outcome.sat_contacted, outcome.download_attempts) == (contacted, 1)
 
 
 def test_download_audit_survives_artifact_persistence_failure(tmp_path) -> None:

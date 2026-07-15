@@ -11,7 +11,13 @@ import cfdi_vault.sat_metadata_recovery_state as state
 from cfdi_vault.domain import SatRequestState
 from cfdi_vault.package_processor import PackageStorage
 from cfdi_vault.ports import SatDownloadPort, SatVerificationPort
-from cfdi_vault.sat_contract import SatDownloadResult, SatError, SatOutcomeAction, SatVerificationResult
+from cfdi_vault.sat_contract import (
+    SatDownloadResult,
+    SatError,
+    SatOperation,
+    SatOutcomeAction,
+    SatVerificationResult,
+)
 from cfdi_vault.sat_metadata_artifact_state import MetadataPackageArtifactState
 from cfdi_vault.sat_metadata_package import process_metadata_package
 from cfdi_vault.sat_metadata_recovery import PackageRecoveryStatus, RecoveryStatus
@@ -28,6 +34,16 @@ _TRANSIENT_VERIFY_ERROR_KINDS = frozenset({
     "connection_reset_during_post",
     "proxy_connect_failed",
 })
+_AUTH_CONTACT_STAGES = frozenset({"auth_transport", "auth_response_parse", "token_extract"})
+_OPERATION_CONTACT_STAGES = {
+    SatOperation.VERIFY: frozenset({
+        "verify_request_build", "verify_request_readiness", "verify_transport",
+        "verify_response_parse",
+    }),
+    SatOperation.DOWNLOAD: frozenset({
+        "package_download_build", "package_download_transport", "package_download_parse",
+    }),
+}
 
 
 @dataclass(frozen=True)
@@ -91,11 +107,13 @@ def _advance(root, recovery_ref, verifier, downloader, package_storage, now, rep
     if recovery.status is RecoveryStatus.VERIFY_SCHEDULED:
         if recovery.next_check_at is None or now < recovery.next_check_at:
             return _out(record, audit)
-        audit.sat_contacted = True
         audit.verify_count += 1
         try:
             result = verifier.verify_request(record.id_solicitud)
         except Exception as exc:
+            audit.sat_contacted = audit.sat_contacted or _exception_confirms_sat_contact(
+                exc, SatOperation.VERIFY,
+            )
             if _retryable_verification(exc):
                 recovery = lifecycle.record_pending_verification(recovery, checked_at=now)
                 error = "verify_retryable"
@@ -105,6 +123,7 @@ def _advance(root, recovery_ref, verifier, downloader, package_storage, now, rep
             record = replace(record, recovery=recovery)
             state.save_metadata_recovery_state(root, record, repo_root=repo_root)
             return _out(record, audit, error=error)
+        audit.sat_contacted = True
         record, error = _apply_verification(record, result, now)
         state.save_metadata_recovery_state(root, record, repo_root=repo_root)
         if record.recovery.status not in {RecoveryStatus.PACKAGES_READY, RecoveryStatus.DOWNLOADING}:
@@ -117,11 +136,13 @@ def _advance(root, recovery_ref, verifier, downloader, package_storage, now, rep
         recovery = lifecycle.begin_package_download(record.recovery, binding.package_ref)
         record = replace(record, recovery=recovery)
         state.save_metadata_recovery_state(root, record, repo_root=repo_root)
-        audit.sat_contacted = True
         audit.download_attempts += 1
         try:
             result = downloader.download_package(binding.id_paquete)
         except Exception as exc:
+            audit.sat_contacted = audit.sat_contacted or _exception_confirms_sat_contact(
+                exc, SatOperation.DOWNLOAD,
+            )
             uncertain = getattr(exc, "effect_unknown", None) is not False
             record = _finish_download(record, binding.package_ref, uncertain=uncertain)
             state.save_metadata_recovery_state(root, record, repo_root=repo_root)
@@ -129,6 +150,7 @@ def _advance(root, recovery_ref, verifier, downloader, package_storage, now, rep
                 record, audit,
                 error="download_uncertain" if uncertain else "download_failed",
             )
+        audit.sat_contacted = True
         if not _valid_download(result, binding.id_paquete):
             record = _finish_download(record, binding.package_ref, uncertain=False)
             state.save_metadata_recovery_state(root, record, repo_root=repo_root)
@@ -184,6 +206,16 @@ def _retryable_verification(exc: Exception) -> bool:
         or getattr(exc, "retryable", False) is True
         or (type(error_kind) is str and error_kind in _TRANSIENT_VERIFY_ERROR_KINDS)
     )
+
+
+def _exception_confirms_sat_contact(exc: Exception, operation: SatOperation) -> bool:
+    """Confirm contact only from an explicit adapter stage or matching port contract."""
+    failed_stage = getattr(exc, "failed_stage", None)
+    if type(failed_stage) is str:
+        return failed_stage in _AUTH_CONTACT_STAGES | _OPERATION_CONTACT_STAGES[operation]
+    if isinstance(exc, SatError):
+        return exc.operation is operation
+    return isinstance(exc, (TimeoutError, ConnectionError))
 
 
 def _valid_download(result: object, expected: str) -> bool:
