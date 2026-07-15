@@ -113,6 +113,69 @@ def test_artifact_requires_matching_completed_package_and_text_count() -> None:
         replace(downloading, recovery=replace(completed, packages=completed.packages), artifact_bindings=())
 
 
+def test_artifact_storage_ordinal_must_match_package_order() -> None:
+    completed = _completed_first_record()
+    artifact = completed.artifact_bindings[0]
+    wrong_ordinal = replace(
+        artifact,
+        package_storage_key=artifact.package_storage_key.replace("/1-", "/2-"),
+        texts=(
+            replace(
+                artifact.texts[0],
+                storage_key=artifact.texts[0].storage_key.replace("/1-", "/2-"),
+            ),
+        ),
+    )
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="artifact-binding-invalid"):
+        replace(completed, artifact_bindings=(wrong_ordinal,))
+
+
+def test_two_package_refs_cannot_share_zip_or_text_storage_keys() -> None:
+    completed = _completed_record()
+    first, second = completed.artifact_bindings
+    duplicate = replace(
+        second,
+        package_sha256=first.package_sha256,
+        package_storage_key=first.package_storage_key,
+        texts=(
+            replace(
+                second.texts[0],
+                sha256=first.texts[0].sha256,
+                storage_key=first.texts[0].storage_key,
+            ),
+        ),
+    )
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="artifact-binding-invalid"):
+        replace(completed, artifact_bindings=(first, duplicate))
+
+
+def test_duplicate_artifact_hashes_are_allowed_with_distinct_ordered_keys() -> None:
+    completed = _completed_record()
+    first, second = completed.artifact_bindings
+    same_hashes = replace(
+        second,
+        package_sha256=first.package_sha256,
+        package_storage_key=(
+            f"sat-metadata/{completed.recovery.recovery_ref}/packages/"
+            f"2-{first.package_sha256[:12]}.zip"
+        ),
+        texts=(
+            replace(
+                second.texts[0],
+                sha256=first.texts[0].sha256,
+                storage_key=(
+                    f"sat-metadata/{completed.recovery.recovery_ref}/txt/"
+                    f"2-{first.texts[0].sha256[:12]}.txt"
+                ),
+            ),
+        ),
+    )
+
+    assert replace(completed, artifact_bindings=(first, same_hashes)).artifact_bindings[1] == same_hashes
+
+
 def test_artifacts_round_trip_privately_and_advance_sequentially(tmp_path) -> None:
     first = _completed_first_record()
     ready = _ready_record()
@@ -600,6 +663,23 @@ def _completed_first_record() -> subject.MetadataRecoveryStateRecord:
         txt_count=1,
     )
     return replace(ready, recovery=recovery, artifact_bindings=(_artifact(ready, 0),))
+
+
+def _completed_record() -> subject.MetadataRecoveryStateRecord:
+    first = _completed_first_record()
+    second_ref = first.recovery.packages[1].package_ref
+    downloading = lifecycle.begin_package_download(first.recovery, second_ref)
+    recovery = lifecycle.record_package_download(
+        downloading,
+        second_ref,
+        zip_valid=True,
+        txt_count=1,
+    )
+    return replace(
+        first,
+        recovery=recovery,
+        artifact_bindings=first.artifact_bindings + (_artifact(first, 1),),
+    )
 
 
 def _artifact(

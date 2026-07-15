@@ -238,7 +238,17 @@ def _validate_artifact_bindings(record: MetadataRecoveryStateRecord) -> None:
     ):
         raise MetadataRecoveryStateError("artifact-binding-invalid")
     package_refs = {item.package_ref for item in record.package_bindings}
+    package_ordinals = {
+        item.package_ref: ordinal
+        for ordinal, item in enumerate(record.package_bindings, start=1)
+    }
+    storage_keys: set[str] = set()
     for artifact, package in zip(artifacts, completed, strict=True):
+        artifact_keys = (
+            artifact.package_storage_key,
+            *(text.storage_key for text in artifact.texts),
+        )
+        expected_ordinal = package_ordinals.get(artifact.package_ref)
         if (
             artifact.package_ref not in package_refs
             or package.zip_valid is not True
@@ -246,8 +256,17 @@ def _validate_artifact_bindings(record: MetadataRecoveryStateRecord) -> None:
             or not artifact.package_storage_key.startswith(
                 f"sat-metadata/{record.recovery.recovery_ref}/packages/"
             )
+            or expected_ordinal is None
+            or any(_storage_key_ordinal(key) != expected_ordinal for key in artifact_keys)
+            or any(key in storage_keys for key in artifact_keys)
         ):
             raise MetadataRecoveryStateError("artifact-binding-invalid")
+        storage_keys.update(artifact_keys)
+
+
+def _storage_key_ordinal(storage_key: str) -> int:
+    """Read the ordinal from a key already validated by artifact state."""
+    return int(storage_key.rsplit("/", 1)[1].split("-", 1)[0])
 
 
 def _validate_recovery(recovery: MetadataRecovery) -> None:
