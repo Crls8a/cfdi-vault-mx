@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 
 import cfdi_vault.sat_metadata_recovery_state as state
 
@@ -61,7 +62,12 @@ class NewMetadataObservation:
     next_correction_code: str
     stability: str
     def __post_init__(self) -> None:
+        if type(self.observed_result) is not dict:
+            raise MetadataObservationError("observation-result-invalid")
+        snapshot = self.observed_result.copy()
+        object.__setattr__(self, "observed_result", snapshot)
         _validate_input(self)
+        object.__setattr__(self, "observed_result", MappingProxyType(snapshot))
 def metadata_observation_path(storage_root: str | Path, *, repo_root: str | Path | None = None) -> Path:
     return _resolved_path(storage_root, repo_root=repo_root, create_parent=False)
 def append_metadata_observation(
@@ -240,12 +246,23 @@ def _resolved_path(storage_root: str | Path, *, repo_root: str | Path | None, cr
     try:
         state_path = state._resolved_state_path(storage_root, repo_root=repo_root, create_parent=create_parent)
         path = state_path.with_name("sat-metadata-observations.jsonl")
+        _reject_named_reparse(path)
         resolved = path.resolve(strict=False)
     except (state.MetadataRecoveryStateError, OSError, RuntimeError):
         raise MetadataObservationError("observation-path-invalid") from None
     if not state._is_within(resolved, state_path.parent):
         raise MetadataObservationError("observation-path-invalid")
     return resolved
+def _reject_named_reparse(path: Path) -> None:
+    try:
+        named = os.lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise MetadataObservationError("observation-path-invalid") from None
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if stat.S_ISLNK(named.st_mode) or reparse and getattr(named, "st_file_attributes", 0) & reparse:
+        raise MetadataObservationError("observation-path-invalid")
 def _canonical_root(storage_root: str | Path, *, repo_root: str | Path | None) -> Path:
     try:
         return state._canonical_storage_root(storage_root, repo_root=repo_root)

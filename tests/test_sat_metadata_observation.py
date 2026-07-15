@@ -159,3 +159,22 @@ def test_first_creation_requests_directory_fsync_via_platform_seam(tmp_path, mon
     subject.append_metadata_observation(tmp_path, _event())
     subject.append_metadata_observation(tmp_path, _event())
     assert order == ["file", subject.metadata_observation_path(tmp_path).parent]
+def test_named_ledger_symlink_to_contained_sibling_is_rejected(tmp_path) -> None:
+    path = subject.metadata_observation_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    target = path.with_name("contained-sibling.jsonl")
+    target.write_bytes(b"synthetic sentinel\n")
+    path.symlink_to(target)
+    with pytest.raises(subject.MetadataObservationError, match="observation-path-invalid"):
+        subject.append_metadata_observation(tmp_path, _event())
+    assert target.read_bytes() == b"synthetic sentinel\n"
+def test_observed_result_is_frozen_against_caller_mutation(tmp_path) -> None:
+    result = {"requestAccepted": True}
+    event = _event(observed_result=result)
+    result["requestAccepted"] = False
+    result["private"] = {"nested": []}
+    with pytest.raises(TypeError):
+        event.observed_result["private"] = True
+    subject.append_metadata_observation(tmp_path, event)
+    stored = subject._read_metadata_observations(tmp_path)[0]
+    assert stored["observedResult"] == {"requestAccepted": True}
