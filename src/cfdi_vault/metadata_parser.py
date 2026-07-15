@@ -30,6 +30,7 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "effect": ("tipoComprobante", "efectoComprobante", "effect"),
     "source_package_id": ("idPaquete", "package_id", "source_package_id"),
 }
+REQUIRED_METADATA_FIELDS = ("uuid", "issuer_rfc", "receiver_rfc", "issue_date", "status", "effect")
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ class MetadataParseResult:
 
     entries: tuple[MetadataEntry, ...]
     invalid_rows: tuple[InvalidMetadataRow, ...]
+    header_valid: bool
 
     @property
     def accepted_count(self) -> int:
@@ -63,6 +65,7 @@ def parse_metadata_bytes(content: bytes, *, delimiter: str | None = None, source
     text = content.decode("utf-8-sig")
     detected_delimiter = delimiter or _detect_delimiter(text)
     reader = csv.DictReader(StringIO(text), delimiter=detected_delimiter)
+    header_valid = _has_required_headers(reader.fieldnames)
     entries: list[MetadataEntry] = []
     invalid_rows: list[InvalidMetadataRow] = []
     for offset, row in enumerate(reader, start=2):
@@ -72,7 +75,7 @@ def parse_metadata_bytes(content: bytes, *, delimiter: str | None = None, source
             invalid_rows.append(InvalidMetadataRow(line_number=offset, errors=tuple(errors), raw=normalized))
             continue
         entries.append(entry)
-    return MetadataParseResult(entries=tuple(entries), invalid_rows=tuple(invalid_rows))
+    return MetadataParseResult(entries=tuple(entries), invalid_rows=tuple(invalid_rows), header_valid=header_valid)
 
 
 def _entry_from_row(row: dict[str, str], *, source_package_id: str) -> tuple[MetadataEntry, list[str]]:
@@ -130,12 +133,23 @@ def _entry_from_row(row: dict[str, str], *, source_package_id: str) -> tuple[Met
 
 
 def _value(row: dict[str, str], canonical: str) -> str:
-    casefolded = {key.casefold(): value for key, value in row.items()}
+    casefolded: dict[str, str] = {}
+    for key, value in row.items():
+        normalized_key = key.casefold()
+        if normalized_key not in casefolded or not casefolded[normalized_key]:
+            casefolded[normalized_key] = value
     for alias in FIELD_ALIASES[canonical]:
         value = casefolded.get(alias.casefold(), "")
         if value:
             return value
     return ""
+
+
+def _has_required_headers(fieldnames: list[str] | None) -> bool:
+    if not fieldnames:
+        return False
+    normalized = {str(field or "").strip().casefold() for field in fieldnames}
+    return all(any(alias.casefold() in normalized for alias in FIELD_ALIASES[canonical]) for canonical in REQUIRED_METADATA_FIELDS)
 
 
 def _detect_delimiter(text: str) -> str:

@@ -3,10 +3,16 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
+from cfdi_vault.adapters.cli import sat_metadata as cli_module
 from cfdi_vault.cli import app
-from cfdi_vault.sat_metadata_window_plan import build_metadata_window_plan
+from cfdi_vault.sat_metadata_window_plan import (
+    MetadataPathPolicyError,
+    build_metadata_window_plan,
+    resolve_external_metadata_path,
+)
 
 HEADER = "Uuid~RfcEmisor~NombreEmisor~RfcReceptor~NombreReceptor~FechaEmision~MontoTotal~EfectoComprobante~Estatus\n"
 
@@ -42,16 +48,48 @@ def test_h1_plan_selects_two_smallest_positive_windows_with_partial_final_bucket
     ]
 
 
-def test_plan_returns_no_received_metadata_without_live_windows() -> None:
+def test_plan_returns_range_neutral_no_data_without_live_windows() -> None:
     result = build_metadata_window_plan(
         HEADER.encode(),
         start=date(2026, 1, 1),
         end=date(2026, 6, 30),
     )
 
-    assert result.status == "no_received_metadata_in_h1"
+    assert result.status == "no_received_metadata_in_range"
     assert result.selected_windows == ()
     assert result.live_action == "none"
+
+
+@pytest.mark.parametrize(
+    "content",
+    (
+        b"",
+        _row(1, "2026-01-08").encode(),
+        b"unknown~columns\nvalue~value\n",
+        b"unknown~columns\n",
+    ),
+)
+def test_plan_rejects_empty_headerless_or_unknown_header_metadata(content: bytes) -> None:
+    result = build_metadata_window_plan(
+        content,
+        start=date(2026, 1, 1),
+        end=date(2026, 6, 30),
+    )
+
+    assert result.status == "invalid_metadata"
+    assert result.selected_windows == ()
+    assert result.live_action == "none"
+
+
+def test_valid_header_only_metadata_is_a_no_data_result() -> None:
+    result = build_metadata_window_plan(
+        HEADER.encode(),
+        start=date(2026, 2, 1),
+        end=date(2026, 2, 28),
+    )
+
+    assert result.status == "no_received_metadata_in_range"
+    assert result.selected_windows == ()
 
 
 def test_plan_fails_closed_when_any_metadata_row_is_invalid() -> None:
@@ -121,3 +159,83 @@ def test_cli_reports_unreadable_metadata_without_printing_path(tmp_path: Path) -
     assert "error=metadata_unavailable" in result.output
     assert "live_action=none" in result.output
     assert str(missing_path) not in result.output
+
+
+def test_external_metadata_path_policy_blocks_root_nested_and_traversal_paths(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    nested = checkout / "private"
+    nested.mkdir(parents=True)
+    root_file = checkout / "metadata.txt"
+    nested_file = nested / "metadata.txt"
+    root_file.write_text(HEADER, encoding="utf-8")
+    nested_file.write_text(HEADER, encoding="utf-8")
+
+    blocked = (
+        root_file,
+        nested_file,
+        nested / ".." / "metadata.txt",
+    )
+    for candidate in blocked:
+        with pytest.raises(MetadataPathPolicyError) as exc:
+            resolve_external_metadata_path(candidate, checkout_root=checkout)
+        assert exc.value.reason == "metadata_inside_checkout"
+        assert str(candidate) not in str(exc.value)
+
+
+def test_external_metadata_path_policy_allows_resolved_outside_file(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    outside = tmp_path / "external" / "metadata.txt"
+    outside.parent.mkdir()
+    outside.write_text(HEADER, encoding="utf-8")
+    traversal = checkout / ".." / "external" / "metadata.txt"
+
+    resolved = resolve_external_metadata_path(traversal, checkout_root=checkout)
+
+    assert resolved == outside.resolve()
+
+
+def test_external_metadata_path_policy_blocks_symlink_resolving_into_checkout(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    inside = checkout / "metadata.txt"
+    inside.write_text(HEADER, encoding="utf-8")
+    outside_link = tmp_path / "external-link.txt"
+    try:
+        outside_link.symlink_to(inside)
+    except OSError:
+        pytest.skip("file symlinks are unavailable on this Windows environment")
+
+    with pytest.raises(MetadataPathPolicyError) as exc:
+        resolve_external_metadata_path(outside_link, checkout_root=checkout)
+
+    assert exc.value.reason == "metadata_inside_checkout"
+
+
+def test_cli_blocks_checkout_metadata_without_printing_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    metadata_path = checkout / "private-metadata.txt"
+    metadata_path.write_text(HEADER + _row(1, "2026-01-08"), encoding="utf-8")
+    monkeypatch.setattr(cli_module, "_find_checkout_root", lambda _path: checkout)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "sat",
+            "metadata-window-plan",
+            "--metadata",
+            str(metadata_path),
+            "--from",
+            "2026-01-01",
+            "--to",
+            "2026-06-30",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "error=metadata_inside_checkout" in result.output
+    assert "error_kind=metadata_inside_checkout" in result.output
+    assert "status=blocked" in result.output
+    assert "live_action=none" in result.output
+    assert str(metadata_path) not in result.output

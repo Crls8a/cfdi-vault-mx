@@ -41,6 +41,34 @@ def test_parse_tilde_metadata_accepts_sat_txt_rows() -> None:
     assert result.entries[0].source_package_id == "SYN-PACKAGE-TXT"
 
 
+def test_case_variant_duplicate_headers_keep_first_non_empty_value() -> None:
+    content = "\n".join(
+        [
+            "Uuid~uuid~RfcEmisor~RfcReceptor~FechaEmision~Monto~Estatus~EfectoComprobante",
+            "00000000-0000-4000-8000-000000000011~~XAXX010101000~XAXX010101000~2026-01-08~1.00~Vigente~I",
+        ]
+    ).encode("utf-8")
+
+    result = parse_metadata_bytes(content)
+
+    assert result.accepted_count == 1
+    assert result.entries[0].uuid == "00000000-0000-4000-8000-000000000011"
+
+
+def test_exact_alias_precedence_remains_deterministic() -> None:
+    content = "\n".join(
+        [
+            "uuid~folioFiscal~rfcEmisor~rfcReceptor~fechaEmision~monto~estatus~efectoComprobante",
+            "00000000-0000-4000-8000-000000000012~00000000-0000-4000-8000-000000000013~XAXX010101000~XAXX010101000~2026-01-08~1.00~Vigente~I",
+        ]
+    ).encode("utf-8")
+
+    result = parse_metadata_bytes(content)
+
+    assert result.accepted_count == 1
+    assert result.entries[0].uuid == "00000000-0000-4000-8000-000000000012"
+
+
 def test_parse_comma_metadata_accepts_alias_headers_and_default_package() -> None:
     content = "\n".join(
         [

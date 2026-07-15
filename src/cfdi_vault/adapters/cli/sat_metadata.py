@@ -7,7 +7,12 @@ from pathlib import Path
 
 import typer
 
-from cfdi_vault.sat_metadata_window_plan import MetadataWindowPlan, build_metadata_window_plan
+from cfdi_vault.sat_metadata_window_plan import (
+    MetadataPathPolicyError,
+    MetadataWindowPlan,
+    build_metadata_window_plan,
+    resolve_external_metadata_path,
+)
 
 from .common import *
 from .sat_common import _run_live_metadata_request_smoke
@@ -26,8 +31,17 @@ def sat_metadata_window_plan(
     except ValueError as exc:
         _print_metadata_window_error("invalid_date")
         raise typer.Exit(code=1) from exc
+    checkout_root = _find_checkout_root(Path.cwd())
+    if checkout_root is None:
+        _print_metadata_window_error("checkout_root_unavailable")
+        raise typer.Exit(code=1)
     try:
-        content = metadata.read_bytes()
+        metadata_path = resolve_external_metadata_path(metadata, checkout_root=checkout_root)
+    except MetadataPathPolicyError as exc:
+        _print_metadata_window_error(exc.reason)
+        raise typer.Exit(code=1) from exc
+    try:
+        content = metadata_path.read_bytes()
     except OSError as exc:
         _print_metadata_window_error("metadata_unavailable")
         raise typer.Exit(code=1) from exc
@@ -70,7 +84,9 @@ def _print_metadata_window_plan(plan: MetadataWindowPlan) -> None:
 
 def _print_metadata_window_error(error: str) -> None:
     typer.echo("mode=metadata-window-plan")
+    typer.echo("status=blocked")
     typer.echo(f"error={error}")
+    typer.echo(f"error_kind={error}")
     typer.echo("live_action=none")
     typer.echo("raw_rows_persisted=no")
     typer.echo("sensitive_fields_printed=no")

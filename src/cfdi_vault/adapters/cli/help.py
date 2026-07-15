@@ -115,7 +115,7 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
     },
     {
         "command": "sat metadata-window-plan",
-        "purpose": "Select up to two low-volume weekly diagnostic windows from an external SAT metadata TXT without persisting rows.",
+        "purpose": "Select up to two low-volume weekly diagnostic windows from SAT metadata kept outside the checkout without persisting rows.",
         "when": "Run offline after the operator manually exports received metadata; keep the file outside the repository.",
         "example": "cfdi-vault sat metadata-window-plan --metadata <external-metadata.txt> --from YYYY-MM-DD --to YYYY-MM-DD",
     },

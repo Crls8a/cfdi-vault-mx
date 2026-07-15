@@ -7,13 +7,23 @@ its result.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import date, timedelta
+from pathlib import Path
 
 from cfdi_vault.metadata_parser import parse_metadata_bytes
 
 WINDOW_DAYS = 7
 MAX_SELECTED_WINDOWS = 2
+
+
+class MetadataPathPolicyError(ValueError):
+    """A sanitized external-metadata path policy failure."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__("metadata path rejected by policy")
 
 
 @dataclass(frozen=True)
@@ -39,6 +49,22 @@ class MetadataWindowPlan:
     live_action: str
 
 
+def resolve_external_metadata_path(candidate: Path, *, checkout_root: Path) -> Path:
+    """Resolve a metadata path and reject any lexical or real checkout descendant."""
+
+    candidate_absolute = Path(os.path.abspath(candidate.expanduser()))
+    checkout_absolute = Path(os.path.abspath(checkout_root.expanduser()))
+    try:
+        candidate_resolved = candidate_absolute.resolve(strict=False)
+        checkout_resolved = checkout_absolute.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise MetadataPathPolicyError("metadata_path_resolution_failed") from exc
+
+    if candidate_absolute.is_relative_to(checkout_absolute) or candidate_resolved.is_relative_to(checkout_resolved):
+        raise MetadataPathPolicyError("metadata_inside_checkout")
+    return candidate_resolved
+
+
 def build_metadata_window_plan(
     content: bytes,
     *,
@@ -56,7 +82,7 @@ def build_metadata_window_plan(
         raise ValueError("start must be before or equal to end")
 
     parsed = parse_metadata_bytes(content)
-    if parsed.invalid_rows:
+    if not parsed.header_valid or parsed.invalid_rows:
         return MetadataWindowPlan(
             status="invalid_metadata",
             start=start,
@@ -85,7 +111,7 @@ def build_metadata_window_plan(
         if count > 0
     )
     selected = tuple(sorted(positive, key=lambda window: (window.metadata_count, window.start))[:MAX_SELECTED_WINDOWS])
-    status = "ready" if selected else "no_received_metadata_in_h1"
+    status = "ready" if selected else "no_received_metadata_in_range"
     return MetadataWindowPlan(
         status=status,
         start=start,
