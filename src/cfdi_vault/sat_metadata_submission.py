@@ -9,19 +9,23 @@ import re
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from pathlib import Path
 from uuid import uuid4
 
+import cfdi_vault.sat_live_request_state as legacy_state
 import cfdi_vault.sat_metadata_recovery as lifecycle
 import cfdi_vault.sat_metadata_recovery_state as state
-from cfdi_vault.domain import DownloadDirection, DownloadQuery, RequestType
+from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType
 from cfdi_vault.ports import SatRequestPort
 from cfdi_vault.sat_contract import SatOutcomeAction, SatRequestResult
 
 _SCHEMA = 1
 _HASH = re.compile(r"[0-9a-f]{64}")
+_CLAIM_REF = re.compile(r"claim-[0-9a-f]{12}")
+_RECOVERY_REF = re.compile(r"run-[0-9a-f]{12}")
+_OWNER_REF = re.compile(r"[0-9a-f]{32}")
 _RECORD_KEYS = {"claimRef", "status", "createdAt", "updatedAt", "profileId", "query",
                 "criteriaHash", "authorizationRef", "ownerRef", "recoveryRef"}
 _QUERY_KEYS = {"tenantId", "requesterRfc", "direction", "requestType", "period", "issuerRfc",
@@ -137,6 +141,9 @@ def _prepare(storage_root, query, now, profile, criteria, authorization, repo_ro
             _write_claims(claim_path, tuple(
                 replacement if item.claim_ref == replacement.claim_ref else item for item in claims))
             return replacement, False
+        _reject_matching_legacy_request(
+            recovery_path=recovery_path, query=query, profile=profile, criteria=criteria,
+        )
         status = SubmissionStatus.ACCEPTED if match else SubmissionStatus.CLAIMED
         claim = MetadataSubmissionClaim(ref, status, now, now, profile, _query_document(query), criteria,
                                         authorization, uuid4().hex,
@@ -192,18 +199,23 @@ def _read_claims(path: Path) -> tuple[MetadataSubmissionClaim, ...]:
         return ()
     except OSError:
         raise MetadataSubmissionError("submission-state-unreadable") from None
+    invalid = False
     try:
         document = json.loads(raw, object_pairs_hook=_unique)
         if not isinstance(document, Mapping) or set(document) != {"schemaVersion", "claims"}:
             raise ValueError
-        if document["schemaVersion"] != _SCHEMA or not isinstance(document["claims"], list):
+        if type(document["schemaVersion"]) is not int or document["schemaVersion"] != _SCHEMA:
+            raise ValueError
+        if not isinstance(document["claims"], list):
             raise ValueError
         claims = tuple(_claim_from_document(item) for item in document["claims"])
         if len({item.claim_ref for item in claims}) != len(claims):
             raise ValueError
-        return claims
-    except (ValueError, TypeError):
-        raise MetadataSubmissionError("submission-state-invalid") from None
+    except Exception:
+        invalid = True
+    if invalid:
+        raise MetadataSubmissionError("submission-state-invalid")
+    return claims
 
 
 def _claim_from_document(value: object) -> MetadataSubmissionClaim:
@@ -212,24 +224,70 @@ def _claim_from_document(value: object) -> MetadataSubmissionClaim:
     query = value["query"]
     if not isinstance(query, Mapping) or set(query) != _QUERY_KEYS:
         raise ValueError
-    claim = MetadataSubmissionClaim(str(value["claimRef"]), SubmissionStatus(str(value["status"])),
-        datetime.fromisoformat(str(value["createdAt"])), datetime.fromisoformat(str(value["updatedAt"])),
-        str(value["profileId"]), dict(query), str(value["criteriaHash"]), str(value["authorizationRef"]),
-        str(value["ownerRef"]), str(value["recoveryRef"]))
+    strings = ("claimRef", "status", "createdAt", "updatedAt", "profileId",
+               "criteriaHash", "authorizationRef", "ownerRef", "recoveryRef")
+    if any(not isinstance(value[key], str) for key in strings):
+        raise ValueError
+    parsed_query = _query_from_document(query)
+    claim = MetadataSubmissionClaim(
+        value["claimRef"], SubmissionStatus(value["status"]),
+        _aware_datetime(value["createdAt"]), _aware_datetime(value["updatedAt"]),
+        value["profileId"], dict(query), value["criteriaHash"], value["authorizationRef"],
+        value["ownerRef"], value["recoveryRef"],
+    )
     expected_ref = "claim-" + hashlib.sha256(
         f"{claim.profile_id}:{claim.criteria_hash}".encode()).hexdigest()[:12]
     if (claim.claim_ref != expected_ref
-            or not _HASH.fullmatch(claim.criteria_hash) or not claim.owner_ref
-            or not claim.profile_id or not claim.authorization_ref or claim.created_at.tzinfo is None or claim.updated_at.tzinfo is None
-            or not isinstance(query["period"], Mapping) or not isinstance(query["receiverRfcs"], list) or not all(isinstance(item, str) for item in query["receiverRfcs"])
-            or set(query["period"]) != {"start", "end"} or not all(isinstance(item, str) for item in query["period"].values())
-            or (claim.status == SubmissionStatus.ACCEPTED) != bool(claim.recovery_ref)):
+            or not _CLAIM_REF.fullmatch(claim.claim_ref)
+            or not _HASH.fullmatch(claim.criteria_hash)
+            or parsed_query.criteria_hash() != claim.criteria_hash
+            or not _valid_private_ref(claim.profile_id)
+            or not _valid_private_ref(claim.authorization_ref)
+            or not _OWNER_REF.fullmatch(claim.owner_ref)
+            or claim.updated_at < claim.created_at
+            or (claim.status is SubmissionStatus.ACCEPTED)
+            != bool(_RECOVERY_REF.fullmatch(claim.recovery_ref))
+            or (claim.status is not SubmissionStatus.ACCEPTED and claim.recovery_ref)):
         raise ValueError
     return claim
 
 
+def _query_from_document(value: Mapping[str, object]) -> DownloadQuery:
+    period = value["period"]
+    if not isinstance(period, Mapping) or set(period) != {"start", "end"}:
+        raise ValueError
+    if not isinstance(value["receiverRfcs"], list):
+        raise ValueError
+    required = (value["tenantId"], value["requesterRfc"])
+    optional = tuple(value[key] for key in (
+        "issuerRfc", "uuid", "documentStatus", "documentType", "complement",
+        "rfcOnBehalf", "recoveryVariantReason",
+    ))
+    if (any(not _valid_private_ref(item) for item in required)
+            or any(item is not None and not _valid_private_ref(item) for item in optional)
+            or any(not _valid_private_ref(item) for item in value["receiverRfcs"])):
+        raise ValueError
+    query = DownloadQuery(
+        tenant_id=value["tenantId"], requester_rfc=value["requesterRfc"],
+        direction=DownloadDirection(value["direction"]),
+        request_type=RequestType(value["requestType"]),
+        period=DateTimePeriod(_aware_datetime(period["start"]), _aware_datetime(period["end"])),
+        issuer_rfc=value["issuerRfc"], receiver_rfcs=tuple(value["receiverRfcs"]),
+        uuid=value["uuid"], document_status=value["documentStatus"],
+        document_type=value["documentType"], complement=value["complement"],
+        rfc_on_behalf=value["rfcOnBehalf"],
+        recovery_variant_reason=value["recoveryVariantReason"],
+    )
+    if (query.direction not in {DownloadDirection.ISSUED, DownloadDirection.RECEIVED}
+            or query.request_type is not RequestType.METADATA or query.validate()
+            or _query_document(query) != dict(value)):
+        raise ValueError
+    return query
+
+
 def _write_claims(path: Path, claims) -> None:
     tmp = None
+    failed = False
     try:
         payload = {"schemaVersion": _SCHEMA, "claims": [item._private_document() for item in claims]}
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
@@ -241,10 +299,15 @@ def _write_claims(path: Path, claims) -> None:
         state._validate_auxiliary_path(tmp, path.parent)
         os.replace(tmp, path)
     except (OSError, state.MetadataRecoveryStateError):
-        raise MetadataSubmissionError("submission-state-write-failed") from None
+        failed = True
     finally:
-        if tmp is not None and tmp.exists():
-            tmp.unlink(missing_ok=True)
+        try:
+            if tmp is not None and tmp.exists():
+                tmp.unlink(missing_ok=True)
+        except OSError:
+            failed = True
+    if failed:
+        raise MetadataSubmissionError("submission-state-write-failed")
 
 
 def _unique(pairs):
@@ -257,9 +320,97 @@ def _unique(pairs):
 
 
 def _validate_input(query, now, profile, criteria, authorization) -> None:
-    if (not profile or not authorization or not _HASH.fullmatch(criteria)
-            or criteria != query.criteria_hash() or query.validate()
-            or query.request_type != RequestType.METADATA
-            or query.direction not in {DownloadDirection.ISSUED, DownloadDirection.RECEIVED}
-            or query.period is None or now.tzinfo is None):
+    valid = False
+    try:
+        period = query.period
+        query_document = _query_document(query)
+        valid = (
+            isinstance(query, DownloadQuery)
+            and isinstance(now, datetime) and now.utcoffset() is not None
+            and _valid_private_ref(profile) and _valid_private_ref(authorization)
+            and isinstance(criteria, str) and bool(_HASH.fullmatch(criteria))
+            and query.request_type is RequestType.METADATA
+            and query.direction in {DownloadDirection.ISSUED, DownloadDirection.RECEIVED}
+            and isinstance(period, DateTimePeriod)
+            and period.start.utcoffset() is not None and period.end.utcoffset() is not None
+            and period.start <= period.end
+            and _query_from_document(query_document).criteria_hash() == criteria
+            and query.criteria_hash() == criteria
+        )
+    except Exception:
+        valid = False
+    if not valid:
         raise MetadataSubmissionError("submission-input-invalid")
+
+
+def _aware_datetime(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError
+    return parsed
+
+
+def _valid_private_ref(value: object) -> bool:
+    return (isinstance(value, str) and value == value.strip() and bool(value)
+            and len(value) <= 512 and value.isprintable())
+
+
+def _reject_matching_legacy_request(*, recovery_path: Path, query: DownloadQuery,
+                                    profile: str, criteria: str) -> None:
+    root = recovery_path.parent.parent
+    path = legacy_state.live_metadata_state_path(root)
+    invalid = False
+    try:
+        state._validate_auxiliary_path(path, recovery_path.parent)
+        if path.exists():
+            parsed = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique)
+            if (not isinstance(parsed, Mapping) or set(parsed) != {"schemaVersion", "requests"}
+                    or type(parsed["schemaVersion"]) is not int
+                    or not isinstance(parsed["requests"], list)
+                    or any(not isinstance(item, Mapping) for item in parsed["requests"])):
+                raise ValueError
+        records = legacy_state.list_live_metadata_requests(root)
+    except Exception:
+        invalid = True
+        records = ()
+    if invalid:
+        raise MetadataSubmissionError("submission-legacy-state-invalid")
+    period = query.period
+    assert period is not None
+    expected_scope = (query.direction.value, query.request_type.value,
+                      period.start.date(), period.end.date())
+    exact = False
+    ambiguous = False
+    try:
+        for record in records:
+            scope = (record.direction, record.kind, _legacy_bound(record.fecha_inicial),
+                     _legacy_bound(record.fecha_final))
+            if (not _valid_private_ref(record.profile_id)
+                    or not isinstance(record.criteria_hash, str)
+                    or not _HASH.fullmatch(record.criteria_hash)
+                    or scope[0] not in {"issued", "received"} or scope[1] != "metadata"
+                    or scope[2] > scope[3]):
+                raise ValueError
+            profile_match = record.profile_id == profile
+            criteria_match = record.criteria_hash == criteria
+            scope_match = scope == expected_scope
+            exact = exact or (profile_match and criteria_match and scope_match)
+            ambiguous = ambiguous or (profile_match and (criteria_match or scope_match)
+                                      and not (criteria_match and scope_match))
+    except Exception:
+        invalid = True
+    if invalid or ambiguous:
+        raise MetadataSubmissionError("submission-legacy-state-invalid")
+    if exact:
+        raise MetadataSubmissionError("submission-legacy-existing")
+
+
+def _legacy_bound(value: object) -> date:
+    if not isinstance(value, str) or value != value.strip():
+        raise ValueError
+    if len(value) == 10:
+        return date.fromisoformat(value)
+    parsed = _aware_datetime(value)
+    return parsed.date()
