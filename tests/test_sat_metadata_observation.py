@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from threading import Event
 
@@ -38,6 +39,10 @@ def test_append_allocates_ids_deduplicates_and_reads_aggregates(tmp_path) -> Non
         ({"executed_stages": ("verify", "wait")}, "observation-stages-invalid"),
         ({"observed_result": {"header": "private"}}, "observation-result-invalid"),
         ({"observed_result": {"packageCount": True}}, "observation-result-invalid"),
+        ({"observed_result": {"packageCount": 10 ** 10000}}, "observation-result-invalid"),
+        ({"hypothesis_code": []}, "observation-code-invalid"),
+        ({"direction": []}, "observation-scope-invalid"),
+        ({"conclusion": []}, "observation-code-invalid"),
         ({"stability": "assumed"}, "observation-code-invalid"),
     ),
 )
@@ -51,8 +56,13 @@ def test_reader_rejects_unknown_fields_arrays_duplicate_keys_and_nonsequential_i
     unknown, array = dict(original, private="forbidden"), dict(original)
     array["observedResult"] = {"packageCount": []}
     wrong_id = dict(original, observationId="obs-000002")
+    boolean_version = dict(original, schemaVersion=True)
+    nested_list = dict(original)
+    nested_list["hypothesis"] = {"code": [], "text": "private"}
+    huge_integer = path.read_text(encoding="utf-8").replace('"requestAccepted":true', '"packageCount":' + "9" * 5000)
     invalid = [json.dumps(unknown), json.dumps(array), path.read_text(encoding="utf-8").replace(
-        '"schemaVersion":1', '"schemaVersion":1,"schemaVersion":1'), json.dumps(wrong_id)]
+        '"schemaVersion":1', '"schemaVersion":1,"schemaVersion":1'), json.dumps(wrong_id),
+        json.dumps(boolean_version), json.dumps(nested_list), huge_integer]
     for index, payload in enumerate(invalid):
         root = tmp_path / str(index)
         target = subject.metadata_observation_path(root)
@@ -123,3 +133,29 @@ def test_short_write_is_reported_as_uncertain(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(subject.os, "write", lambda *_: 0)
     with pytest.raises(subject.MetadataObservationError, match="observation-write-uncertain"):
         subject.append_metadata_observation(tmp_path, _event())
+def test_state_swap_before_root_lock_cannot_escape_storage(tmp_path, monkeypatch) -> None:
+    storage, outside = tmp_path / "storage", tmp_path / "outside"
+    outside.mkdir()
+    original_lock = subject._ledger_lock
+    @contextmanager
+    def swap_then_lock(anchor):
+        state_dir = storage / "state"
+        state_dir.rename(storage / "state-original")
+        state_dir.symlink_to(outside, target_is_directory=True)
+        with original_lock(anchor):
+            yield
+    monkeypatch.setattr(subject, "_ledger_lock", swap_then_lock)
+    with pytest.raises(subject.MetadataObservationError, match="observation-path-invalid"):
+        subject.append_metadata_observation(storage, _event())
+    assert not (outside / "sat-metadata-observations.jsonl").exists()
+    assert not tuple(outside.glob("*.lock")) and not tuple(outside.glob(".*.lock"))
+    assert (storage / ".sat-metadata-observation-ledger.lock").exists()
+def test_first_creation_requests_directory_fsync_via_platform_seam(tmp_path, monkeypatch) -> None:
+    order: list[object] = []
+    (tmp_path / ".sat-metadata-observation-ledger.lock").write_bytes(b"\0")
+    monkeypatch.setattr(subject, "_DIRECTORY_FSYNC_REQUIRED", True)
+    monkeypatch.setattr(subject.os, "fsync", lambda _: order.append("file"))
+    monkeypatch.setattr(subject, "_fsync_directory", lambda directory: order.append(directory))
+    subject.append_metadata_observation(tmp_path, _event())
+    subject.append_metadata_observation(tmp_path, _event())
+    assert order == ["file", subject.metadata_observation_path(tmp_path).parent]
