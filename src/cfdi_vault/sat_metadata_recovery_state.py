@@ -16,6 +16,10 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import cfdi_vault.sat_metadata_recovery as lifecycle
+from cfdi_vault.sat_metadata_artifact_state import (
+    MetadataArtifactStateError,
+    MetadataPackageArtifactState,
+)
 from cfdi_vault.sat_metadata_recovery import (
     MetadataRecovery,
     PackageRecovery,
@@ -23,11 +27,11 @@ from cfdi_vault.sat_metadata_recovery import (
     RecoveryStatus,
 )
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _STATE_KEYS = {"schemaVersion", "recoveries"}
 _RECORD_KEYS = {
     "recovery", "idSolicitud", "profileId", "direction", "kind", "fechaInicial",
-    "fechaFinal", "criteriaHash", "authorizationRef", "packages",
+    "fechaFinal", "criteriaHash", "authorizationRef", "packages", "artifacts",
 }
 _RECOVERY_KEYS = {
     "schemaVersion", "recoveryRef", "status", "createdAt", "deadlineAt", "verifyAttempts",
@@ -65,13 +69,16 @@ class MetadataRecoveryStateRecord:
     criteria_hash: str
     authorization_ref: str
     package_bindings: tuple[PackageIdBinding, ...] = ()
+    artifact_bindings: tuple[MetadataPackageArtifactState, ...] = ()
 
     def __post_init__(self) -> None:
         _validate_record(self)
 
     def to_redacted_document(self) -> dict[str, object]:
         """Return status only; exclude every private resume value."""
-        return self.recovery.to_redacted_document()
+        document = self.recovery.to_redacted_document()
+        document["artifacts"] = [item.to_redacted_document() for item in self.artifact_bindings]
+        return document
 
     def to_private_document(self) -> dict[str, object]:
         """Serialize private local state; callers must never print this document."""
@@ -83,6 +90,7 @@ class MetadataRecoveryStateRecord:
         document["recovery"] = self.recovery.to_redacted_document()
         document["packages"] = [{"packageRef": item.package_ref, "idPaquete": item.id_paquete}
                                 for item in self.package_bindings]
+        document["artifacts"] = [item.to_private_document() for item in self.artifact_bindings]
         return document
 
 
@@ -195,6 +203,10 @@ def _validate_record(record: MetadataRecoveryStateRecord) -> None:
         record.profile_id, record.criteria_hash, record.id_solicitud
     ):
         raise MetadataRecoveryStateError("recovery-ref-mismatch")
+    if type(record.package_bindings) is not tuple or any(
+        type(item) is not PackageIdBinding for item in record.package_bindings
+    ):
+        raise MetadataRecoveryStateError("package-binding-invalid")
     raw_ids = tuple(item.id_paquete for item in record.package_bindings)
     refs = tuple(item.package_ref for item in record.package_bindings)
     expected = tuple(item.package_ref for item in record.recovery.packages)
@@ -206,6 +218,36 @@ def _validate_record(record: MetadataRecoveryStateRecord) -> None:
         or any(item.package_ref != package_ref(item.id_paquete) for item in record.package_bindings)
     ):
         raise MetadataRecoveryStateError("package-binding-invalid")
+    _validate_artifact_bindings(record)
+
+
+def _validate_artifact_bindings(record: MetadataRecoveryStateRecord) -> None:
+    artifacts = record.artifact_bindings
+    if type(artifacts) is not tuple or any(
+        type(item) is not MetadataPackageArtifactState for item in artifacts
+    ):
+        raise MetadataRecoveryStateError("artifact-binding-invalid")
+    artifact_refs = tuple(item.package_ref for item in artifacts)
+    completed = tuple(
+        item for item in record.recovery.packages
+        if item.status is PackageRecoveryStatus.COMPLETED
+    )
+    if (
+        artifact_refs != tuple(item.package_ref for item in completed)
+        or len(set(artifact_refs)) != len(artifact_refs)
+    ):
+        raise MetadataRecoveryStateError("artifact-binding-invalid")
+    package_refs = {item.package_ref for item in record.package_bindings}
+    for artifact, package in zip(artifacts, completed, strict=True):
+        if (
+            artifact.package_ref not in package_refs
+            or package.zip_valid is not True
+            or package.txt_count != len(artifact.texts)
+            or not artifact.package_storage_key.startswith(
+                f"sat-metadata/{record.recovery.recovery_ref}/packages/"
+            )
+        ):
+            raise MetadataRecoveryStateError("artifact-binding-invalid")
 
 
 def _validate_recovery(recovery: MetadataRecovery) -> None:
@@ -290,6 +332,15 @@ def _validate_replacement(
         return
     if current.package_bindings and current.package_bindings != candidate.package_bindings:
         raise MetadataRecoveryStateError("package-binding-immutable")
+    previous_artifacts = current.artifact_bindings
+    if (
+        len(candidate.artifact_bindings) < len(previous_artifacts)
+        or candidate.artifact_bindings[:len(previous_artifacts)] != previous_artifacts
+    ):
+        raise MetadataRecoveryStateError("artifact-binding-immutable")
+    added_artifacts = candidate.artifact_bindings[len(previous_artifacts):]
+    if len(added_artifacts) > 1:
+        raise MetadataRecoveryStateError("artifact-binding-transition-invalid")
     before, after = current.recovery, candidate.recovery
     immutable = (before.recovery_ref, before.created_at, before.deadline_at)
     if immutable != (after.recovery_ref, after.created_at, after.deadline_at):
@@ -300,6 +351,30 @@ def _validate_replacement(
         expected = None
     if expected != after:
         raise MetadataRecoveryStateError("recovery-state-regression")
+    if added_artifacts and not _artifact_matches_completion(
+        before,
+        after,
+        added_artifacts[0].package_ref,
+    ):
+        raise MetadataRecoveryStateError("artifact-binding-transition-invalid")
+
+
+def _artifact_matches_completion(
+    before: MetadataRecovery,
+    after: MetadataRecovery,
+    package_ref_value: str,
+) -> bool:
+    changed = [
+        (old, new)
+        for old, new in zip(before.packages, after.packages, strict=True)
+        if old != new
+    ]
+    return bool(
+        len(changed) == 1
+        and changed[0][0].package_ref == package_ref_value
+        and changed[0][0].status is PackageRecoveryStatus.DOWNLOADING
+        and changed[0][1].status is PackageRecoveryStatus.COMPLETED
+    )
 
 
 def _exact_successor(before: MetadataRecovery, after: MetadataRecovery) -> MetadataRecovery | None:
@@ -349,6 +424,16 @@ def _record_from_document(value: object) -> MetadataRecoveryStateRecord:
         PackageIdBinding(_string(item, "packageRef"), _string(item, "idPaquete"))
         for item in packages if _mapping(item, {"packageRef", "idPaquete"})
     )
+    artifacts_value = document["artifacts"]
+    if type(artifacts_value) is not list:
+        raise MetadataRecoveryStateError("artifact-binding-invalid")
+    try:
+        artifacts = tuple(
+            MetadataPackageArtifactState.from_private_document(item)
+            for item in artifacts_value
+        )
+    except MetadataArtifactStateError:
+        raise MetadataRecoveryStateError("artifact-binding-invalid") from None
     return MetadataRecoveryStateRecord(
         recovery=_recovery_from_document(document["recovery"]),
         id_solicitud=_string(document, "idSolicitud"), profile_id=_string(document, "profileId"),
@@ -356,6 +441,7 @@ def _record_from_document(value: object) -> MetadataRecoveryStateRecord:
         fecha_inicial=_string(document, "fechaInicial"), fecha_final=_string(document, "fechaFinal"),
         criteria_hash=_string(document, "criteriaHash"), authorization_ref=_string(document, "authorizationRef"),
         package_bindings=bindings,
+        artifact_bindings=artifacts,
     )
 
 
@@ -536,7 +622,11 @@ def _read_state(path: Path) -> dict[str, object]:
     if parse_failed:
         raise MetadataRecoveryStateError("recovery-state-unreadable")
     mapped = _mapping(document, _STATE_KEYS)
-    if mapped["schemaVersion"] != _SCHEMA_VERSION or not isinstance(mapped["recoveries"], list):
+    if (
+        type(mapped["schemaVersion"]) is not int
+        or mapped["schemaVersion"] != _SCHEMA_VERSION
+        or type(mapped["recoveries"]) is not list
+    ):
         raise MetadataRecoveryStateError("recovery-state-unsupported")
     return dict(mapped)
 

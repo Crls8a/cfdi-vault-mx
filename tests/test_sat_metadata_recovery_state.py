@@ -12,6 +12,11 @@ import pytest
 
 import cfdi_vault.sat_metadata_recovery as lifecycle
 import cfdi_vault.sat_metadata_recovery_state as subject
+from cfdi_vault.sat_metadata_artifact_state import (
+    MetadataPackageArtifactState,
+    MetadataTextArtifact,
+)
+from cfdi_vault.sat_metadata_package import MetadataTextInspection
 
 START = datetime(2026, 6, 30, tzinfo=timezone.utc)
 CRITERIA_HASH = "a" * 64
@@ -28,7 +33,8 @@ def test_private_state_round_trips_exact_lifecycle_and_package_bindings(tmp_path
     recovery = lifecycle.begin_package_download(record.recovery, subject.package_ref(PACKAGE_IDS[0]))
     subject.save_metadata_recovery_state(tmp_path, replace(record, recovery=recovery))
     recovery = lifecycle.record_package_download(recovery, subject.package_ref(PACKAGE_IDS[0]), zip_valid=True, txt_count=1)
-    record = replace(record, recovery=recovery)
+    artifact = _artifact(record, 0)
+    record = replace(record, recovery=recovery, artifact_bindings=(artifact,))
     subject.save_metadata_recovery_state(tmp_path, record)
     first = subject.metadata_recovery_state_path(tmp_path).read_bytes()
     subject.save_metadata_recovery_state(tmp_path, record)
@@ -42,18 +48,32 @@ def test_private_state_round_trips_exact_lifecycle_and_package_bindings(tmp_path
 
 
 def test_redacted_state_excludes_all_private_resume_values() -> None:
-    record = _ready_record()
+    record = _completed_first_record()
     serialized = repr(record.to_redacted_document())
-    for private in (record.id_solicitud, record.profile_id, record.criteria_hash, record.authorization_ref, *PACKAGE_IDS):
+    artifact = record.artifact_bindings[0]
+    for private in (
+        record.id_solicitud,
+        record.profile_id,
+        record.criteria_hash,
+        record.authorization_ref,
+        artifact.package_sha256,
+        artifact.package_storage_key,
+        artifact.texts[0].sha256,
+        artifact.texts[0].storage_key,
+        *PACKAGE_IDS,
+    ):
         assert private not in serialized
+    assert record.to_redacted_document()["artifacts"] == [artifact.to_redacted_document()]
 
 
 @pytest.mark.parametrize(
     "document",
     (
         "{",
-        json.dumps({"schemaVersion": 2, "recoveries": []}),
-        json.dumps({"schemaVersion": 1, "recoveries": [], "unexpected": True}),
+        json.dumps({"schemaVersion": 1, "recoveries": []}),
+        json.dumps({"schemaVersion": 2.0, "recoveries": []}),
+        json.dumps({"schemaVersion": 3, "recoveries": []}),
+        json.dumps({"schemaVersion": 2, "recoveries": [], "unexpected": True}),
     ),
 )
 def test_loader_fails_closed_for_invalid_or_unknown_state(tmp_path, document: str) -> None:
@@ -69,6 +89,107 @@ def test_rejects_duplicate_or_mismatched_package_bindings() -> None:
     ready = _ready_record()
     with pytest.raises(subject.MetadataRecoveryStateError, match="package-binding-invalid"):
         replace(ready, package_bindings=(ready.package_bindings[0],) * 2)
+
+
+def test_artifact_requires_matching_completed_package_and_text_count() -> None:
+    ready = _ready_record()
+    artifact = _artifact(ready, 0)
+    with pytest.raises(subject.MetadataRecoveryStateError, match="artifact-binding-invalid"):
+        replace(ready, artifact_bindings=(artifact,))
+
+    downloading = replace(
+        ready,
+        recovery=lifecycle.begin_package_download(ready.recovery, artifact.package_ref),
+    )
+    completed = lifecycle.record_package_download(
+        downloading.recovery,
+        artifact.package_ref,
+        zip_valid=True,
+        txt_count=2,
+    )
+    with pytest.raises(subject.MetadataRecoveryStateError, match="artifact-binding-invalid"):
+        replace(downloading, recovery=completed, artifact_bindings=(artifact,))
+    with pytest.raises(subject.MetadataRecoveryStateError, match="artifact-binding-invalid"):
+        replace(downloading, recovery=replace(completed, packages=completed.packages), artifact_bindings=())
+
+
+def test_artifacts_round_trip_privately_and_advance_sequentially(tmp_path) -> None:
+    first = _completed_first_record()
+    ready = _ready_record()
+    subject.save_metadata_recovery_state(tmp_path, ready)
+    with pytest.raises(subject.MetadataRecoveryStateError, match="recovery-state-regression"):
+        subject.save_metadata_recovery_state(tmp_path, first)
+    downloading_first = replace(
+        ready,
+        recovery=lifecycle.begin_package_download(
+            ready.recovery,
+            ready.recovery.packages[0].package_ref,
+        ),
+    )
+    subject.save_metadata_recovery_state(tmp_path, downloading_first)
+    subject.save_metadata_recovery_state(tmp_path, first)
+
+    downloading_second = replace(
+        first,
+        recovery=lifecycle.begin_package_download(first.recovery, first.recovery.packages[1].package_ref),
+    )
+    subject.save_metadata_recovery_state(tmp_path, downloading_second)
+    second_artifact = _artifact(first, 1)
+    completed = replace(
+        downloading_second,
+        recovery=lifecycle.record_package_download(
+            downloading_second.recovery,
+            second_artifact.package_ref,
+            zip_valid=True,
+            txt_count=1,
+        ),
+        artifact_bindings=first.artifact_bindings + (second_artifact,),
+    )
+    subject.save_metadata_recovery_state(tmp_path, completed)
+
+    assert subject.load_metadata_recovery_state(tmp_path, completed.recovery.recovery_ref) == completed
+    with pytest.raises(subject.MetadataRecoveryStateError, match="artifact-binding-invalid"):
+        replace(completed, artifact_bindings=tuple(reversed(completed.artifact_bindings)))
+    private = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
+    assert private["schemaVersion"] == 2
+    assert private["recoveries"][0]["artifacts"] == [
+        item.to_private_document() for item in completed.artifact_bindings
+    ]
+
+
+def test_save_rejects_removed_reordered_or_replaced_artifact(tmp_path) -> None:
+    current = _completed_first_record()
+    subject.save_metadata_recovery_state(tmp_path, current)
+    original = current.artifact_bindings[0]
+    replacement = replace(
+        original,
+        package_sha256="d" * 64,
+        package_storage_key=(
+            f"sat-metadata/{current.recovery.recovery_ref}/packages/1-{'d' * 12}.zip"
+        ),
+    )
+    with pytest.raises(subject.MetadataRecoveryStateError, match="artifact-binding-invalid"):
+        replace(current, artifact_bindings=())
+    with pytest.raises(subject.MetadataRecoveryStateError, match="artifact-binding-immutable"):
+        subject.save_metadata_recovery_state(
+            tmp_path,
+            replace(current, artifact_bindings=(replacement,)),
+        )
+
+
+def test_loader_rejects_mixed_or_malformed_artifact_schema(tmp_path) -> None:
+    record = _completed_first_record()
+    document = _state_document(record)
+    del document["recoveries"][0]["artifacts"]
+    _write_document(tmp_path, document)
+    with pytest.raises(subject.MetadataRecoveryStateError):
+        subject.list_metadata_recovery_states(tmp_path)
+
+    document = _state_document(record)
+    document["recoveries"][0]["artifacts"][0]["schemaVersion"] = 2
+    _write_document(tmp_path, document)
+    with pytest.raises(subject.MetadataRecoveryStateError, match="artifact-binding-invalid"):
+        subject.list_metadata_recovery_states(tmp_path)
 
 
 def test_same_sat_request_cannot_be_bound_to_a_different_scope(tmp_path) -> None:
@@ -398,13 +519,18 @@ def test_loader_errors_retain_no_private_document_or_path(tmp_path, monkeypatch,
 
 
 def test_private_dataclass_repr_is_redacted() -> None:
-    record = _ready_record()
-    serialized = repr((record, *record.package_bindings))
+    record = _completed_first_record()
+    serialized = repr((record, *record.package_bindings, *record.artifact_bindings))
+    artifact = record.artifact_bindings[0]
     for private in (
         record.id_solicitud,
         record.profile_id,
         record.criteria_hash,
         record.authorization_ref,
+        artifact.package_sha256,
+        artifact.package_storage_key,
+        artifact.texts[0].sha256,
+        artifact.texts[0].storage_key,
         *PACKAGE_IDS,
     ):
         assert private not in serialized
@@ -413,8 +539,8 @@ def test_private_dataclass_repr_is_redacted() -> None:
 @pytest.mark.parametrize(
     "document",
     (
-        '{"schemaVersion":1,"schemaVersion":1,"recoveries":[]}',
-        '{"schemaVersion":1,"recoveries":[{"recovery":{},"recovery":{}}]}',
+        '{"schemaVersion":2,"schemaVersion":2,"recoveries":[]}',
+        '{"schemaVersion":2,"recoveries":[{"recovery":{},"recovery":{}}]}',
     ),
 )
 def test_loader_rejects_duplicate_json_keys_at_any_level(tmp_path, document: str) -> None:
@@ -463,13 +589,61 @@ def _ready_record() -> subject.MetadataRecoveryStateRecord:
     )
 
 
+def _completed_first_record() -> subject.MetadataRecoveryStateRecord:
+    ready = _ready_record()
+    package_ref_value = ready.recovery.packages[0].package_ref
+    recovery = lifecycle.begin_package_download(ready.recovery, package_ref_value)
+    recovery = lifecycle.record_package_download(
+        recovery,
+        package_ref_value,
+        zip_valid=True,
+        txt_count=1,
+    )
+    return replace(ready, recovery=recovery, artifact_bindings=(_artifact(ready, 0),))
+
+
+def _artifact(
+    record: subject.MetadataRecoveryStateRecord,
+    package_index: int,
+) -> MetadataPackageArtifactState:
+    ordinal = package_index + 1
+    package_digest = ("b" if package_index == 0 else "d") * 64
+    text_digest = ("c" if package_index == 0 else "e") * 64
+    return MetadataPackageArtifactState(
+        package_ref=record.package_bindings[package_index].package_ref,
+        package_sha256=package_digest,
+        package_storage_key=(
+            f"sat-metadata/{record.recovery.recovery_ref}/packages/"
+            f"{ordinal}-{package_digest[:12]}.zip"
+        ),
+        package_written=True,
+        texts=(
+            MetadataTextArtifact(
+                sha256=text_digest,
+                storage_key=(
+                    f"sat-metadata/{record.recovery.recovery_ref}/txt/"
+                    f"{ordinal}-{text_digest[:12]}.txt"
+                ),
+                written=True,
+                inspection=MetadataTextInspection(
+                    "utf-8-sig",
+                    "~",
+                    ("Uuid", "FechaEmision"),
+                    2,
+                    True,
+                ),
+            ),
+        ),
+    )
+
+
 def _state_document(record: subject.MetadataRecoveryStateRecord) -> dict[str, object]:
-    return {"schemaVersion": 1, "recoveries": [record.to_private_document()]}
+    return {"schemaVersion": 2, "recoveries": [record.to_private_document()]}
 
 
 def _write_document(tmp_path: Path, document: dict[str, object]) -> None:
     path = subject.metadata_recovery_state_path(tmp_path)
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(document), encoding="utf-8")
 
 
