@@ -137,6 +137,15 @@ supported LIB-005B and LIB-005C rows are public library API.
 | `cfdi_vault.sat_download_live_gate` | Live-only gate | Human-gated reference-system operation. |
 | `cfdi_vault.sat_live_request_state` | Live-only state helper | Permit-gated live diagnostic state. |
 | `cfdi_vault.sat_live_smoke` | Live-only tool | Manual smoke runner; never public or imported by default. |
+| `cfdi_vault.sat_metadata_artifact_state` | Internal reference-system state | Private redacted artifact bindings for external ZIP/TXT evidence; not a supported import. |
+| `cfdi_vault.sat_metadata_observation` | Internal reference-system evidence | Sanitized append-only observation ledger; not public API or proof of live SAT behavior. |
+| `cfdi_vault.sat_metadata_package` | Internal package processor | ZIP/TXT validation and extraction for gated metadata recovery; not a supported import. |
+| `cfdi_vault.sat_metadata_recovery` | Internal lifecycle model | Pure reference-system recovery transitions; no transport or live-compatibility guarantee. |
+| `cfdi_vault.sat_metadata_recovery_runner` | Reference-system orchestration | Advances one persisted recovery through injected boundaries; not public API. |
+| `cfdi_vault.sat_metadata_recovery_scheduler` | Internal reference-system scheduling | Pure due selection for a local scheduler wake; not a supported consumer surface. |
+| `cfdi_vault.sat_metadata_recovery_state` | Internal reference-system persistence | Private resumable recovery state and identifiers; never re-exported. |
+| `cfdi_vault.sat_metadata_submission` | Internal live submission helper | Permit-gated exactly-once request claim; no default use or supported import. |
+| `cfdi_vault.sat_metadata_window_plan` | Internal planning helper | Operator-metadata window selection without network behavior; not public API. |
 | `cfdi_vault.sat_orchestration` | Reference-system orchestration | Application flow, persistence, and runtime coordination. |
 | `cfdi_vault.sat_package_download_offline` | Internal offline helper | Useful evidence path, but not yet a stable adapter contract. |
 | `cfdi_vault.sat_scheduled_verify` | Internal reference-system orchestration | Locked one-shot wrapper around due verification; not a supported consumer import. |
