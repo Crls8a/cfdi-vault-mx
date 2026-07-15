@@ -249,7 +249,7 @@ def test_runner_no_due_has_zero_live_or_storage_side_effects(monkeypatch, tmp_pa
     monkeypatch.setattr(subject, "_validate_recovery_state_path", lambda *_: events.append("path"))
     monkeypatch.setattr(subject, "list_metadata_recovery_states", lambda *_a, **_k: events.append("list") or ())
     monkeypatch.setattr(subject, "_recovery_now", lambda: NOW)
-    for name in ("validate_consumed_metadata_recovery_permit_id", "_new_recovery_storage",
+    for name in ("settle_metadata_recovery_locally", "validate_consumed_metadata_recovery_permit_id", "_new_recovery_storage",
                  "_new_recovery_adapter", "advance_metadata_recovery_once"):
         monkeypatch.setattr(subject, name, lambda *_a, _name=name, **_k: (_ for _ in ()).throw(
             AssertionError(f"{_name} must not run")))
@@ -277,6 +277,8 @@ def test_runner_validates_stored_permit_before_storage_and_advances_once(monkeyp
     monkeypatch.setattr(subject, "_checked_recovery_repo_root", lambda: events.append("guard") or tmp_path / "repo")
     monkeypatch.setattr(subject, "_validate_recovery_state_path", lambda *_: events.append("path"))
     monkeypatch.setattr(subject, "list_metadata_recovery_states", lambda *_a, **_k: events.append("list") or (record,))
+    monkeypatch.setattr(subject, "settle_metadata_recovery_locally", lambda **_: events.append("settle") or
+                        SimpleNamespace(recovery=_document(status="packages_ready"), requires_live=True))
     monkeypatch.setattr(subject, "validate_consumed_metadata_recovery_permit_id",
                         lambda *_a, **_k: events.append("permit") or SimpleNamespace())
     monkeypatch.setattr(subject, "_new_recovery_storage", lambda *_: events.append("storage") or object())
@@ -288,5 +290,37 @@ def test_runner_validates_stored_permit_before_storage_and_advances_once(monkeyp
     result = CliRunner().invoke(_app(), ["metadata-recovery-runner", "--profile", profile.profile_id])
 
     assert result.exit_code == 0, result.output
-    assert events == ["guard", "path", "list", "permit", "storage", "adapter", "advance"]
+    assert events == ["guard", "path", "list", "settle", "permit", "storage", "adapter", "advance"]
     assert "permit-synthetic" not in result.output and "profile-synthetic" not in result.output
+
+
+@pytest.mark.parametrize("terminal", ["pending_after_budget", "download_uncertain"])
+def test_runner_settles_local_terminal_before_permit_or_live_objects(
+    monkeypatch, tmp_path: Path, terminal: str,
+) -> None:
+    events: list[str] = []
+    profile = SimpleNamespace(profile_id="profile-synthetic", storage_root=tmp_path / "external")
+    status = RecoveryStatus.VERIFY_SCHEDULED if terminal == "pending_after_budget" else RecoveryStatus.DOWNLOADING
+    recovery = SimpleNamespace(recovery_ref="run-000000000000", status=status,
+        created_at=NOW, deadline_at=NOW, next_check_at=NOW)
+    record = SimpleNamespace(profile_id=profile.profile_id, recovery=recovery,
+        authorization_ref="expired-permit", direction="received",
+        fecha_inicial="2026-06-30", fecha_final="2026-06-30")
+    monkeypatch.setattr(subject, "_load_download_profile", lambda _: profile)
+    monkeypatch.setattr(subject, "_checked_recovery_repo_root", lambda: tmp_path / "repo")
+    monkeypatch.setattr(subject, "_validate_recovery_state_path", lambda *_: None)
+    monkeypatch.setattr(subject, "list_metadata_recovery_states", lambda *_a, **_k: (record,))
+    monkeypatch.setattr(subject, "_recovery_now", lambda: NOW)
+    monkeypatch.setattr(subject, "settle_metadata_recovery_locally", lambda **_: events.append("settle") or
+                        SimpleNamespace(recovery=_document(status=terminal), requires_live=False))
+    monkeypatch.setattr(subject, "validate_consumed_metadata_recovery_permit_id",
+        lambda *_a, **_k: (_ for _ in ()).throw(subject.LivePermitError("permit-continuation-expired")))
+    for name in ("_new_recovery_storage", "_new_recovery_adapter", "advance_metadata_recovery_once"):
+        monkeypatch.setattr(subject, name, lambda *_a, _name=name, **_k: (_ for _ in ()).throw(
+            AssertionError(f"{_name} must not run")))
+
+    result = CliRunner().invoke(_app(), ["metadata-recovery-runner", "--profile", profile.profile_id])
+
+    assert result.exit_code == 0, result.output
+    assert events == ["settle"]
+    assert f"status={terminal}" in result.output

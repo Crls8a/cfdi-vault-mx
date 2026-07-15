@@ -55,6 +55,7 @@ class MetadataRecoveryAdvanceOutcome:
     verify_count: int
     download_attempts: int
     error_kind: str | None = None
+    requires_live: bool = False
 
 
 @dataclass
@@ -86,23 +87,37 @@ def advance_metadata_recovery_once(
         return _failed_out(audit, "runner_failed")
 
 
+def settle_metadata_recovery_locally(
+    *, storage_root: str | Path, recovery_ref: str, now: datetime,
+    repo_root: str | Path | None = None,
+) -> MetadataRecoveryAdvanceOutcome:
+    """Persist local-only terminal transitions under the durable operation lock."""
+
+    audit = _SatCallAudit()
+    try:
+        with state.metadata_recovery_operation_lock(storage_root, repo_root=repo_root):
+            record = state.load_metadata_recovery_state(
+                storage_root, recovery_ref, repo_root=repo_root,
+            )
+            record, error, requires_live = _settle_record(
+                storage_root, record, now, repo_root,
+            )
+            return MetadataRecoveryAdvanceOutcome(
+                record.to_redacted_document(), False, 0, 0, error, requires_live,
+            )
+    except state.MetadataRecoveryStateError as exc:
+        kind = "busy" if exc.reason == "recovery-state-busy" else "state_failed"
+        return _failed_out(audit, kind)
+    except Exception:
+        return _failed_out(audit, "runner_failed")
+
+
 def _advance(root, recovery_ref, verifier, downloader, package_storage, now, repo_root, audit):
     record = state.load_metadata_recovery_state(root, recovery_ref, repo_root=repo_root)
+    record, local_error, requires_live = _settle_record(root, record, now, repo_root)
+    if not requires_live:
+        return _out(record, audit, error=local_error)
     recovery = record.recovery
-    if recovery.status in _TERMINAL:
-        return _out(record, audit)
-    expired = lifecycle.apply_recovery_deadline(recovery, now=now)
-    if expired != recovery:
-        record = replace(record, recovery=expired)
-        state.save_metadata_recovery_state(root, record, repo_root=repo_root)
-        return _out(record, audit)
-    claimed = next((item for item in recovery.packages
-                    if item.status is PackageRecoveryStatus.DOWNLOADING), None)
-    if claimed is not None:
-        recovery = lifecycle.record_package_download(recovery, claimed.package_ref, uncertain=True)
-        record = replace(record, recovery=recovery)
-        state.save_metadata_recovery_state(root, record, repo_root=repo_root)
-        return _out(record, audit, error="download_uncertain")
     error = None
     if recovery.status is RecoveryStatus.VERIFY_SCHEDULED:
         if recovery.next_check_at is None or now < recovery.next_check_at:
@@ -169,6 +184,25 @@ def _advance(root, recovery_ref, verifier, downloader, package_storage, now, rep
             return _out(record, audit, error="download_failed")
         state.save_metadata_recovery_state(root, record, repo_root=repo_root)
     return _out(record, audit, error=error)
+
+
+def _settle_record(root, record, now, repo_root):
+    recovery = record.recovery
+    if recovery.status in _TERMINAL:
+        return record, None, False
+    expired = lifecycle.apply_recovery_deadline(recovery, now=now)
+    if expired != recovery:
+        record = replace(record, recovery=expired)
+        state.save_metadata_recovery_state(root, record, repo_root=repo_root)
+        return record, None, False
+    claimed = next((item for item in recovery.packages
+                    if item.status is PackageRecoveryStatus.DOWNLOADING), None)
+    if claimed is not None:
+        recovery = lifecycle.record_package_download(recovery, claimed.package_ref, uncertain=True)
+        record = replace(record, recovery=recovery)
+        state.save_metadata_recovery_state(root, record, repo_root=repo_root)
+        return record, "download_uncertain", False
+    return record, None, True
 
 
 def _apply_verification(record, result, now):

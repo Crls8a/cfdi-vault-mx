@@ -22,7 +22,10 @@ from cfdi_vault.live_permit import (
 )
 from cfdi_vault.sat_live_smoke import SatLiveV15MetadataAdapter
 from cfdi_vault.sat_metadata_recovery import PackageRecoveryStatus
-from cfdi_vault.sat_metadata_recovery_runner import advance_metadata_recovery_once
+from cfdi_vault.sat_metadata_recovery_runner import (
+    advance_metadata_recovery_once,
+    settle_metadata_recovery_locally,
+)
 from cfdi_vault.sat_metadata_recovery_scheduler import select_due_metadata_recovery
 from cfdi_vault.sat_metadata_recovery_state import (
     MetadataRecoveryStateError,
@@ -128,6 +131,16 @@ def sat_metadata_recovery_runner(
             _print_scheduler_idle()
             return
         record = next(item for item in records if item.recovery.recovery_ref == selected)
+        settled = settle_metadata_recovery_locally(
+            storage_root=local_profile.storage_root, recovery_ref=selected,
+            now=now, repo_root=repo_root,
+        )
+        if settled.recovery is None:
+            _print_runner_failure(settled)
+            raise typer.Exit(code=1)
+        if not settled.requires_live:
+            _print_recovery_document(settled.recovery)
+            return
         permit = validate_consumed_metadata_recovery_permit_id(
             record.authorization_ref, profile_id=record.profile_id,
             direction=record.direction, date_from=record.fecha_inicial,

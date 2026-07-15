@@ -390,11 +390,14 @@ def validate_consumed_metadata_recovery_permit_id(
 
     if type(permit_id) is not str or PERMIT_ID_PATTERN.fullmatch(permit_id) is None:
         raise LivePermitError("permit-id-invalid")
-    return validate_consumed_metadata_recovery_permit(
+    permit = validate_consumed_metadata_recovery_permit(
         permit_id, profile_id=profile_id, direction=direction,
         date_from=date_from, date_to=date_to, now=now,
         repo_root=repo_root, env=env,
     )
+    if permit.permit_id != permit_id:
+        raise LivePermitError("permit-id-mismatch")
+    return permit
 
 
 def permit_expectation_from_query(scope: str, profile_id: str, query: DownloadQuery) -> dict[str, str]:

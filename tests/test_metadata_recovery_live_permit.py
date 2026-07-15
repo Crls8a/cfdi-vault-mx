@@ -295,6 +295,22 @@ def test_scheduler_continuation_resolves_consumed_permit_by_id(tmp_path: Path) -
     assert validated.permit_id == permit.permit_id
 
 
+def test_scheduler_continuation_rejects_canonical_filename_substitution(tmp_path: Path) -> None:
+    first, env, repo_root = _create(tmp_path)
+    second, _, _ = _create(tmp_path)
+    consumed_first = _consume(first.permit_id, env, repo_root)
+    consumed_second = _consume(second.permit_id, env, repo_root)
+    assert consumed_first.path is not None and consumed_second.path is not None
+    consumed_first.path.write_bytes(consumed_second.path.read_bytes())
+
+    with pytest.raises(LivePermitError, match="permit-id-mismatch"):
+        validate_consumed_metadata_recovery_permit_id(
+            first.permit_id, profile_id="dummy-profile", direction="received",
+            date_from="2026-06-30", date_to="2026-06-30",
+            now=consumed_first.consumed_at, repo_root=repo_root, env=env,
+        )
+
+
 def test_metadata_recovery_permit_still_rejects_double_initial_consumption(
     tmp_path: Path,
 ) -> None:

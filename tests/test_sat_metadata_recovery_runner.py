@@ -22,7 +22,10 @@ from cfdi_vault.sat_contract import (
     SatVerificationResult,
 )
 from cfdi_vault.sat_live_smoke import SatLiveSmokeError
-from cfdi_vault.sat_metadata_recovery_runner import advance_metadata_recovery_once
+from cfdi_vault.sat_metadata_recovery_runner import (
+    advance_metadata_recovery_once,
+    settle_metadata_recovery_locally,
+)
 
 NOW = datetime(2026, 6, 30, tzinfo=timezone.utc)
 REQUEST = "synthetic-request"
@@ -109,6 +112,42 @@ def test_not_due_and_deadline_make_no_sat_calls(tmp_path, now, expected) -> None
     assert outcome.recovery["status"] == expected
     assert (outcome.sat_contacted, outcome.verify_count, outcome.download_attempts) == (False, 0, 0)
     assert verifier.calls == downloader.calls == []
+
+
+def test_local_settlement_persists_deadline_without_live_dependencies(tmp_path) -> None:
+    _saved(tmp_path)
+
+    outcome = settle_metadata_recovery_locally(
+        storage_root=tmp_path, recovery_ref=RUN_REF, now=NOW + timedelta(days=7),
+    )
+
+    assert outcome.requires_live is False
+    assert outcome.recovery["status"] == "pending_after_budget"
+    assert state.load_metadata_recovery_state(tmp_path, RUN_REF).recovery.status.value == "pending_after_budget"
+
+
+def test_local_settlement_persists_crash_left_download_as_uncertain(tmp_path) -> None:
+    record = _saved(tmp_path)
+    package_ref = state.package_ref(PACKAGES[0])
+    ready = lifecycle.record_finished_verification(
+        record.recovery, checked_at=NOW + timedelta(minutes=5),
+        package_refs=(package_ref,), record_count=None,
+    )
+    claimed = lifecycle.begin_package_download(ready, package_ref)
+    ready_record = replace(
+        record, recovery=claimed,
+        package_bindings=(state.PackageIdBinding(package_ref, PACKAGES[0]),),
+    )
+    state.save_metadata_recovery_state(tmp_path, replace(ready_record, recovery=ready))
+    state.save_metadata_recovery_state(tmp_path, ready_record)
+
+    outcome = settle_metadata_recovery_locally(
+        storage_root=tmp_path, recovery_ref=RUN_REF, now=NOW + timedelta(minutes=6),
+    )
+
+    assert (outcome.requires_live, outcome.error_kind) == (False, "download_uncertain")
+    assert outcome.recovery["status"] == "download_uncertain"
+    assert state.load_metadata_recovery_state(tmp_path, RUN_REF).recovery.status.value == "download_uncertain"
 
 
 @pytest.mark.parametrize(
