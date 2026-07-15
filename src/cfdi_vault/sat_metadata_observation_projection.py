@@ -204,10 +204,11 @@ def _validate_facts(facts: MetadataObservationFacts) -> None:
         and facts.executed_stages == _STAGES[:len(facts.executed_stages)]
         and (bool(facts.executed_stages) or not facts.lifecycle_transitioned or not facts.sat_contacted)
     )
-    bools = (facts.lifecycle_transitioned, facts.sat_contacted, facts.terminal_status_received,
-             facts.authentication_accepted, facts.request_accepted, facts.has_records,
-             facts.utf8_sig, facts.delimiter_tilde, facts.parser_compatible)
-    bools_valid = all(value is None or type(value) is bool for value in bools)
+    controls = (facts.lifecycle_transitioned, facts.sat_contacted, facts.terminal_status_received)
+    evidence = (facts.authentication_accepted, facts.request_accepted, facts.has_records,
+                facts.utf8_sig, facts.delimiter_tilde, facts.parser_compatible)
+    bools_valid = all(type(value) is bool for value in controls) \
+        and all(value is None or type(value) is bool for value in evidence)
     counts = (facts.verify_attempts, facts.verify_contacts, facts.verify_contacts_not_before_due,
               facts.verify_contacts_before_due, facts.verify_contacts_due_unknown, facts.package_count,
               facts.downloaded_package_count, facts.zip_valid_count, facts.txt_count)

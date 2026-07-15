@@ -153,6 +153,13 @@ def test_schema_is_immutable_redacted_and_rejects_scope_or_aggregate_mixing() ->
         subject.MetadataObservationFacts(private_id="forbidden")
 
 
+@pytest.mark.parametrize("name", ("lifecycle_transitioned", "sat_contacted", "terminal_status_received"))
+@pytest.mark.parametrize("value", (None, 0, 1, "true"))
+def test_mandatory_control_flags_require_exact_bool(name, value) -> None:
+    with pytest.raises(subject.MetadataObservationProjectionError, match="facts-invalid"):
+        _facts(**{name: value})
+
+
 @pytest.mark.parametrize(
     "changes",
     (
