@@ -114,6 +114,12 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "example": "cfdi-vault sat metadata-request-state --profile default",
     },
     {
+        "command": "sat metadata-window-plan",
+        "purpose": "Select up to two low-volume weekly diagnostic windows from an external SAT metadata TXT without persisting rows.",
+        "when": "Run offline after the operator manually exports received metadata; keep the file outside the repository.",
+        "example": "cfdi-vault sat metadata-window-plan --metadata <external-metadata.txt> --from YYYY-MM-DD --to YYYY-MM-DD",
+    },
+    {
         "command": "sat verify-due",
         "purpose": "Run one explicit manual offline verify attempt for persisted due metadata requests.",
         "when": "Use only for manual diagnostics; use the scheduled runner for recurring execution.",

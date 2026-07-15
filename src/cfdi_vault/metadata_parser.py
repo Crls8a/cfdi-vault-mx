@@ -7,15 +7,14 @@ it never assumes invalid rows are safe to ingest silently.
 
 from __future__ import annotations
 
+import csv
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-import csv
 from io import StringIO
-import re
 
 from cfdi_vault.domain import MetadataEntry
-
 
 UUID_PATTERN = re.compile(r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-5][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$")
 
@@ -26,8 +25,8 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "receiver_rfc": ("rfcReceptor", "receiver_rfc", "receptorRfc"),
     "receiver_name": ("nombreReceptor", "receiver_name", "receptorNombre"),
     "issue_date": ("fechaEmision", "fecha", "issue_date"),
-    "total": ("montoTotal", "total", "importeTotal"),
-    "status": ("estadoComprobante", "estado", "status"),
+    "total": ("montoTotal", "monto", "total", "importeTotal"),
+    "status": ("estadoComprobante", "estatus", "estado", "status"),
     "effect": ("tipoComprobante", "efectoComprobante", "effect"),
     "source_package_id": ("idPaquete", "package_id", "source_package_id"),
 }
@@ -131,9 +130,11 @@ def _entry_from_row(row: dict[str, str], *, source_package_id: str) -> tuple[Met
 
 
 def _value(row: dict[str, str], canonical: str) -> str:
+    casefolded = {key.casefold(): value for key, value in row.items()}
     for alias in FIELD_ALIASES[canonical]:
-        if alias in row and row[alias]:
-            return row[alias]
+        value = casefolded.get(alias.casefold(), "")
+        if value:
+            return value
     return ""
 
 

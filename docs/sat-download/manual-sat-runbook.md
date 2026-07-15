@@ -32,6 +32,37 @@ Before any real SAT/e.firma action, all of these must be true:
 
 If any item is false, stop.
 
+## Offline metadata-led window selection
+
+Before creating a live request, the operator may manually export received CFDI
+metadata from the SAT portal and use it only as an offline date index. This is
+SAT-published portal evidence, not a `RUNTIME_WSDL` claim; see [Consulta y
+recuperacion de comprobantes](https://wwwmat.sat.gob.mx/consultas/42968/consulta-y-recuperacion-de-comprobantes-%28nuevo%29).
+Keep the TXT outside the repository and run:
+
+```powershell
+cfdi-vault sat metadata-window-plan `
+  --metadata <EXTERNAL_METADATA_TXT> `
+  --from 2026-01-01 `
+  --to 2026-06-30
+```
+
+This experimental reference-system command reads the file into memory, accepts
+the parser's SAT-style `~` delimiter, and prints only date windows and row
+counts. It does not copy the input, create CSV, call SAT, or print the input
+path, RFC, UUID, taxpayer name, or monetary total.
+
+The range is split into inclusive seven-day windows, including a shorter final
+window when needed. At most two positive windows are returned, ordered by the
+smallest metadata count and then by earliest date. `invalid_metadata` is a
+fail-closed result: correct the external export before considering live work.
+`no_received_metadata_in_h1` means no live request should be created for that
+range.
+
+The metadata file is sensitive fiscal data. Delete or retain it according to
+the operator's local policy; never attach it to issue #50, a commit, a test, or
+diagnostic output. This offline plan does not authorize any live SAT operation.
+
 ## Required live execution gates
 
 Any future live command must require all three explicit operator choices:

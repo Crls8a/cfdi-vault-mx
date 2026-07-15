@@ -12,7 +12,12 @@ from .sat_auth import (
     sat_oracle_auth_fingerprint,
 )
 from .sat_backfill import sat_backfill_plan, sat_backfill_submit
-from .sat_metadata import sat_diagnose_live, sat_metadata_request_smoke, sat_metadata_request_state
+from .sat_metadata import (
+    sat_diagnose_live,
+    sat_metadata_request_smoke,
+    sat_metadata_request_state,
+    sat_metadata_window_plan,
+)
 from .sat_probes import sat_probe_auth_matrix, sat_probe_auth_post, sat_probe_transport, sat_probe_verify_post
 from .sat_scheduler import render_windows_task, sat_verify_due_runner
 from .sat_verify import (
@@ -30,6 +35,7 @@ def register(sat_app: typer.Typer, backfill_app: typer.Typer) -> None:
     sat_app.command("auth-smoke")(sat_auth_smoke)
     sat_app.command("metadata-request-smoke")(sat_metadata_request_smoke)
     sat_app.command("metadata-request-state")(sat_metadata_request_state)
+    sat_app.command("metadata-window-plan")(sat_metadata_window_plan)
     backfill_app.command("plan")(sat_backfill_plan)
     backfill_app.command("submit")(sat_backfill_submit)
     sat_app.command("verify-due")(sat_verify_due)
