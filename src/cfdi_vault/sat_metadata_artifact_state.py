@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Mapping
 
 from cfdi_vault.sat_metadata_package import (
     MetadataTextInspection,
@@ -89,7 +88,7 @@ class MetadataPackageArtifactState:
             if type(version) is not int or version != _SCHEMA_VERSION:
                 raise MetadataArtifactStateError("artifact-state-invalid")
             texts_value = document["texts"]
-            if not isinstance(texts_value, list):
+            if type(texts_value) is not list:
                 raise MetadataArtifactStateError("artifact-state-invalid")
             state = cls(
                 package_ref=_string(document, "packageRef"),
@@ -170,12 +169,22 @@ def _validate_state(state: MetadataPackageArtifactState) -> None:
         keys.add(text.storage_key)
 
 def _valid_inspection(value: object) -> bool:
-    if not isinstance(value, MetadataTextInspection):
+    if type(value) is not MetadataTextInspection:
         return False
     headers = value.headers
+    if value.encoding == "unsupported_encoding":
+        return (
+            value.delimiter is None
+            and type(headers) is tuple
+            and not headers
+            and type(value.column_count) is int
+            and value.column_count == 0
+            and type(value.records_present) is bool
+            and not value.records_present
+        )
     return (
         value.encoding == "utf-8-sig" and value.delimiter in _DELIMITERS
-        and isinstance(headers, tuple) and all(type(item) is str and "\n" not in item and "\r" not in item for item in headers)
+        and type(headers) is tuple and all(type(item) is str and "\n" not in item and "\r" not in item for item in headers)
         and type(value.column_count) is int and value.column_count == len(headers)
         and (value.delimiter is None or value.column_count >= 2)
         and type(value.records_present) is bool
@@ -186,6 +195,8 @@ def _valid_hash(value: object) -> bool:
 
 def _text_document(value: MetadataTextArtifact, *, private: bool) -> dict[str, object]:
     inspection = value.inspection
+    if inspection.encoding == "unsupported_encoding" and not private:
+        return {"written": value.written, "encoding": "unsupported_encoding"}
     structural = {
         "written": value.written,
         "encoding": inspection.encoding,
@@ -207,7 +218,7 @@ def _text_from_document(value: object) -> MetadataTextArtifact:
     document = _mapping(value, _TEXT_KEYS)
     inspection = _mapping(document["inspection"], _INSPECTION_KEYS)
     headers = inspection["headers"]
-    if not isinstance(headers, list) or not all(type(item) is str for item in headers):
+    if type(headers) is not list or not all(type(item) is str for item in headers):
         raise MetadataArtifactStateError("artifact-state-invalid")
     column_count = inspection["columnCount"]
     records_present = inspection["recordsPresent"]
@@ -221,27 +232,33 @@ def _text_from_document(value: object) -> MetadataTextArtifact:
         MetadataTextInspection(_string(inspection, "encoding"), delimiter, tuple(headers), column_count, records_present),
     )
 
-def _mapping(value: object, keys: set[str]) -> Mapping[str, object]:
-    if not isinstance(value, Mapping) or set(value) != keys:
+def _mapping(value: object, keys: set[str]) -> dict[str, object]:
+    if (
+        type(value) is not dict
+        or not all(type(key) is str for key in value)
+        or set(value) != keys
+    ):
         raise MetadataArtifactStateError("artifact-state-invalid")
     return value
 
-def _string(document: Mapping[str, object], key: str) -> str:
+def _string(document: dict[str, object], key: str) -> str:
     value = document[key]
     if type(value) is not str:
         raise MetadataArtifactStateError("artifact-state-invalid")
     return value
 
-def _boolean(document: Mapping[str, object], key: str) -> bool:
+def _boolean(document: dict[str, object], key: str) -> bool:
     value = document[key]
     if type(value) is not bool:
         raise MetadataArtifactStateError("artifact-state-invalid")
     return value
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    if type(pairs) is not list:
+        raise MetadataArtifactStateError("artifact-state-invalid")
     document: dict[str, object] = {}
     for key, value in pairs:
-        if key in document:
+        if type(key) is not str or key in document:
             raise MetadataArtifactStateError("artifact-state-invalid")
         document[key] = value
     return document
