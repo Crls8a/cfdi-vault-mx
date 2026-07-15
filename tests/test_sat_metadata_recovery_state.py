@@ -1,6 +1,7 @@
 import json
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -79,6 +80,114 @@ def test_same_sat_request_cannot_be_bound_to_a_different_scope(tmp_path) -> None
         subject.save_metadata_recovery_state(tmp_path, other)
 
 
+def test_save_accepts_forward_lifecycle_and_rejects_stale_replacement(tmp_path) -> None:
+    original = _pending_record()
+    advanced = replace(
+        original,
+        recovery=lifecycle.record_pending_verification(original.recovery, checked_at=START),
+    )
+    subject.save_metadata_recovery_state(tmp_path, original)
+    subject.save_metadata_recovery_state(tmp_path, advanced)
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="recovery-state-regression"):
+        subject.save_metadata_recovery_state(tmp_path, original)
+
+    assert subject.load_metadata_recovery_state(tmp_path, original.recovery.recovery_ref) == advanced
+
+
+@pytest.mark.parametrize("operation", ("remove", "reorder"))
+def test_save_rejects_changes_to_observed_package_bindings(tmp_path, operation: str) -> None:
+    original = _ready_record()
+    subject.save_metadata_recovery_state(tmp_path, original)
+    if operation == "remove":
+        packages = original.recovery.packages[:1]
+        bindings = original.package_bindings[:1]
+    else:
+        packages = tuple(reversed(original.recovery.packages))
+        bindings = tuple(reversed(original.package_bindings))
+    changed = replace(original, recovery=replace(original.recovery, packages=packages), package_bindings=bindings)
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="package-binding-immutable"):
+        subject.save_metadata_recovery_state(tmp_path, changed)
+
+
+def test_package_binding_cannot_be_remapped() -> None:
+    original = _ready_record()
+    remapped = subject.PackageIdBinding(original.package_bindings[0].package_ref, "synthetic-package-other")
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="package-binding-invalid"):
+        replace(original, package_bindings=(remapped, original.package_bindings[1]))
+
+
+def test_state_root_must_be_absolute_and_external_to_repository(tmp_path) -> None:
+    repo_root = tmp_path / "checkout"
+    repo_root.mkdir()
+    with pytest.raises(subject.MetadataRecoveryStateError, match="storage-root-not-absolute"):
+        subject.metadata_recovery_state_path(Path("relative-storage"), repo_root=repo_root)
+    with pytest.raises(subject.MetadataRecoveryStateError, match="storage-root-inside-repository"):
+        subject.metadata_recovery_state_path(repo_root / "private", repo_root=repo_root)
+
+    external = tmp_path / "external"
+    assert subject.metadata_recovery_state_path(external, repo_root=repo_root).is_relative_to(external)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("verifyAttempts", -1),
+        ("recordCount", -1),
+        ("deadlineAt", (START + timedelta(days=8)).isoformat().replace("+00:00", "Z")),
+        ("nextCheckAt", ""),
+        ("status", "completed"),
+    ),
+)
+def test_loader_rejects_semantically_impossible_lifecycle(tmp_path, field: str, value: object) -> None:
+    document = _state_document(_pending_record())
+    document["recoveries"][0]["recovery"][field] = value
+    _write_document(tmp_path, document)
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="recovery-state-invalid"):
+        subject.list_metadata_recovery_states(tmp_path)
+
+
+def test_loader_rejects_incoherent_package_status_aggregate(tmp_path) -> None:
+    document = _state_document(_ready_record())
+    document["recoveries"][0]["recovery"]["packages"][0]["status"] = "completed"
+    _write_document(tmp_path, document)
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="recovery-state-invalid"):
+        subject.list_metadata_recovery_states(tmp_path)
+
+
+def test_private_dataclass_repr_is_redacted() -> None:
+    record = _ready_record()
+    serialized = repr((record, *record.package_bindings))
+    for private in (
+        record.id_solicitud,
+        record.profile_id,
+        record.criteria_hash,
+        record.authorization_ref,
+        *PACKAGE_IDS,
+    ):
+        assert private not in serialized
+
+
+@pytest.mark.parametrize(
+    "document",
+    (
+        '{"schemaVersion":1,"schemaVersion":1,"recoveries":[]}',
+        '{"schemaVersion":1,"recoveries":[{"recovery":{},"recovery":{}}]}',
+    ),
+)
+def test_loader_rejects_duplicate_json_keys_at_any_level(tmp_path, document: str) -> None:
+    path = subject.metadata_recovery_state_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(document, encoding="utf-8")
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="recovery-state-duplicate-key"):
+        subject.list_metadata_recovery_states(tmp_path)
+
+
 def _pending_record() -> subject.MetadataRecoveryStateRecord:
     recovery = lifecycle.start_metadata_recovery(subject.recovery_ref("profile-synthetic", CRITERIA_HASH, REQUEST_ID), created_at=START)
     return subject.new_metadata_recovery_state(
@@ -114,3 +223,13 @@ def _ready_record() -> subject.MetadataRecoveryStateRecord:
         authorization_ref=pending.authorization_ref,
         package_ids=PACKAGE_IDS,
     )
+
+
+def _state_document(record: subject.MetadataRecoveryStateRecord) -> dict[str, object]:
+    return {"schemaVersion": 1, "recoveries": [record.to_private_document()]}
+
+
+def _write_document(tmp_path: Path, document: dict[str, object]) -> None:
+    path = subject.metadata_recovery_state_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(document), encoding="utf-8")

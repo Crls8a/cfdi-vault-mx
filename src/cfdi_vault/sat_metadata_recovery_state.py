@@ -8,7 +8,7 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from cfdi_vault.sat_metadata_recovery import (
@@ -30,6 +30,7 @@ _RECOVERY_KEYS = {
     "txtCount", "packages",
 }
 _HASH_RE = re.compile(r"[0-9a-f]{64}")
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class MetadataRecoveryStateError(ValueError):
@@ -39,14 +40,14 @@ class MetadataRecoveryStateError(ValueError):
         super().__init__(reason)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class PackageIdBinding:
     """Bind one safe package reference to its private SAT identifier."""
     package_ref: str
     id_paquete: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class MetadataRecoveryStateRecord:
     """Keep private resume material beside the redacted lifecycle."""
     recovery: MetadataRecovery
@@ -104,28 +105,46 @@ def new_metadata_recovery_state(
     )
 
 
-def metadata_recovery_state_path(storage_root: str | Path) -> Path:
+def metadata_recovery_state_path(
+    storage_root: str | Path, *, repo_root: str | Path | None = None,
+) -> Path:
     """Return the fixed, non-sensitive state path under configured storage."""
-    return Path(storage_root).expanduser() / "state" / "sat-metadata-recoveries.json"
+    root = Path(storage_root).expanduser()
+    repository = Path(repo_root).expanduser() if repo_root is not None else _REPO_ROOT
+    if not root.is_absolute() or not repository.is_absolute():
+        raise MetadataRecoveryStateError("storage-root-not-absolute")
+    root, repository = root.resolve(), repository.resolve()
+    if root == repository or repository in root.parents:
+        raise MetadataRecoveryStateError("storage-root-inside-repository")
+    return root / "state" / "sat-metadata-recoveries.json"
 
 
-def save_metadata_recovery_state(storage_root: str | Path, record: MetadataRecoveryStateRecord) -> None:
+def save_metadata_recovery_state(
+    storage_root: str | Path,
+    record: MetadataRecoveryStateRecord,
+    *,
+    repo_root: str | Path | None = None,
+) -> None:
     """Atomically insert or update one record without rebinding its request."""
-    records = list(list_metadata_recovery_states(storage_root))
+    records = list(list_metadata_recovery_states(storage_root, repo_root=repo_root))
     for current in records:
         if current.id_solicitud == record.id_solicitud and current.recovery.recovery_ref != record.recovery.recovery_ref:
             raise MetadataRecoveryStateError("request-already-bound")
         if current.recovery.recovery_ref == record.recovery.recovery_ref and _identity(current) != _identity(record):
             raise MetadataRecoveryStateError("recovery-ref-conflict")
+        if current.recovery.recovery_ref == record.recovery.recovery_ref:
+            _validate_replacement(current, record)
     records = [item for item in records if item.recovery.recovery_ref != record.recovery.recovery_ref]
     records.append(record)
     records.sort(key=lambda item: item.recovery.created_at, reverse=True)
-    _write_state(metadata_recovery_state_path(storage_root), records)
+    _write_state(metadata_recovery_state_path(storage_root, repo_root=repo_root), records)
 
 
-def list_metadata_recovery_states(storage_root: str | Path) -> tuple[MetadataRecoveryStateRecord, ...]:
+def list_metadata_recovery_states(
+    storage_root: str | Path, *, repo_root: str | Path | None = None,
+) -> tuple[MetadataRecoveryStateRecord, ...]:
     """Load all private records, failing closed on malformed or duplicate state."""
-    document = _read_state(metadata_recovery_state_path(storage_root))
+    document = _read_state(metadata_recovery_state_path(storage_root, repo_root=repo_root))
     records = tuple(_record_from_document(item) for item in document["recoveries"])
     refs = tuple(item.recovery.recovery_ref for item in records)
     requests = tuple(item.id_solicitud for item in records)
@@ -134,15 +153,21 @@ def list_metadata_recovery_states(storage_root: str | Path) -> tuple[MetadataRec
     return records
 
 
-def load_metadata_recovery_state(storage_root: str | Path, recovery_ref_value: str) -> MetadataRecoveryStateRecord:
+def load_metadata_recovery_state(
+    storage_root: str | Path,
+    recovery_ref_value: str,
+    *,
+    repo_root: str | Path | None = None,
+) -> MetadataRecoveryStateRecord:
     """Load one private record by safe recovery reference."""
-    for record in list_metadata_recovery_states(storage_root):
+    for record in list_metadata_recovery_states(storage_root, repo_root=repo_root):
         if record.recovery.recovery_ref == recovery_ref_value:
             return record
     raise MetadataRecoveryStateError("recovery-state-not-found")
 
 
 def _validate_record(record: MetadataRecoveryStateRecord) -> None:
+    _validate_recovery(record.recovery)
     values = (record.id_solicitud, record.profile_id, record.authorization_ref)
     if any(not isinstance(value, str) or not value.strip() for value in values):
         raise MetadataRecoveryStateError("recovery-state-invalid")
@@ -169,6 +194,114 @@ def _validate_record(record: MetadataRecoveryStateRecord) -> None:
         or any(item.package_ref != package_ref(item.id_paquete) for item in record.package_bindings)
     ):
         raise MetadataRecoveryStateError("package-binding-invalid")
+
+
+def _validate_recovery(recovery: MetadataRecovery) -> None:
+    """Reject lifecycle values that no public transition can produce."""
+    try:
+        recovery.to_redacted_document()
+    except ValueError as exc:
+        raise MetadataRecoveryStateError("recovery-state-invalid") from exc
+    datetimes = (recovery.created_at, recovery.deadline_at, recovery.next_check_at)
+    if (
+        any(value is not None and value.utcoffset() is None for value in datetimes)
+        or recovery.deadline_at != recovery.created_at + timedelta(days=7)
+        or recovery.verify_attempts < 0
+        or recovery.record_count < 0
+    ):
+        raise MetadataRecoveryStateError("recovery-state-invalid")
+    for package in recovery.packages:
+        neutral = package.status in {
+            PackageRecoveryStatus.PENDING,
+            PackageRecoveryStatus.DOWNLOADING,
+            PackageRecoveryStatus.UNCERTAIN,
+        }
+        if package.txt_count < 0 or (neutral and (package.zip_valid is not None or package.txt_count)):
+            raise MetadataRecoveryStateError("recovery-state-invalid")
+        if package.status is PackageRecoveryStatus.COMPLETED and package.zip_valid is not True:
+            raise MetadataRecoveryStateError("recovery-state-invalid")
+        if package.status is PackageRecoveryStatus.FAILED and (package.zip_valid is not False or package.txt_count):
+            raise MetadataRecoveryStateError("recovery-state-invalid")
+    statuses = tuple(item.status for item in recovery.packages)
+    no_packages = not statuses and recovery.record_count == 0
+    pending = recovery.status is RecoveryStatus.VERIFY_SCHEDULED
+    valid = {
+        RecoveryStatus.VERIFY_SCHEDULED: no_packages and recovery.next_check_at is not None,
+        RecoveryStatus.PENDING_AFTER_BUDGET: no_packages and recovery.next_check_at is None,
+        RecoveryStatus.NO_DATA: no_packages and recovery.next_check_at is None and recovery.verify_attempts > 0,
+        RecoveryStatus.PACKAGES_READY: bool(statuses) and all(s is PackageRecoveryStatus.PENDING for s in statuses),
+        RecoveryStatus.DOWNLOADING: bool(statuses)
+        and statuses.count(PackageRecoveryStatus.DOWNLOADING) <= 1
+        and any(s is not PackageRecoveryStatus.PENDING for s in statuses)
+        and all(s in {PackageRecoveryStatus.PENDING, PackageRecoveryStatus.DOWNLOADING,
+                      PackageRecoveryStatus.COMPLETED} for s in statuses)
+        and not all(s is PackageRecoveryStatus.COMPLETED for s in statuses),
+        RecoveryStatus.COMPLETED: bool(statuses)
+        and all(s is PackageRecoveryStatus.COMPLETED for s in statuses) and recovery.txt_count > 0,
+        RecoveryStatus.DOWNLOAD_UNCERTAIN: PackageRecoveryStatus.UNCERTAIN in statuses
+        and all(s not in {PackageRecoveryStatus.DOWNLOADING, PackageRecoveryStatus.FAILED} for s in statuses),
+        RecoveryStatus.DOWNLOAD_FAILED: bool(statuses)
+        and all(s not in {PackageRecoveryStatus.DOWNLOADING, PackageRecoveryStatus.UNCERTAIN} for s in statuses)
+        and (PackageRecoveryStatus.FAILED in statuses
+             or (all(s is PackageRecoveryStatus.COMPLETED for s in statuses) and recovery.txt_count == 0)),
+    }[recovery.status]
+    if (
+        not valid
+        or (not pending and recovery.status not in {RecoveryStatus.PENDING_AFTER_BUDGET}
+            and recovery.packages and (recovery.next_check_at is not None or recovery.verify_attempts == 0))
+        or (pending and recovery.next_check_at is not None and recovery.next_check_at < recovery.created_at)
+    ):
+        raise MetadataRecoveryStateError("recovery-state-invalid")
+
+
+def _validate_replacement(
+    current: MetadataRecoveryStateRecord, candidate: MetadataRecoveryStateRecord,
+) -> None:
+    if current == candidate:
+        return
+    if current.package_bindings and current.package_bindings != candidate.package_bindings:
+        raise MetadataRecoveryStateError("package-binding-immutable")
+    before, after = current.recovery, candidate.recovery
+    allowed = {
+        RecoveryStatus.VERIFY_SCHEDULED: {
+            RecoveryStatus.VERIFY_SCHEDULED, RecoveryStatus.PACKAGES_READY,
+            RecoveryStatus.NO_DATA, RecoveryStatus.PENDING_AFTER_BUDGET,
+        },
+        RecoveryStatus.PACKAGES_READY: {RecoveryStatus.DOWNLOADING},
+        RecoveryStatus.DOWNLOADING: {
+            RecoveryStatus.DOWNLOADING, RecoveryStatus.COMPLETED,
+            RecoveryStatus.DOWNLOAD_UNCERTAIN, RecoveryStatus.DOWNLOAD_FAILED,
+        },
+    }
+    immutable = (before.recovery_ref, before.created_at, before.deadline_at)
+    if (
+        after.status not in allowed.get(before.status, set())
+        or immutable != (after.recovery_ref, after.created_at, after.deadline_at)
+        or after.verify_attempts < before.verify_attempts
+        or (before.status is RecoveryStatus.VERIFY_SCHEDULED
+            and after.status is not RecoveryStatus.PENDING_AFTER_BUDGET
+            and after.verify_attempts == before.verify_attempts)
+        or (before.status is not RecoveryStatus.VERIFY_SCHEDULED
+            and (after.verify_attempts != before.verify_attempts or after.record_count != before.record_count))
+    ):
+        raise MetadataRecoveryStateError("recovery-state-regression")
+    if before.packages:
+        transitions = {
+            PackageRecoveryStatus.PENDING: {PackageRecoveryStatus.PENDING, PackageRecoveryStatus.DOWNLOADING},
+            PackageRecoveryStatus.DOWNLOADING: {
+                PackageRecoveryStatus.COMPLETED, PackageRecoveryStatus.UNCERTAIN, PackageRecoveryStatus.FAILED,
+            },
+            PackageRecoveryStatus.COMPLETED: {PackageRecoveryStatus.COMPLETED},
+            PackageRecoveryStatus.UNCERTAIN: {PackageRecoveryStatus.UNCERTAIN},
+            PackageRecoveryStatus.FAILED: {PackageRecoveryStatus.FAILED},
+        }
+        changed = 0
+        for old, new in zip(before.packages, after.packages, strict=True):
+            if new.status not in transitions[old.status] or old.package_ref != new.package_ref:
+                raise MetadataRecoveryStateError("recovery-state-regression")
+            changed += old != new
+        if changed != 1:
+            raise MetadataRecoveryStateError("recovery-state-regression")
 
 
 def _record_from_document(value: object) -> MetadataRecoveryStateRecord:
@@ -220,7 +353,7 @@ def _read_state(path: Path) -> dict[str, object]:
     if not path.is_file():
         raise MetadataRecoveryStateError("recovery-state-unreadable")
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
     except (OSError, json.JSONDecodeError) as exc:
         raise MetadataRecoveryStateError("recovery-state-unreadable") from exc
     mapped = _mapping(document, _STATE_KEYS)
@@ -281,3 +414,12 @@ def _parse_datetime(value: str) -> datetime:
     if parsed.tzinfo is None:
         raise MetadataRecoveryStateError("recovery-state-invalid")
     return parsed.astimezone(timezone.utc)
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    document: dict[str, object] = {}
+    for key, value in pairs:
+        if key in document:
+            raise MetadataRecoveryStateError("recovery-state-duplicate-key")
+        document[key] = value
+    return document
