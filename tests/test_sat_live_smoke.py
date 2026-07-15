@@ -64,6 +64,9 @@ def test_metadata_smoke_uses_real_adapter_shape_without_package_download(tmp_pat
     assert result.signed_reference_count == 1
     assert [request.endpoint for request in transport.requests] == [endpoints.auth, endpoints.request, endpoints.verify]
     assert transport.requests[1].headers["SOAPAction"] == '"http://DescargaMasivaTerceros.sat.gob.mx/ISolicitaDescargaService/SolicitaDescargaRecibidos"'
+    assert "Connection" not in transport.requests[0].headers
+    assert "Connection" not in transport.requests[1].headers
+    assert transport.requests[2].headers["Connection"] == "close"
     assert _body_operation_names(transport.requests[1].body) == ["SolicitaDescargaRecibidos"]
     assert "SolicitaDescarga" not in _body_operation_names(transport.requests[1].body)
     assert b'TipoSolicitud="Metadata"' in transport.requests[1].body
@@ -138,6 +141,8 @@ def test_package_download_uses_download_endpoint_without_request_or_verify(tmp_p
         "https://cfdidescargamasiva.clouda.sat.gob.mx/DescargaMasivaService.svc",
     ]
     assert transport.requests[1].headers["SOAPAction"] == '"http://DescargaMasivaTerceros.sat.gob.mx/IDescargaMasivaTercerosService/Descargar"'
+    assert "Connection" not in transport.requests[0].headers
+    assert "Connection" not in transport.requests[1].headers
     assert _body_operation_names(transport.requests[1].body) == ["Descargar"]
     assert "SYNTHETIC_TOKEN" not in repr(transport.requests[1])
 
@@ -209,6 +214,7 @@ def test_metadata_verify_smoke_sends_ready_verify_post_without_sensitive_repr(tm
     verify_request = transport.requests[1]
     assert verify_request.endpoint == DEFAULT_VERIFY_ENDPOINT
     assert verify_request.headers["SOAPAction"] == f'"{VERIFY_ACTION}"'
+    assert verify_request.headers["Connection"] == "close"
     assert verify_request.headers["Content-Type"] == "text/xml; charset=utf-8"
     assert verify_request.headers["Authorization"].startswith('WRAP access_token="')
     assert "SYNTHETIC_TOKEN" not in repr(verify_request)

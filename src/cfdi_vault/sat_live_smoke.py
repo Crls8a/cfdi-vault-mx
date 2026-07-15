@@ -589,6 +589,8 @@ class SatLiveMetadataSmokeAdapter:
         operation: str | None = None,
     ) -> bytes:
         headers = build_soap11_headers(action)
+        if action == VERIFY_ACTION:
+            headers["Connection"] = "close"
         if authorization:
             headers["Authorization"] = _wrap_authorization(authorization)
         readiness = None

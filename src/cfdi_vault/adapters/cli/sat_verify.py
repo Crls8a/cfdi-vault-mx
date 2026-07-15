@@ -699,7 +699,7 @@ def sat_download_live_gate(
                         verify_executed=True,
                         estado_solicitud=verification.state.value,
                         codigo_estado=verification.sat_code,
-                        numero_cfdis=len(verification.package_ids),
+                        numero_cfdis=None,
                         ids_paquetes_count=len(verification.package_ids),
                         package_ref=redact_package_ref(package_id or "") if package_id else (package_ref or ""),
                     )
@@ -723,7 +723,7 @@ def sat_download_live_gate(
                     result,
                     estado_solicitud=record.sat_estado_solicitud or "finished",
                     codigo_estado=record.sat_codigo_estado or record.sat_code,
-                    numero_cfdis=record.numero_cfdis,
+                    numero_cfdis=None,
                     ids_paquetes_count=len(record.package_ids),
                 )
                 if not gate.allowed:

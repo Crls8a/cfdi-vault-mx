@@ -201,6 +201,7 @@ def test_cli_download_live_gate_downloads_one_package_and_discards_zip(tmp_path:
     lines = _key_value_lines(result.output)
     assert lines["download_live_executed"] == "yes"
     assert lines["ids_paquetes_count"] == "2"
+    assert lines["numero_cfdis"] == "not_reported"
     assert lines["paquete_recibido"] == "yes"
     assert lines["base64_printed"] == "no"
     assert int(lines["bytes_decoded"]) > 0
@@ -266,6 +267,7 @@ def test_cli_download_live_gate_requires_oracle_before_download(tmp_path: Path, 
     assert result.exit_code == 1
     lines = _key_value_lines(result.output)
     assert lines["oracle_parity"] == "failed"
+    assert lines["numero_cfdis"] == "not_reported"
     assert lines["download_live_executed"] == "no"
     assert lines["error_kind"] == "synthetic-oracle-failure"
     assert package_id not in result.output
