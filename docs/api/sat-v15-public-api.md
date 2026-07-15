@@ -139,7 +139,11 @@ supported LIB-005B and LIB-005C rows are public library API.
 | `cfdi_vault.sat_live_smoke` | Live-only tool | Manual smoke runner; never public or imported by default. |
 | `cfdi_vault.sat_orchestration` | Reference-system orchestration | Application flow, persistence, and runtime coordination. |
 | `cfdi_vault.sat_package_download_offline` | Internal offline helper | Useful evidence path, but not yet a stable adapter contract. |
+| `cfdi_vault.sat_scheduled_verify` | Internal reference-system orchestration | Locked one-shot wrapper around due verification; not a supported consumer import. |
+| `cfdi_vault.sat_scheduler_grant` | Internal authorization helper | Local bounded scheduler grants remain reference-system policy, not public API. |
+| `cfdi_vault.sat_scheduler_lock` | Internal runtime helper | Platform-specific local process serialization; never re-exported. |
 | `cfdi_vault.sat_simulator` | Internal simulator | Scenario engine for repository tests/reference workflows. |
+| `cfdi_vault.sat_windows_task` | Reference-system renderer | Pure Windows task XML template rendering; not a stable library surface. |
 | `cfdi_vault.sat_soap_parse` | Internal parser | Raw SOAP parsing remains behind normalized results. |
 | `cfdi_vault.sat_soap` | Internal implementation | SOAP shape/signing implementation, not consumer API. |
 | `cfdi_vault.sat_transport_probe` | Probe | Research-only transport diagnostic. |

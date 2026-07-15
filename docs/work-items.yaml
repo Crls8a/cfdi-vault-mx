@@ -302,6 +302,43 @@ items:
       - Local cut created from dev at 75ac755; origin/dev remains at dfe6d6a
       - Includes GOV-002, WAVE3-PLAN, LIB-005C, and CLI-001
       - No issue, PR, push, or remote merge is authorized in this state
+  - id: SAT-SCHED-001
+    title: Windows due-aware SAT verify runner
+    kind: feature
+    module: sat-download
+    wave: live-ops
+    owner: human
+    agent: codex
+    status: local_done
+    branch: feature/sat-windows-due-verify-runner
+    base_branch: dev
+    base_commit: 7d497304e7ca4d2a8168f9177a282eeb081d5db7
+    base_source: clean local dev at 7d49730
+    target_branch: dev
+    issue: 208
+    required_issue_label: status:approved
+    required_pr_type_label: type:feature
+    dependencies:
+      - INTEGRATION-WAVE3-OFFLINE-ACCESS
+    blockers:
+      - Recurring live activation and Windows task installation remain separately prohibited and unapproved
+    gates:
+      scheduler_dry_run: passed
+      no_download: passed
+      no_create_request: passed
+      lock_tests: passed
+      permit_scope_tests: passed
+      security_review: passed
+      targeted_pytest: passed
+      ci_subset_pytest: passed
+      focused_ruff: passed
+      ci_policy_check: passed
+      sensitive_scanner: passed
+      sat_context_scanner: passed
+      diff_check: passed
+    notes:
+      - Core accepts an injected verification port; normal non-dry CLI activation fails closed
+      - Renderer emits XML only and never registers or installs a Windows task
 wave3:
   status: completed
   started: true

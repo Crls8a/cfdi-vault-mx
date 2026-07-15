@@ -69,6 +69,7 @@ flowchart TD
 | 4. Transport abstraction | SOAP requests can be sent through an injectable client. | Fake transport tests; no live SAT in CI. |
 | 5. Response parsers | Authentication, request, verification, and download responses parse safely. | Fixture tests for success and common errors. |
 | 5b. Controlled download live gate | A maintainer can validate one real `Paquete` only after `EstadoSolicitud=3` and package ids exist. | Explicit opt-ins, WSDL check, oracle parity, one package, in-memory ZIP validation, no XML/PDF, no raw SOAP/response. |
+| 5c. Offline Windows due runner | A locked one-shot runner can inspect or process at most one due persisted request through an injected verifier. | Separate bounded grant, atomic claim, dry-run without mutation, pure Task Scheduler XML, and fail-closed live CLI activation. |
 | 6. Persistence | Requests/packages are resumable and idempotent. | PostgreSQL migration/repository tests for duplicate query and package attempts. |
 | 7. Metadata ledger | Metadata packages become canonical expected-document rows. | Tests for TXT metadata parsing, dedupe, and status updates. |
 | 8. FastAPI ingestion boundary | Stored XML/package references can be submitted for gradual processing. | API contract tests prove no raw XML, ZIP, or secrets are accepted in payloads. |

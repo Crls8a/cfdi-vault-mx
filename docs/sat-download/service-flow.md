@@ -92,3 +92,17 @@ DownloadClient.download(package_id, token) -> DownloadedPackage
 ```
 
 The application layer can compose those operations into a job pipeline.
+
+## One-shot Windows verification boundary
+
+SAT-SCHED-001 adds an offline operational shell around verification only:
+
+```text
+Windows wake-up -> local state lock -> bounded grant claim
+-> run_verify_due(limit=1) -> persist next_check_at -> release -> exit
+```
+
+The Windows interval is nominally five minutes, but it never overrides
+`next_check_at`, terminal states, backoff, expiry, or the 12-attempt ceiling.
+The current CLI only supports dry-run and XML rendering; live activation,
+request creation, package download, XML, and PDF remain outside this slice.

@@ -165,6 +165,21 @@ The first authorized smoke must be intentionally small:
 - no XML/package download until metadata-only evidence is reviewed;
 - no recurrent job, scheduler, CI run, or shared agent environment.
 
+### SAT-SCHED-001 offline scheduler scaffold
+
+The approved offline slice adds only a one-shot core, local lock, bounded
+scheduler-grant model, dry-run command, and Windows XML renderer:
+
+```powershell
+cfdi-vault sat verify-due-runner --profile default --dry-run
+cfdi-vault sat scheduler render-windows-task --profile default --working-directory C:\reviewed\cfdi-vault-mx
+```
+
+Non-dry execution returns `reason=activation-not-enabled`. No grant issuance,
+live verifier activation, or task installation is approved here. A future
+activation must be reviewed separately and must preserve the one-request hard
+limit, full shared-state lock, and no-create/no-download/no-XML/no-PDF boundary.
+
 ## Verify v1.5 live gate
 
 Use `sat verify-live-gate` only after one metadata request has already been accepted and persisted locally as a redacted `request-ref`.

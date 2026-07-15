@@ -343,7 +343,7 @@ def test_next_reports_in_progress_features_before_integration_cut():
     document["wave3"]["status"] = "in_progress"
     document["items"] = [
         item for item in document["items"]
-        if item["id"] != "INTEGRATION-WAVE3-OFFLINE-ACCESS"
+        if item["id"] not in {"INTEGRATION-WAVE3-OFFLINE-ACCESS", "SAT-SCHED-001"}
     ]
     for item_id in ("LIB-005C", "CLI-001"):
         item_by_id(document, item_id)["status"] = "in_progress"
@@ -482,7 +482,7 @@ def test_wave3_remote_gate_uses_declared_dependency(dependency, status, blocked)
         document["wave3"]["status"] = "in_progress"
         document["items"] = [
             item for item in document["items"]
-            if item["id"] != "INTEGRATION-WAVE3-OFFLINE-ACCESS"
+            if item["id"] not in {"INTEGRATION-WAVE3-OFFLINE-ACCESS", "SAT-SCHED-001"}
         ]
         assert "request explicit approval" in next_action(document)
 

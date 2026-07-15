@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import typer
 
-
 COMMAND_HELP: tuple[dict[str, str], ...] = (
     {
         "command": "doctor",
@@ -116,9 +115,21 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
     },
     {
         "command": "sat verify-due",
-        "purpose": "Run one non-live async verify scheduler attempt for due persisted metadata requests.",
-        "when": "Run manually or from Task Scheduler; it verifies once, updates next_check_at, and exits.",
+        "purpose": "Run one explicit manual offline verify attempt for persisted due metadata requests.",
+        "when": "Use only for manual diagnostics; use the scheduled runner for recurring execution.",
         "example": "cfdi-vault sat verify-due --profile default --limit 1",
+    },
+    {
+        "command": "sat verify-due-runner",
+        "purpose": "Dry-run one locked, due-aware scheduler invocation with a hard maximum of one request.",
+        "when": "Use to inspect scheduler eligibility; recurring live activation is intentionally not enabled.",
+        "example": "cfdi-vault sat verify-due-runner --profile default --dry-run",
+    },
+    {
+        "command": "sat scheduler render-windows-task",
+        "purpose": "Render a least-privilege Windows Task Scheduler XML template without registering it.",
+        "when": "Use for offline review before any separate approval to create a grant or install a task.",
+        "example": "cfdi-vault sat scheduler render-windows-task --profile default --working-directory C:\\reviewed\\cfdi-vault-mx",
     },
     {
         "command": "sat metadata-verify-smoke",

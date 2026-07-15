@@ -5,12 +5,15 @@
 ## Quick path
 
 ```powershell
-cfdi-vault sat verify-due --profile default --dry-run
-cfdi-vault sat verify-due --profile default --limit 1
+cfdi-vault sat verify-due-runner --profile default --dry-run
+cfdi-vault sat scheduler render-windows-task --profile default --working-directory C:\reviewed\cfdi-vault-mx
 cfdi-vault download status --profile default
 ```
 
-This slice uses the non-live fake verifier. It does not execute real SAT access, download packages, print full `IdSolicitud`, print raw SOAP, or create new SAT requests.
+SAT-SCHED-001 provides the locked runner core, bounded scheduler grant model,
+dry-run CLI, and pure XML renderer. Recurring live activation is **not enabled**:
+non-dry CLI runs fail closed with `reason=activation-not-enabled`. The slice
+does not call SAT, create requests, download packages, parse XML, or render PDF.
 
 ## Scheduler contract
 
@@ -35,15 +38,34 @@ Initial backoff policy:
 
 ## Worker behavior
 
-`cfdi-vault sat verify-due --profile <PROFILE_ID> --limit 1`:
+The core runner:
 
-1. Loads persisted live metadata request state from the profile storage root.
-2. Selects requests where `next_check_at <= now`.
-3. Verifies at most `--limit` requests once each.
-4. Updates state and schedules the next check when the outcome is retryable.
-5. Exits.
+1. Acquires `state/sat-verify-due.lock` for the entire shared-state cycle.
+2. Claims one invocation from a separate scheduler grant for authorized runs.
+3. Reuses `run_verify_due(..., limit=1)`; the limit is not configurable.
+4. Updates state/backoff through the existing verify policy and exits.
 
-The command intentionally does not sleep, loop, create a new SAT request, or download packages.
+Dry-run still takes and releases the lock, but does not mutate request state,
+claim a grant, or call a verifier. The persistent lock file is held by an OS
+lock handle for the complete invocation (`msvcrt` on Windows; `fcntl` for test
+portability). Process death releases the OS lock automatically. Old metadata is
+harmless and is rewritten only after exclusive acquisition; release never
+deletes another owner's pathname.
+
+## Scheduler grant boundary
+
+The scheduler grant is not a `LiveExecutionPermit`. It is bound to the profile,
+repository path fingerprint, and `sat_due_verify_one` scope. It expires within
+24 hours, allows at most 288 invocations, fixes per-request verification to 12
+attempts, and explicitly denies request creation, download, XML, and PDF.
+
+Persisted grant windows also fail closed: creation cannot be in the future,
+creation must precede expiry, lifetime cannot exceed 24 hours, and consumed
+invocations must remain between zero and the configured maximum.
+
+Grant claims are serialized and persisted before verification. SAT-SCHED-001
+does not expose grant issuance or live activation in the CLI; those remain a
+separate human-approved change.
 
 ## Terminal states
 
@@ -79,10 +101,16 @@ submit request -> persist state -> set next_check_at -> run verify-due once -> u
 
 ## Windows Task Scheduler shape
 
-After a future live verifier is gated and approved, Windows Task Scheduler should call the one-shot command periodically:
+The rendered XML is a review-only template. It runs every five minutes, uses
+`MultipleInstancesPolicy=IgnoreNew`, `ExecutionTimeLimit=PT4M`, and least
+privilege. The required reviewed `WorkingDirectory` fixes the repository used
+for grant binding instead of trusting an ambient scheduler directory. Its
+one-shot action is:
 
 ```powershell
-cfdi-vault sat verify-due --profile default --limit 1
+cfdi-vault sat verify-due-runner --profile default --grant SCHEDULER_GRANT_ID
 ```
 
-The schedule frequency belongs to Windows. Backoff enforcement belongs to `next_check_at`, so even a frequent task should not produce aggressive SAT retries.
+The renderer never registers or installs the task. The placeholder cannot be
+activated by this slice; `USER_SID` is also a review placeholder. Windows frequency only wakes the process;
+`next_check_at` remains the retry authority.

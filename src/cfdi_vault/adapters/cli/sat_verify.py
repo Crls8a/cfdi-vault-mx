@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from time import perf_counter
 
 from cfdi_vault.sat_contract import SatDownloadResult, SatVerificationResult
@@ -19,6 +20,8 @@ from cfdi_vault.sat_download_live_gate import (
     run_download_oracle_parity,
 )
 from cfdi_vault.sat_package_download_offline import evaluate_package_download_gate, inspect_package_zip_bytes
+from cfdi_vault.sat_scheduled_verify import scheduler_state_lock_path
+from cfdi_vault.sat_scheduler_lock import LocalFileLock, SchedulerLockError
 from cfdi_vault.sat_verify_live_gate import (
     DEFAULT_VERIFY_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_VERIFY_READ_TIMEOUT_SECONDS,
@@ -292,6 +295,19 @@ def _safe_error_reason(value: str) -> str:
     text = " ".join(str(value or "").replace("\\", "/").split())
     return re.sub(r"(?i)\b[0-9a-z][0-9a-z_-]{12,}[0-9a-z]\b", "<redacted>", text)[:160]
 
+
+def _run_verify_due_with_state_lock(
+    *,
+    storage_root: str | Path,
+    **kwargs: object,
+) -> VerifyDueReport:
+    """Serialize every mutating legacy verify-due state cycle."""
+
+    if kwargs.get("dry_run") is True:
+        return run_verify_due(storage_root=str(storage_root), **kwargs)
+    with LocalFileLock(scheduler_state_lock_path(storage_root)):
+        return run_verify_due(storage_root=str(storage_root), **kwargs)
+
 def sat_verify_due(
     profile: str = typer.Option("default", "--profile", help="Local setup profile id."),
     limit: int = typer.Option(1, "--limit", min=1, max=50, help="Maximum due requests to verify once."),
@@ -360,7 +376,7 @@ def sat_verify_due(
     else:
         verifier = FakeSatScenarioClient(FakeSatScenario.VERIFY_IN_PROCESS)
     try:
-        report = run_verify_due(
+        report = _run_verify_due_with_state_lock(
             storage_root=local_profile.storage_root,
             profile_id=profile,
             verifier=verifier,
@@ -371,6 +387,10 @@ def sat_verify_due(
         )
     except LiveRequestStateError as exc:
         typer.echo("error=request_state_unavailable", err=True)
+        typer.echo(f"reason={exc.reason}", err=True)
+        raise typer.Exit(code=1) from exc
+    except SchedulerLockError as exc:
+        typer.echo("error=scheduler_state_locked", err=True)
         typer.echo(f"reason={exc.reason}", err=True)
         raise typer.Exit(code=1) from exc
     _print_verify_due_report(report, sat_real_execution="adapter_enabled" if live_requested else "no")

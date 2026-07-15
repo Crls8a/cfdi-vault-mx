@@ -14,6 +14,7 @@ from .sat_auth import (
 from .sat_backfill import sat_backfill_plan, sat_backfill_submit
 from .sat_metadata import sat_diagnose_live, sat_metadata_request_smoke, sat_metadata_request_state
 from .sat_probes import sat_probe_auth_matrix, sat_probe_auth_post, sat_probe_transport, sat_probe_verify_post
+from .sat_scheduler import render_windows_task, sat_verify_due_runner
 from .sat_verify import (
     sat_download_live_gate,
     sat_metadata_verify_smoke,
@@ -32,6 +33,10 @@ def register(sat_app: typer.Typer, backfill_app: typer.Typer) -> None:
     backfill_app.command("plan")(sat_backfill_plan)
     backfill_app.command("submit")(sat_backfill_submit)
     sat_app.command("verify-due")(sat_verify_due)
+    sat_app.command("verify-due-runner")(sat_verify_due_runner)
+    scheduler_app = typer.Typer(help="Render and inspect the bounded Windows scheduler scaffold.", no_args_is_help=True)
+    scheduler_app.command("render-windows-task")(render_windows_task)
+    sat_app.add_typer(scheduler_app, name="scheduler")
     sat_app.command("package-download-smoke")(sat_package_download_smoke)
     sat_app.command("metadata-verify-smoke")(sat_metadata_verify_smoke)
     sat_app.command("verify-live-gate")(sat_verify_live_gate)
