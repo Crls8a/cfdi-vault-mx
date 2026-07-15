@@ -47,6 +47,158 @@ def test_private_state_round_trips_exact_lifecycle_and_package_bindings(tmp_path
     assert _lock_path(tmp_path).exists()
 
 
+def test_observation_provenance_v4_round_trips_privately_only(tmp_path) -> None:
+    record = replace(_pending_record(), observation_provenance=_provenance())
+
+    subject.save_metadata_recovery_state(tmp_path, record)
+
+    assert subject.load_metadata_recovery_state(tmp_path, record.recovery.recovery_ref) == record
+    private = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
+    assert private["schemaVersion"] == 4
+    assert private["recoveries"][0]["observationProvenance"] == {
+        "projectionVersion": 1,
+        "testedCommit": "f" * 40,
+        "observedAt": "2026-06-30T00:00:00Z",
+        "entryPoint": "metadata-recover-live",
+        "verifyContactsNotBeforeDue": 0,
+        "verifyContactsBeforeDue": 0,
+        "verifyContactsDueUnknown": 0,
+    }
+    redacted = record.to_redacted_document()
+    assert "observationProvenance" not in redacted
+    assert "testedCommit" not in repr(redacted)
+    assert "f" * 40 not in repr(redacted)
+
+
+def test_v3_state_reads_without_inferred_provenance_and_rewrites_v4(tmp_path) -> None:
+    record = _pending_record()
+    document = _state_document(record)
+    document["schemaVersion"] = 3
+    del document["recoveries"][0]["observationProvenance"]
+    _write_document(tmp_path, document)
+
+    loaded = subject.load_metadata_recovery_state(tmp_path, record.recovery.recovery_ref)
+
+    assert loaded.observation_provenance is None
+    subject.save_metadata_recovery_state(tmp_path, loaded)
+    rewritten = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
+    assert rewritten["schemaVersion"] == 4
+    assert rewritten["recoveries"][0]["observationProvenance"] is None
+    with pytest.raises(subject.MetadataRecoveryStateError, match="observation-provenance-required"):
+        subject.require_metadata_observation_provenance(loaded)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("projection_version", True),
+        ("projection_version", 2),
+        ("tested_commit", "F" * 40),
+        ("tested_commit", "f" * 39),
+        ("observed_at", START - timedelta(seconds=1)),
+        ("observed_at", START.replace(tzinfo=None)),
+        ("entry_point", "metadata-recovery-status"),
+        ("entry_point", []),
+        ("verify_contacts_not_before_due", True),
+        ("verify_contacts_before_due", -1),
+        ("verify_contacts_due_unknown", 1),
+    ),
+)
+def test_observation_provenance_rejects_invalid_values(field: str, value: object) -> None:
+    provenance = replace(_provenance(), **{field: value})
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="observation-provenance-invalid"):
+        replace(_pending_record(), observation_provenance=provenance)
+
+
+def test_provenance_is_monotonic_across_verification_transitions(tmp_path) -> None:
+    current = replace(_pending_record(), observation_provenance=_provenance())
+    due = current.recovery.next_check_at
+    assert due is not None
+    advanced = replace(
+        current,
+        recovery=lifecycle.record_pending_verification(current.recovery, checked_at=due),
+        observation_provenance=replace(
+            current.observation_provenance,
+            observed_at=due,
+            entry_point="metadata-recovery-runner",
+            verify_contacts_not_before_due=1,
+        ),
+    )
+    subject.save_metadata_recovery_state(tmp_path, current)
+    subject.save_metadata_recovery_state(tmp_path, advanced)
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="observation-provenance-regression"):
+        subject.save_metadata_recovery_state(
+            tmp_path,
+            replace(advanced, observation_provenance=_provenance()),
+        )
+    with pytest.raises(subject.MetadataRecoveryStateError, match="observation-provenance-regression"):
+        subject.save_metadata_recovery_state(
+            tmp_path,
+            replace(
+                advanced,
+                observation_provenance=replace(
+                    advanced.observation_provenance,
+                    observed_at=advanced.observation_provenance.observed_at - timedelta(seconds=1),
+                ),
+            ),
+        )
+    with pytest.raises(subject.MetadataRecoveryStateError, match="observation-provenance-required"):
+        subject.save_metadata_recovery_state(tmp_path, replace(advanced, observation_provenance=None))
+
+
+def test_provenance_delta_cannot_exceed_verification_attempt_delta(tmp_path) -> None:
+    initial = _pending_record()
+    first_due = initial.recovery.next_check_at
+    assert first_due is not None
+    first = replace(
+        initial,
+        recovery=lifecycle.record_pending_verification(initial.recovery, checked_at=first_due),
+        observation_provenance=_provenance(observed_at=first_due),
+    )
+    second_due = first.recovery.next_check_at
+    assert second_due is not None
+    second = replace(
+        first,
+        recovery=lifecycle.record_pending_verification(first.recovery, checked_at=second_due),
+        observation_provenance=replace(
+            first.observation_provenance,
+            observed_at=second_due,
+            verify_contacts_not_before_due=1,
+            verify_contacts_due_unknown=1,
+        ),
+    )
+    subject.save_metadata_recovery_state(tmp_path, first)
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="observation-provenance-transition-invalid"):
+        subject.save_metadata_recovery_state(tmp_path, second)
+
+
+def test_nonverify_transitions_preserve_provenance_counters(tmp_path) -> None:
+    ready = replace(_ready_record(), observation_provenance=_provenance())
+    downloading = replace(
+        ready,
+        recovery=lifecycle.begin_package_download(
+            ready.recovery,
+            ready.recovery.packages[0].package_ref,
+        ),
+    )
+    changed = replace(
+        downloading,
+        observation_provenance=replace(
+            downloading.observation_provenance,
+            verify_contacts_due_unknown=1,
+        ),
+    )
+    subject.save_metadata_recovery_state(tmp_path, ready)
+    subject.save_metadata_recovery_state(tmp_path, downloading)
+
+    assert subject.load_metadata_recovery_state(tmp_path, ready.recovery.recovery_ref) == downloading
+    with pytest.raises(subject.MetadataRecoveryStateError, match="observation-provenance-transition-invalid"):
+        subject.save_metadata_recovery_state(tmp_path, changed)
+
+
 def test_redacted_state_excludes_all_private_resume_values() -> None:
     record = _completed_first_record()
     serialized = repr(record.to_redacted_document())
@@ -73,8 +225,9 @@ def test_redacted_state_excludes_all_private_resume_values() -> None:
         json.dumps({"schemaVersion": 1, "recoveries": []}),
         json.dumps({"schemaVersion": 2, "recoveries": []}),
         json.dumps({"schemaVersion": 3.0, "recoveries": []}),
-        json.dumps({"schemaVersion": 4, "recoveries": []}),
-        json.dumps({"schemaVersion": 3, "recoveries": [], "unexpected": True}),
+        json.dumps({"schemaVersion": 4.0, "recoveries": []}),
+        json.dumps({"schemaVersion": 5, "recoveries": []}),
+        json.dumps({"schemaVersion": 4, "recoveries": [], "unexpected": True}),
     ),
 )
 def test_loader_fails_closed_for_invalid_or_unknown_state(tmp_path, document: str) -> None:
@@ -215,7 +368,7 @@ def test_artifacts_round_trip_privately_and_advance_sequentially(tmp_path) -> No
     with pytest.raises(subject.MetadataRecoveryStateError, match="artifact-binding-invalid"):
         replace(completed, artifact_bindings=tuple(reversed(completed.artifact_bindings)))
     private = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
-    assert private["schemaVersion"] == 3
+    assert private["schemaVersion"] == 4
     assert private["recoveries"][0]["artifacts"] == [
         item.to_private_document() for item in completed.artifact_bindings
     ]
@@ -658,8 +811,8 @@ def test_private_dataclass_repr_is_redacted() -> None:
 @pytest.mark.parametrize(
     "document",
     (
-        '{"schemaVersion":3,"schemaVersion":3,"recoveries":[]}',
-        '{"schemaVersion":3,"recoveries":[{"recovery":{},"recovery":{}}]}',
+        '{"schemaVersion":4,"schemaVersion":4,"recoveries":[]}',
+        '{"schemaVersion":4,"recoveries":[{"recovery":{},"recovery":{}}]}',
     ),
 )
 def test_loader_rejects_duplicate_json_keys_at_any_level(tmp_path, document: str) -> None:
@@ -824,7 +977,18 @@ def _artifact(
 
 
 def _state_document(record: subject.MetadataRecoveryStateRecord) -> dict[str, object]:
-    return {"schemaVersion": 3, "recoveries": [record.to_private_document()]}
+    return {"schemaVersion": 4, "recoveries": [record.to_private_document()]}
+
+
+def _provenance(
+    *, observed_at: datetime = START,
+) -> subject.MetadataObservationProvenance:
+    return subject.MetadataObservationProvenance(
+        projection_version=1,
+        tested_commit="f" * 40,
+        observed_at=observed_at,
+        entry_point="metadata-recover-live",
+    )
 
 
 def _write_document(tmp_path: Path, document: dict[str, object]) -> None:

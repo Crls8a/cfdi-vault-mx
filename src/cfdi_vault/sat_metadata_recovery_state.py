@@ -27,11 +27,17 @@ from cfdi_vault.sat_metadata_recovery import (
     RecoveryStatus,
 )
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
+_LEGACY_SCHEMA_VERSION = 3
 _STATE_KEYS = {"schemaVersion", "recoveries"}
-_RECORD_KEYS = {
+_LEGACY_RECORD_KEYS = {
     "recovery", "idSolicitud", "profileId", "direction", "kind", "fechaInicial",
     "fechaFinal", "criteriaHash", "authorizationRef", "packages", "artifacts",
+}
+_RECORD_KEYS = _LEGACY_RECORD_KEYS | {"observationProvenance"}
+_PROVENANCE_KEYS = {
+    "projectionVersion", "testedCommit", "observedAt", "entryPoint",
+    "verifyContactsNotBeforeDue", "verifyContactsBeforeDue", "verifyContactsDueUnknown",
 }
 _RECOVERY_KEYS = {
     "schemaVersion", "recoveryRef", "status", "createdAt", "deadlineAt", "verifyAttempts",
@@ -39,6 +45,8 @@ _RECOVERY_KEYS = {
     "txtCount", "packages",
 }
 _HASH_RE = re.compile(r"[0-9a-f]{64}")
+_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
+_OBSERVATION_ENTRY_POINTS = {"metadata-recover-live", "metadata-recovery-runner"}
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -57,6 +65,18 @@ class PackageIdBinding:
 
 
 @dataclass(frozen=True, repr=False)
+class MetadataObservationProvenance:
+    """Keep private, cumulative evidence for sanitized observation projection."""
+    projection_version: int
+    tested_commit: str
+    observed_at: datetime
+    entry_point: str
+    verify_contacts_not_before_due: int = 0
+    verify_contacts_before_due: int = 0
+    verify_contacts_due_unknown: int = 0
+
+
+@dataclass(frozen=True, repr=False)
 class MetadataRecoveryStateRecord:
     """Keep private resume material beside the redacted lifecycle."""
     recovery: MetadataRecovery
@@ -70,6 +90,7 @@ class MetadataRecoveryStateRecord:
     authorization_ref: str
     package_bindings: tuple[PackageIdBinding, ...] = ()
     artifact_bindings: tuple[MetadataPackageArtifactState, ...] = ()
+    observation_provenance: MetadataObservationProvenance | None = None
 
     def __post_init__(self) -> None:
         _validate_record(self)
@@ -91,6 +112,7 @@ class MetadataRecoveryStateRecord:
         document["packages"] = [{"packageRef": item.package_ref, "idPaquete": item.id_paquete}
                                 for item in self.package_bindings]
         document["artifacts"] = [item.to_private_document() for item in self.artifact_bindings]
+        document["observationProvenance"] = _provenance_document(self.observation_provenance)
         return document
 
 
@@ -109,13 +131,24 @@ def new_metadata_recovery_state(
     *, recovery: MetadataRecovery, id_solicitud: str, profile_id: str, direction: str,
     kind: str, fecha_inicial: str, fecha_final: str, criteria_hash: str,
     authorization_ref: str, package_ids: tuple[str, ...] = (),
+    observation_provenance: MetadataObservationProvenance | None = None,
 ) -> MetadataRecoveryStateRecord:
     """Build validated private state and deterministic package bindings."""
     bindings = tuple(PackageIdBinding(package_ref(value), value) for value in package_ids)
     return MetadataRecoveryStateRecord(
         recovery, id_solicitud, profile_id, direction, kind, fecha_inicial,
-        fecha_final, criteria_hash, authorization_ref, bindings,
+        fecha_final, criteria_hash, authorization_ref, bindings, (), observation_provenance,
     )
+
+
+def require_metadata_observation_provenance(
+    record: MetadataRecoveryStateRecord,
+) -> MetadataObservationProvenance:
+    """Fail closed before live continuation of legacy state without provenance."""
+    provenance = record.observation_provenance
+    if provenance is None:
+        raise MetadataRecoveryStateError("observation-provenance-required")
+    return provenance
 
 
 def metadata_recovery_state_path(
@@ -172,7 +205,12 @@ def list_metadata_recovery_states(
 
 def _records_from_path(path: Path) -> tuple[MetadataRecoveryStateRecord, ...]:
     document = _read_state(path)
-    records = tuple(_record_from_document(item) for item in document["recoveries"])
+    schema_version = document["schemaVersion"]
+    assert type(schema_version) is int
+    records = tuple(
+        _record_from_document(item, schema_version=schema_version)
+        for item in document["recoveries"]
+    )
     refs = tuple(item.recovery.recovery_ref for item in records)
     requests = tuple(item.id_solicitud for item in records)
     if len(set(refs)) != len(refs) or len(set(requests)) != len(requests):
@@ -195,6 +233,7 @@ def load_metadata_recovery_state(
 
 def _validate_record(record: MetadataRecoveryStateRecord) -> None:
     _validate_recovery(record.recovery)
+    _validate_observation_provenance(record)
     values = (record.id_solicitud, record.profile_id, record.authorization_ref)
     if any(not isinstance(value, str) or not value.strip() for value in values):
         raise MetadataRecoveryStateError("recovery-state-invalid")
@@ -230,6 +269,36 @@ def _validate_record(record: MetadataRecoveryStateRecord) -> None:
     ):
         raise MetadataRecoveryStateError("package-binding-invalid")
     _validate_artifact_bindings(record)
+
+
+def _validate_observation_provenance(record: MetadataRecoveryStateRecord) -> None:
+    provenance = record.observation_provenance
+    if provenance is None:
+        return
+    counters = _provenance_counters(provenance) if type(provenance) is MetadataObservationProvenance else ()
+    if (
+        type(provenance) is not MetadataObservationProvenance
+        or type(provenance.projection_version) is not int
+        or provenance.projection_version != 1
+        or not isinstance(provenance.tested_commit, str)
+        or _COMMIT_RE.fullmatch(provenance.tested_commit) is None
+        or type(provenance.observed_at) is not datetime
+        or provenance.observed_at.utcoffset() != timedelta(0)
+        or provenance.observed_at < record.recovery.created_at
+        or not isinstance(provenance.entry_point, str)
+        or provenance.entry_point not in _OBSERVATION_ENTRY_POINTS
+        or any(type(value) is not int or value < 0 for value in counters)
+        or sum(counters) > record.recovery.verify_attempts
+    ):
+        raise MetadataRecoveryStateError("observation-provenance-invalid")
+
+
+def _provenance_counters(provenance: MetadataObservationProvenance) -> tuple[int, int, int]:
+    return (
+        provenance.verify_contacts_not_before_due,
+        provenance.verify_contacts_before_due,
+        provenance.verify_contacts_due_unknown,
+    )
 
 
 def _validate_artifact_bindings(record: MetadataRecoveryStateRecord) -> None:
@@ -294,6 +363,7 @@ def _validate_recovery(recovery: MetadataRecovery) -> None:
     if (
         any(value is not None and value.utcoffset() is None for value in datetimes)
         or recovery.deadline_at != recovery.created_at + timedelta(days=7)
+        or type(recovery.verify_attempts) is not int
         or recovery.verify_attempts < 0
         or (
             recovery.record_count is not None
@@ -380,6 +450,7 @@ def _validate_replacement(
 ) -> None:
     if current == candidate:
         return
+    _validate_provenance_replacement(current, candidate)
     if current.package_bindings and current.package_bindings != candidate.package_bindings:
         raise MetadataRecoveryStateError("package-binding-immutable")
     previous_artifacts = current.artifact_bindings
@@ -407,6 +478,31 @@ def _validate_replacement(
         added_artifacts[0].package_ref,
     ):
         raise MetadataRecoveryStateError("artifact-binding-transition-invalid")
+
+
+def _validate_provenance_replacement(
+    current: MetadataRecoveryStateRecord,
+    candidate: MetadataRecoveryStateRecord,
+) -> None:
+    before, after = current.observation_provenance, candidate.observation_provenance
+    if before is not None and after is None:
+        raise MetadataRecoveryStateError("observation-provenance-required")
+    if after is None:
+        return
+    attempt_delta = candidate.recovery.verify_attempts - current.recovery.verify_attempts
+    if before is None:
+        deltas = _provenance_counters(after)
+        if attempt_delta != 1 or sum(deltas) > attempt_delta:
+            raise MetadataRecoveryStateError("observation-provenance-transition-invalid")
+        return
+    old, new = _provenance_counters(before), _provenance_counters(after)
+    if any(candidate_value < current_value for current_value, candidate_value in zip(old, new, strict=True)):
+        raise MetadataRecoveryStateError("observation-provenance-regression")
+    if after.observed_at < before.observed_at:
+        raise MetadataRecoveryStateError("observation-provenance-regression")
+    deltas = tuple(candidate_value - current_value for current_value, candidate_value in zip(old, new, strict=True))
+    if (attempt_delta == 0 and after != before) or sum(deltas) > attempt_delta:
+        raise MetadataRecoveryStateError("observation-provenance-transition-invalid")
 
 
 def _artifact_matches_completion(
@@ -467,8 +563,11 @@ def _exact_successor(before: MetadataRecovery, after: MetadataRecovery) -> Metad
     return None
 
 
-def _record_from_document(value: object) -> MetadataRecoveryStateRecord:
-    document = _mapping(value, _RECORD_KEYS)
+def _record_from_document(
+    value: object, *, schema_version: int,
+) -> MetadataRecoveryStateRecord:
+    keys = _LEGACY_RECORD_KEYS if schema_version == _LEGACY_SCHEMA_VERSION else _RECORD_KEYS
+    document = _mapping(value, keys)
     packages = document["packages"]
     if not isinstance(packages, list):
         raise MetadataRecoveryStateError("recovery-state-invalid")
@@ -494,7 +593,45 @@ def _record_from_document(value: object) -> MetadataRecoveryStateRecord:
         criteria_hash=_string(document, "criteriaHash"), authorization_ref=_string(document, "authorizationRef"),
         package_bindings=bindings,
         artifact_bindings=artifacts,
+        observation_provenance=(
+            None if schema_version == _LEGACY_SCHEMA_VERSION
+            else _provenance_from_document(document["observationProvenance"])
+        ),
     )
+
+
+def _provenance_from_document(value: object) -> MetadataObservationProvenance | None:
+    if value is None:
+        return None
+    try:
+        document = _mapping(value, _PROVENANCE_KEYS)
+        return MetadataObservationProvenance(
+            projection_version=_integer(document, "projectionVersion"),
+            tested_commit=_string(document, "testedCommit"),
+            observed_at=_parse_datetime(_string(document, "observedAt")),
+            entry_point=_string(document, "entryPoint"),
+            verify_contacts_not_before_due=_integer(document, "verifyContactsNotBeforeDue"),
+            verify_contacts_before_due=_integer(document, "verifyContactsBeforeDue"),
+            verify_contacts_due_unknown=_integer(document, "verifyContactsDueUnknown"),
+        )
+    except (MetadataRecoveryStateError, TypeError, ValueError):
+        raise MetadataRecoveryStateError("observation-provenance-invalid") from None
+
+
+def _provenance_document(
+    provenance: MetadataObservationProvenance | None,
+) -> dict[str, object] | None:
+    if provenance is None:
+        return None
+    return {
+        "projectionVersion": provenance.projection_version,
+        "testedCommit": provenance.tested_commit,
+        "observedAt": provenance.observed_at.isoformat().replace("+00:00", "Z"),
+        "entryPoint": provenance.entry_point,
+        "verifyContactsNotBeforeDue": provenance.verify_contacts_not_before_due,
+        "verifyContactsBeforeDue": provenance.verify_contacts_before_due,
+        "verifyContactsDueUnknown": provenance.verify_contacts_due_unknown,
+    }
 
 
 def _recovery_from_document(value: object) -> MetadataRecovery:
@@ -676,7 +813,7 @@ def _read_state(path: Path) -> dict[str, object]:
     mapped = _mapping(document, _STATE_KEYS)
     if (
         type(mapped["schemaVersion"]) is not int
-        or mapped["schemaVersion"] != _SCHEMA_VERSION
+        or mapped["schemaVersion"] not in {_LEGACY_SCHEMA_VERSION, _SCHEMA_VERSION}
         or type(mapped["recoveries"]) is not list
     ):
         raise MetadataRecoveryStateError("recovery-state-unsupported")
