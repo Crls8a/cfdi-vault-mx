@@ -103,6 +103,8 @@ def project_metadata_observations(
             conclusion=conclusion,
             next_correction_code=correction,
             stability="stable" if stable else "observed_once",
+            sat_version=facts.sat_version,
+            entry_point=facts.entry_point,
         ))
     return tuple(events)
 
@@ -260,7 +262,10 @@ def _valid_semantics(facts: MetadataObservationFacts) -> bool:
         return False
     if facts.verify_contacts > 0 and not facts.sat_contacted:
         return False
-    if facts.terminal_status_received and facts.verify_contacts == 0:
+    persisted_package_terminal = (facts.lifecycle_transitioned and facts.package_count > 0
+                                  and status in {"packages_ready", "downloading", "completed",
+                                                 "download_uncertain", "download_failed"})
+    if facts.terminal_status_received and facts.verify_contacts == 0 and not persisted_package_terminal:
         return False
     terminal_required = {"packages_ready", "downloading", "completed", "no_data",
                          "download_uncertain", "download_failed"}

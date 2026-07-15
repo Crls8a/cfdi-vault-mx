@@ -16,6 +16,10 @@ from cfdi_vault.sat_metadata_submission import SubmissionStatus
 NOW = datetime(2026, 6, 30, tzinfo=timezone.utc)
 RECOVER_ARGS = ["metadata-recover-live", "--profile", "profile-synthetic", "--direction", "received",
                 "--from", "2026-06-30", "--to", "2026-06-30", "--authorization", "permit-synthetic"]
+@pytest.fixture(autouse=True)
+def _observation_hooks(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(subject, "prepare_metadata_observation_context", lambda *_a, **_k: object())
+    monkeypatch.setattr(subject, "observe_metadata_recovery", lambda *_a, **_k: 0)
 def _app() -> typer.Typer:
     app = typer.Typer()
     app.command("metadata-recover-live")(subject.sat_metadata_recover_live)
@@ -57,6 +61,7 @@ def _patch_front(monkeypatch, tmp_path: Path, events: list[str]) -> SimpleNamesp
     monkeypatch.setattr(subject, "_new_recovery_storage", lambda _: events.append("storage") or object())
     monkeypatch.setattr(subject, "_new_recovery_adapter", lambda *_: events.append("adapter") or object())
     monkeypatch.setattr(subject, "_recovery_now", lambda: NOW)
+    monkeypatch.setattr(subject, "list_metadata_recovery_states", lambda *_a, **_k: ())
     return profile
 @pytest.mark.parametrize(("consumed", "expected"), [(False, "consume"), (True, "continue")])
 def test_authorization_consumes_once_then_validates_read_only(monkeypatch, consumed: bool, expected: str) -> None:
@@ -77,6 +82,8 @@ def test_authorization_consumes_once_then_validates_read_only(monkeypatch, consu
 def test_recover_live_orders_gates_and_prints_only_aggregates(monkeypatch, tmp_path: Path) -> None:
     events: list[str] = []
     profile = _patch_front(monkeypatch, tmp_path, events)
+    monkeypatch.setattr(subject, "prepare_metadata_observation_context", lambda *_a, **_k: events.append("observation") or object())
+    monkeypatch.setattr(subject, "observe_metadata_recovery", lambda *_a, **_k: events.append("observe"))
     claim = SimpleNamespace(status=SubmissionStatus.ACCEPTED, recovery_ref="run-000000000000")
     record = SimpleNamespace(authorization_ref="permit-synthetic")
     monkeypatch.setattr(subject, "submit_metadata_recovery_once", lambda **_: events.append("submit") or claim)
@@ -90,7 +97,7 @@ def test_recover_live_orders_gates_and_prints_only_aggregates(monkeypatch, tmp_p
     result = CliRunner().invoke(_app(), RECOVER_ARGS)
 
     assert result.exit_code == 0, result.output
-    assert events == ["query", "guard", "path", "permit", "storage", "adapter", "submit", "load", "advance"]
+    assert events == ["query", "guard", "path", "observation", "permit", "storage", "adapter", "submit", "load", "advance", "load", "observe"]
     assert "stage=waiting_verify" in result.output
     assert "status=verify_scheduled" in result.output
     assert "operation_attempts=0" in result.output
@@ -249,7 +256,7 @@ def test_runner_no_due_has_zero_live_or_storage_side_effects(monkeypatch, tmp_pa
     monkeypatch.setattr(subject, "_validate_recovery_state_path", lambda *_: events.append("path"))
     monkeypatch.setattr(subject, "list_metadata_recovery_states", lambda *_a, **_k: events.append("list") or ())
     monkeypatch.setattr(subject, "_recovery_now", lambda: NOW)
-    for name in ("settle_metadata_recovery_locally", "validate_consumed_metadata_recovery_permit_id", "_new_recovery_storage",
+    for name in ("prepare_metadata_observation_context", "settle_metadata_recovery_locally", "validate_consumed_metadata_recovery_permit_id", "_new_recovery_storage",
                  "_new_recovery_adapter", "advance_metadata_recovery_once"):
         monkeypatch.setattr(subject, name, lambda *_a, _name=name, **_k: (_ for _ in ()).throw(
             AssertionError(f"{_name} must not run")))
@@ -279,6 +286,7 @@ def test_runner_validates_stored_permit_before_storage_and_advances_once(monkeyp
     monkeypatch.setattr(subject, "list_metadata_recovery_states", lambda *_a, **_k: events.append("list") or (record,))
     monkeypatch.setattr(subject, "settle_metadata_recovery_locally", lambda **_: events.append("settle") or
                         SimpleNamespace(recovery=_document(status="packages_ready"), requires_live=True))
+    monkeypatch.setattr(subject, "load_metadata_recovery_state", lambda *_a, **_k: record)
     monkeypatch.setattr(subject, "validate_consumed_metadata_recovery_permit_id",
                         lambda *_a, **_k: events.append("permit") or SimpleNamespace())
     monkeypatch.setattr(subject, "_new_recovery_storage", lambda *_: events.append("storage") or object())
@@ -313,6 +321,7 @@ def test_runner_settles_local_terminal_before_permit_or_live_objects(
     monkeypatch.setattr(subject, "_recovery_now", lambda: NOW)
     monkeypatch.setattr(subject, "settle_metadata_recovery_locally", lambda **_: events.append("settle") or
                         SimpleNamespace(recovery=_document(status=terminal), requires_live=False))
+    monkeypatch.setattr(subject, "load_metadata_recovery_state", lambda *_a, **_k: record)
     monkeypatch.setattr(subject, "validate_consumed_metadata_recovery_permit_id",
         lambda *_a, **_k: (_ for _ in ()).throw(subject.LivePermitError("permit-continuation-expired")))
     for name in ("_new_recovery_storage", "_new_recovery_adapter", "advance_metadata_recovery_once"):

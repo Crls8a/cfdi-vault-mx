@@ -61,7 +61,7 @@ def test_reader_rejects_unknown_fields_arrays_duplicate_keys_and_nonsequential_i
     nested_list["hypothesis"] = {"code": [], "text": "private"}
     huge_integer = path.read_text(encoding="utf-8").replace('"requestAccepted":true', '"packageCount":' + "9" * 5000)
     invalid = [json.dumps(unknown), json.dumps(array), path.read_text(encoding="utf-8").replace(
-        '"schemaVersion":1', '"schemaVersion":1,"schemaVersion":1'), json.dumps(wrong_id),
+        '"schemaVersion":2', '"schemaVersion":2,"schemaVersion":2'), json.dumps(wrong_id),
         json.dumps(boolean_version), json.dumps(nested_list), huge_integer]
     for index, payload in enumerate(invalid):
         root = tmp_path / str(index)

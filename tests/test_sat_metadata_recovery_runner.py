@@ -163,6 +163,7 @@ def test_verify_exception_and_mismatch_classification(tmp_path, result, expected
     outcome = _advance(tmp_path, _Verifier(result), _Downloader(), NOW + timedelta(minutes=5))
     assert outcome.recovery["status"] == expected
     assert (outcome.sat_contacted, outcome.verify_count) == (contacted, 1)
+    assert outcome.verify_contacts_not_before_due == int(contacted)
     assert "PRIVATE" not in repr(outcome)
     loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
     assert loaded.recovery.verify_attempts == 1

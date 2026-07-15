@@ -21,6 +21,11 @@ from cfdi_vault.live_permit import (
     validate_consumed_metadata_recovery_permit_id,
 )
 from cfdi_vault.sat_live_smoke import SatLiveV15MetadataAdapter
+from cfdi_vault.sat_metadata_observation import MetadataObservationError
+from cfdi_vault.sat_metadata_observation_integration import (
+    observe_metadata_recovery,
+    prepare_metadata_observation_context,
+)
 from cfdi_vault.sat_metadata_recovery import PackageRecoveryStatus
 from cfdi_vault.sat_metadata_recovery_runner import (
     advance_metadata_recovery_once,
@@ -64,6 +69,10 @@ def sat_metadata_recover_live(
         query, local_profile = _safe_recovery_query(profile, direction, from_date, to_date)
         repo_root = _checked_recovery_repo_root()
         _validate_recovery_state_path(local_profile, repo_root)
+        observation = prepare_metadata_observation_context(local_profile.storage_root, repo_root=repo_root)
+        existing = next((item for item in list_metadata_recovery_states(
+            local_profile.storage_root, repo_root=repo_root,
+        ) if item.profile_id == profile and item.criteria_hash == query.criteria_hash()), None)
         now = _recovery_now()
         permit = _authorize_metadata_recovery(authorization=authorization, profile=profile, query=query,
                                               now=now, repo_root=repo_root)
@@ -84,11 +93,16 @@ def sat_metadata_recover_live(
         if outcome.recovery is None:
             _print_runner_failure(outcome)
             raise typer.Exit(code=1)
+        final = load_metadata_recovery_state(local_profile.storage_root, claim.recovery_ref, repo_root=repo_root)
+        observe_metadata_recovery(observation, before=existing, after=final, outcome=outcome,
+            observed_at=now, entry_point="metadata-recover-live", reconcile_submission=True)
         _print_recovery_document(outcome.recovery)
     except typer.Exit:
         raise
     except (_RecoveryCliError, LivePermitError, MetadataRecoveryStateError) as exc:
         _fail(exc.reason)
+    except MetadataObservationError as exc:
+        _fail(str(exc))
     except MetadataSubmissionError:
         _fail("submission_state_failed")
     except Exception:
@@ -131,6 +145,7 @@ def sat_metadata_recovery_runner(
             _print_scheduler_idle()
             return
         record = next(item for item in records if item.recovery.recovery_ref == selected)
+        observation = prepare_metadata_observation_context(local_profile.storage_root, repo_root=repo_root)
         settled = settle_metadata_recovery_locally(
             storage_root=local_profile.storage_root, recovery_ref=selected,
             now=now, repo_root=repo_root,
@@ -139,6 +154,9 @@ def sat_metadata_recovery_runner(
             _print_runner_failure(settled)
             raise typer.Exit(code=1)
         if not settled.requires_live:
+            final = load_metadata_recovery_state(local_profile.storage_root, selected, repo_root=repo_root)
+            observe_metadata_recovery(observation, before=record, after=final, outcome=settled,
+                observed_at=now, entry_point="metadata-recovery-runner")
             _print_recovery_document(settled.recovery)
             return
         permit = validate_consumed_metadata_recovery_permit_id(
@@ -156,11 +174,16 @@ def sat_metadata_recovery_runner(
         if outcome.recovery is None:
             _print_runner_failure(outcome)
             raise typer.Exit(code=1)
+        final = load_metadata_recovery_state(local_profile.storage_root, selected, repo_root=repo_root)
+        observe_metadata_recovery(observation, before=record, after=final, outcome=outcome,
+            observed_at=now, entry_point="metadata-recovery-runner")
         _print_recovery_document(outcome.recovery)
     except typer.Exit:
         raise
     except (_RecoveryCliError, LivePermitError, MetadataRecoveryStateError) as exc:
         _fail(exc.reason)
+    except MetadataObservationError as exc:
+        _fail(str(exc))
     except Exception:
         _fail("recovery_runner_failed")
 def _safe_recovery_query(profile: str, direction: str, start: str, end: str):

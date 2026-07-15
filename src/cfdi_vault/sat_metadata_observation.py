@@ -18,7 +18,7 @@ from types import MappingProxyType
 
 import cfdi_vault.sat_metadata_recovery_state as state
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _MAX_AGGREGATE_VALUE = 1_000_000  # Conservative bound for every sanitized count.
 _DIRECTORY_FSYNC_REQUIRED = os.name != "nt"
 _EVENT_KEYS = {"schemaVersion", "observationId", "executionStartedAt", "observedAt",
@@ -61,6 +61,8 @@ class NewMetadataObservation:
     conclusion: str
     next_correction_code: str
     stability: str
+    sat_version: str = "v1.5"
+    entry_point: str = "metadata-recover-live"
     def __post_init__(self) -> None:
         if type(self.observed_result) is not dict:
             raise MetadataObservationError("observation-result-invalid")
@@ -139,6 +141,8 @@ def _validate_input(event: NewMetadataObservation) -> None:
         raise MetadataObservationError("observation-code-invalid")
     if type(event.direction) is not str or type(event.kind) is not str or event.direction not in {"issued", "received"} or event.kind != "metadata":
         raise MetadataObservationError("observation-scope-invalid")
+    if event.sat_version != "v1.5" or event.entry_point not in {"metadata-recover-live", "metadata-recovery-runner"}:
+        raise MetadataObservationError("observation-scope-invalid")
     if type(event.date_from) is not date or type(event.date_to) is not date or event.date_from > event.date_to:
         raise MetadataObservationError("observation-scope-invalid")
     if (type(event.executed_stages) is not tuple or not event.executed_stages
@@ -171,7 +175,8 @@ def _event_document(event: NewMetadataObservation, observation_id: str) -> dict[
         "observedAt": event.observed_at.isoformat().replace("+00:00", "Z"),
         "testedCommit": event.tested_commit,
         "hypothesis": {"code": event.hypothesis_code, "text": _HYPOTHESES[event.hypothesis_code]},
-        "actualScope": {"direction": event.direction, "kind": event.kind,
+        "actualScope": {"satVersion": event.sat_version, "entryPoint": event.entry_point,
+                        "direction": event.direction, "kind": event.kind,
                         "dateFrom": event.date_from.isoformat(), "dateTo": event.date_to.isoformat()},
         "executedStages": list(event.executed_stages), "observedResult": dict(event.observed_result),
         "conclusion": event.conclusion,
@@ -195,7 +200,7 @@ def _validate_document(value: object, expected_number: int) -> dict[str, object]
         if type(code) is not str or type(text) is not str or source.get(code) != text:
             raise MetadataObservationError("observation-schema-invalid")
     scope = value["actualScope"]
-    if type(scope) is not dict or set(scope) != {"direction", "kind", "dateFrom", "dateTo"}:
+    if type(scope) is not dict or set(scope) != {"satVersion", "entryPoint", "direction", "kind", "dateFrom", "dateTo"}:
         raise MetadataObservationError("observation-schema-invalid")
     try:
         event = NewMetadataObservation(
@@ -205,7 +210,7 @@ def _validate_document(value: object, expected_number: int) -> dict[str, object]
             date.fromisoformat(scope["dateFrom"]), date.fromisoformat(scope["dateTo"]),
             tuple(value["executedStages"]) if type(value["executedStages"]) is list else (),
             value["observedResult"], value["conclusion"], value["nextCorrection"]["code"],
-            value["stability"],
+            value["stability"], scope["satVersion"], scope["entryPoint"],
         )
     except (AttributeError, KeyError, TypeError, ValueError):
         raise MetadataObservationError("observation-schema-invalid") from None
