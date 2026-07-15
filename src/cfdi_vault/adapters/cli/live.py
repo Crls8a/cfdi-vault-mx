@@ -6,7 +6,7 @@ from .common import *
 
 
 def live_permit_create(
-    scope: str = typer.Option(..., "--scope", help="transport_probe, auth_post_probe, verify_post_probe, auth_matrix_probe, auth_live_smoke, metadata_live_smoke, metadata_backfill_submit, or package_download_smoke."),
+    scope: str = typer.Option(..., "--scope", help="transport_probe, auth_post_probe, verify_post_probe, auth_matrix_probe, auth_live_smoke, metadata_live_smoke, metadata_recovery_live, metadata_backfill_submit, or package_download_smoke."),
     profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
     kind: str = typer.Option(..., "--kind", help="metadata only."),
     direction: str = typer.Option(..., "--direction", help="received or issued."),

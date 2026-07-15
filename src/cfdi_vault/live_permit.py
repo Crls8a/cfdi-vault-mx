@@ -2,23 +2,27 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
-import os
-from pathlib import Path
 import re
 import secrets
 import subprocess
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Mapping
 
 from cfdi_vault.domain import DownloadDirection, DownloadQuery, RequestType
-from cfdi_vault.sat_auth_constants import AUTH_ENVELOPE_VARIANT_SECURITY_ONLY, DEFAULT_AUTH_ENVELOPE_VARIANT, AUTH_ENVELOPE_VARIANTS
+from cfdi_vault.sat_auth_constants import (
+    AUTH_ENVELOPE_VARIANT_SECURITY_ONLY,
+    AUTH_ENVELOPE_VARIANTS,
+    DEFAULT_AUTH_ENVELOPE_VARIANT,
+)
 from cfdi_vault.setup_core import SetupError, find_repo_root, resolve_appdata_root, validate_profile_id
 
 BACKFILL_SUBMIT_SCOPE = "metadata_backfill_submit"
 METADATA_LIVE_SMOKE_SCOPE = "metadata_live_smoke"
+METADATA_RECOVERY_LIVE_SCOPE = "metadata_recovery_live"
 PACKAGE_DOWNLOAD_SCOPE = "package_download_smoke"
 ALLOWED_SCOPES = frozenset(
     {
@@ -28,16 +32,26 @@ ALLOWED_SCOPES = frozenset(
         "auth_matrix_probe",
         "auth_live_smoke",
         METADATA_LIVE_SMOKE_SCOPE,
+        METADATA_RECOVERY_LIVE_SCOPE,
         BACKFILL_SUBMIT_SCOPE,
         PACKAGE_DOWNLOAD_SCOPE,
     }
 )
-CREDENTIAL_REQUIRED_SCOPES = frozenset({"auth_live_smoke", METADATA_LIVE_SMOKE_SCOPE, BACKFILL_SUBMIT_SCOPE, PACKAGE_DOWNLOAD_SCOPE})
+CREDENTIAL_REQUIRED_SCOPES = frozenset(
+    {
+        "auth_live_smoke",
+        METADATA_LIVE_SMOKE_SCOPE,
+        METADATA_RECOVERY_LIVE_SCOPE,
+        BACKFILL_SUBMIT_SCOPE,
+        PACKAGE_DOWNLOAD_SCOPE,
+    }
+)
 PERMIT_INDENT = 2
 MAX_EXPIRES_MINUTES = 15
 MAX_RANGE_DAYS = 1
 MAX_BACKFILL_RANGE_DAYS = 7
 MAX_ATTEMPTS = 1
+METADATA_RECOVERY_CONTINUATION_DAYS = 7
 PERMIT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
 
 
@@ -313,6 +327,54 @@ def validate_and_consume_live_permit(
     return consumed
 
 
+def validate_consumed_metadata_recovery_permit(
+    permit_ref_or_id: str | Path,
+    *,
+    profile_id: str,
+    direction: str,
+    date_from: str,
+    date_to: str,
+    now: datetime | None,
+    repo_root: Path | None,
+    env: Mapping[str, str] | None = None,
+) -> LiveExecutionPermit:
+    """Validate a consumed recovery permit without rewriting or re-consuming it."""
+
+    permit = load_live_execution_permit(permit_ref_or_id, env=env)
+    expected = {
+        "scope": METADATA_RECOVERY_LIVE_SCOPE,
+        "profile_id": _safe_profile_id(profile_id),
+        "kind": RequestType.METADATA.value,
+        "direction": direction,
+        "date_from": date_from,
+        "date_to": date_to,
+    }
+    actual = {
+        "scope": permit.scope,
+        "profile_id": permit.profile_id,
+        "kind": permit.kind,
+        "direction": permit.direction,
+        "date_from": permit.date_from,
+        "date_to": permit.date_to,
+    }
+    for key, value in expected.items():
+        if actual[key] != value:
+            raise LivePermitError(f"permit-{_document_key(key)}-mismatch")
+
+    checked_at = _utc_now(now)
+    _validate_static_document_policy(permit, repo_root=repo_root)
+    consumed_at = permit.consumed_at
+    if not permit.consumed or consumed_at is None:
+        raise LivePermitError("permit-not-consumed")
+    if not permit.created_at <= consumed_at <= permit.expires_at:
+        raise LivePermitError("permit-consumption-invalid")
+    if checked_at < consumed_at:
+        raise LivePermitError("permit-continuation-before-consumption")
+    if checked_at > consumed_at + timedelta(days=METADATA_RECOVERY_CONTINUATION_DAYS):
+        raise LivePermitError("permit-continuation-expired")
+    return permit
+
+
 def permit_expectation_from_query(scope: str, profile_id: str, query: DownloadQuery) -> dict[str, str]:
     if query.period is None:
         raise LivePermitError("permit-query-period-required")
@@ -400,16 +462,33 @@ def _validated_request(request: LivePermitRequest) -> LivePermitRequest:
 
 
 def _validate_document_policy(permit: LiveExecutionPermit, *, now: datetime, repo_root: Path | None) -> None:
+    _validate_static_document_policy(permit, repo_root=repo_root)
     if permit.consumed:
         raise LivePermitError("permit-already-consumed")
+    if permit.created_at > now:
+        raise LivePermitError("permit-not-yet-valid")
     if permit.expires_at <= now:
         raise LivePermitError("permit-expired")
+
+
+def _validate_static_document_policy(permit: LiveExecutionPermit, *, repo_root: Path | None) -> None:
+    if permit.scope not in ALLOWED_SCOPES:
+        raise LivePermitError("invalid-scope")
+    validity = permit.expires_at - permit.created_at
+    if validity <= timedelta(0) or validity > timedelta(minutes=MAX_EXPIRES_MINUTES):
+        raise LivePermitError("permit-expiration-policy-invalid")
     if permit.max_range_days != _max_range_days(permit.scope):
         raise LivePermitError("permit-range-policy-invalid")
     if permit.max_attempts != MAX_ATTEMPTS:
         raise LivePermitError("permit-attempt-policy-invalid")
     if permit.kind != RequestType.METADATA.value:
         raise LivePermitError("metadata-only-required")
+    _safe_profile_id(permit.profile_id)
+    if permit.direction not in {
+        DownloadDirection.RECEIVED.value,
+        DownloadDirection.ISSUED.value,
+    }:
+        raise LivePermitError("invalid-direction")
     _validate_date_range(permit.date_from, permit.date_to, max_days=permit.max_range_days)
     if permit.allow_real_sat is not True:
         raise LivePermitError("permit-real-sat-not-allowed")
@@ -417,8 +496,6 @@ def _validate_document_policy(permit: LiveExecutionPermit, *, now: datetime, rep
         raise LivePermitError("permit-real-credentials-not-allowed")
     if permit.scope in {"transport_probe", "auth_post_probe", "verify_post_probe", "auth_matrix_probe"} and permit.allow_real_credentials is True:
         raise LivePermitError("permit-unneeded-credentials")
-    if permit.scope not in ALLOWED_SCOPES:
-        raise LivePermitError("invalid-scope")
     if permit.scope == "auth_live_smoke":
         if permit.auth_envelope_variant not in AUTH_ENVELOPE_VARIANTS:
             raise LivePermitError("permit-auth-envelope-variant-required")
@@ -428,6 +505,8 @@ def _validate_document_policy(permit: LiveExecutionPermit, *, now: datetime, rep
         raise LivePermitError("permit-auth-envelope-options-not-applicable")
     if permit.redaction_required is not True:
         raise LivePermitError("permit-redaction-required")
+    if permit.issued_by != "carlos-local" or not permit.reason.strip():
+        raise LivePermitError("permit-issuer-policy-invalid")
     if permit.repo_root_hash != current_repo_identity(repo_root):
         raise LivePermitError("permit-repo-identity-mismatch")
 
@@ -461,7 +540,13 @@ def _write_permit_document(path: Path, permit: LiveExecutionPermit) -> None:
 
 
 def _max_range_days(scope: str) -> int:
-    return MAX_BACKFILL_RANGE_DAYS if scope in {BACKFILL_SUBMIT_SCOPE, METADATA_LIVE_SMOKE_SCOPE, PACKAGE_DOWNLOAD_SCOPE} else MAX_RANGE_DAYS
+    wide_scopes = {
+        BACKFILL_SUBMIT_SCOPE,
+        METADATA_LIVE_SMOKE_SCOPE,
+        METADATA_RECOVERY_LIVE_SCOPE,
+        PACKAGE_DOWNLOAD_SCOPE,
+    }
+    return MAX_BACKFILL_RANGE_DAYS if scope in wide_scopes else MAX_RANGE_DAYS
 
 
 def _validate_date_range(date_from: str, date_to: str, *, max_days: int) -> None:

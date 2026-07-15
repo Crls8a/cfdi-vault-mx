@@ -704,7 +704,8 @@ def test_live_metadata_request_smoke_persists_accepted_id_without_printing_full_
     assert full_request_id not in repr(result)
 
 
-def test_live_permit_create_prints_backfill_submit_max_range(tmp_path: Path) -> None:
+@pytest.mark.parametrize("scope", ["metadata_backfill_submit", "metadata_recovery_live"])
+def test_live_permit_create_prints_week_scope_max_range(tmp_path: Path, scope: str) -> None:
     appdata_root = tmp_path / "appdata"
 
     result = CliRunner().invoke(
@@ -714,7 +715,7 @@ def test_live_permit_create_prints_backfill_submit_max_range(tmp_path: Path) -> 
             "permit",
             "create",
             "--scope",
-            "metadata_backfill_submit",
+            scope,
             "--profile",
             "dummy-profile",
             "--kind",
@@ -735,7 +736,7 @@ def test_live_permit_create_prints_backfill_submit_max_range(tmp_path: Path) -> 
 
     assert result.exit_code == 0, result.output
     lines = _key_value_lines(result.output)
-    assert lines["scope"] == "metadata_backfill_submit"
+    assert lines["scope"] == scope
     assert lines["max_range_days"] == "7"
 
 
