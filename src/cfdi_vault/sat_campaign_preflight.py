@@ -130,6 +130,11 @@ def validate_campaign_preflight_evidence(
         _deny("campaign-preflight-evidence-invalid")
 
 
+def validate_campaign_environment(environ: Mapping[str, str]) -> None:
+    """Recheck canonical campaign environment policy without other preflight work."""
+    _validate_environment(environ)
+
+
 def _target_binding(target: CampaignPreflightTarget, phrase_ref: str) -> bytes:
     private = json.dumps([target.profile_id, str(target.repo_root), str(target.storage_root),
                           target.provider_scheme, phrase_ref], separators=(",", ":")).encode()

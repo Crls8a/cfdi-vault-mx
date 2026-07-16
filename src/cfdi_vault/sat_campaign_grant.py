@@ -329,6 +329,11 @@ def campaign_grant_redacted_summary(grant: CampaignGrant) -> dict[str, object]:
     }
 
 
+def campaign_manifest_digest(manifest: SatCampaignManifest) -> str:
+    """Return the canonical private grant-lineage digest for a manifest."""
+    return _manifest_digest(manifest)
+
+
 def _new_campaign_grant(
     manifest: SatCampaignManifest, profile_id: str, tested_commit: str, current_commit: str,
     reason: str, expires_in: timedelta, *, now: datetime,
