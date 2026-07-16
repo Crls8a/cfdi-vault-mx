@@ -131,6 +131,7 @@ supported LIB-005B and LIB-005C rows are public library API.
 | `cfdi_vault.sat_auth_post_probe` | Probe | Research-only POST probe. |
 | `cfdi_vault.sat_auth` | Internal implementation | Authentication implementation remains behind the split public port. |
 | `cfdi_vault.sat_backfill` | Reference-system orchestration | Operational backfill policy is not library API. |
+| `cfdi_vault.sat_campaign_manifest` | Internal reference-system model | Pure immutable campaign planning and transition policy; not a supported import. |
 | `cfdi_vault.sat_contract` | LIB-005B public contract | Supported typed results, errors, and outcome policy remain side-effect free. |
 | `cfdi_vault.sat_download` | LIB-005C public facade | Two-name import-first surface; injected delegation plus deterministic offline factory only. |
 | `cfdi_vault.sat_download_envelope_lint` | Research tool | Download envelope inspection helper. |
