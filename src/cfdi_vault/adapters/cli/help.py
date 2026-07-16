@@ -12,6 +12,12 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "example": "cfdi-vault sat campaign create --profile default",
     },
     {
+        "command": "sat campaign authorize",
+        "purpose": "Create a private manifest- and commit-bound grant for one campaign phase.",
+        "when": "Run after campaign creation and before the authorized campaign execution.",
+        "example": "cfdi-vault sat campaign authorize --profile default --campaign-ref <campaign-ref> --phase metadata-proof --expires-days 14 --reason <reason>",
+    },
+    {
         "command": "sat campaign status",
         "purpose": "Show only sanitized aggregate progress for one persisted SAT campaign.",
         "when": "Run after creation or campaign executions to inspect durable progress.",

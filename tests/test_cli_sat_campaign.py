@@ -46,13 +46,14 @@ def _output(result) -> dict[str, str]:  # type: ignore[no-untyped-def]
     return dict(line.split("=", 1) for line in lines)
 
 
-def test_campaign_help_exposes_only_create_and_status() -> None:
+def test_campaign_help_exposes_only_productive_commands() -> None:
     root = get_command(app)
     campaign = root.commands["sat"].commands["campaign"]
-    assert tuple(campaign.commands) == ("create", "status")
+    assert tuple(campaign.commands) == ("create", "authorize", "status")
     result = CliRunner().invoke(app, ["sat", "campaign", "--help"])
     assert result.exit_code == 0
     assert "create" in result.stdout
+    assert "authorize" in result.stdout
     assert "status" in result.stdout
 
 

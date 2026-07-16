@@ -160,6 +160,22 @@ def create_campaign_grant(
     return _protect(persist)
 
 
+def create_campaign_grant_for_current_commit(
+    storage_root: str | Path,
+    manifest: SatCampaignManifest,
+    profile_id: str,
+    repo_root: str | Path,
+    reason: str,
+    expires_in: timedelta,
+    now: datetime | None = None,
+) -> CampaignGrant:
+    """Resolve canonical HEAD, then recheck it inside the persisted grant creation."""
+    repository, current = _repository_context(repo_root)
+    return create_campaign_grant(
+        storage_root, manifest, profile_id, current, repository, reason, expires_in, now,
+    )
+
+
 def load_campaign_grant(
     storage_root: str | Path,
     grant_ref: str,

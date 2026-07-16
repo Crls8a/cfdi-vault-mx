@@ -270,6 +270,20 @@ def test_create_and_load_roundtrip_in_external_storage(
     assert manifest.campaign_ref not in " ".join(names)
 
 
+def test_create_for_current_commit_rechecks_head_before_persistence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    heads = iter(((REPO_ROOT.resolve(), COMMIT), (REPO_ROOT.resolve(), "b" * 40)))
+    monkeypatch.setattr(subject, "_repository_context", lambda _root: next(heads))
+    with pytest.raises(subject.CampaignGrantError, match="^campaign-grant-commit-mismatch$"):
+        subject.create_campaign_grant_for_current_commit(
+            storage_root=tmp_path / "private",
+            manifest=campaign.build_campaign_manifest(PROFILE), profile_id=PROFILE,
+            repo_root=REPO_ROOT, reason="metadata proof", expires_in=timedelta(days=14),
+        )
+    assert not (tmp_path / "private").exists()
+
+
 def test_each_create_uses_a_distinct_opaque_reference(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
