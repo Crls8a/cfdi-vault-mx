@@ -11,7 +11,7 @@ import sys
 import tempfile
 from collections.abc import Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -27,14 +27,17 @@ from cfdi_vault.sat_metadata_recovery import (
     RecoveryStatus,
 )
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 _LEGACY_SCHEMA_VERSION = 3
+_PROVENANCE_SCHEMA_VERSION = 4
 _STATE_KEYS = {"schemaVersion", "recoveries"}
 _LEGACY_RECORD_KEYS = {
     "recovery", "idSolicitud", "profileId", "direction", "kind", "fechaInicial",
     "fechaFinal", "criteriaHash", "authorizationRef", "packages", "artifacts",
 }
-_RECORD_KEYS = _LEGACY_RECORD_KEYS | {"observationProvenance"}
+_PROVENANCE_RECORD_KEYS = _LEGACY_RECORD_KEYS | {"observationProvenance"}
+_RECORD_KEYS = _PROVENANCE_RECORD_KEYS | {"verifyClaim"}
+_VERIFY_CLAIM_KEYS = {"attempt", "dueAt", "claimedAt"}
 _PROVENANCE_KEYS = {
     "projectionVersion", "testedCommit", "observedAt", "entryPoint",
     "verifyContactsNotBeforeDue", "verifyContactsBeforeDue", "verifyContactsDueUnknown",
@@ -76,6 +79,14 @@ class MetadataObservationProvenance:
     verify_contacts_due_unknown: int = 0
 
 
+@dataclass(frozen=True, repr=False)
+class MetadataVerifyClaim:
+    """Privately reserve one exact due VERIFY attempt before SAT contact."""
+    attempt: int
+    due_at: datetime
+    claimed_at: datetime
+
+
 def new_metadata_observation_provenance(
     *, tested_commit: str, observed_at: datetime, entry_point: str,
     verify_contacts_not_before_due: int = 0, verify_contacts_before_due: int = 0,
@@ -105,6 +116,7 @@ class MetadataRecoveryStateRecord:
     package_bindings: tuple[PackageIdBinding, ...] = ()
     artifact_bindings: tuple[MetadataPackageArtifactState, ...] = ()
     observation_provenance: MetadataObservationProvenance | None = None
+    verify_claim: MetadataVerifyClaim | None = None
 
     def __post_init__(self) -> None:
         _validate_record(self)
@@ -127,6 +139,7 @@ class MetadataRecoveryStateRecord:
                                 for item in self.package_bindings]
         document["artifacts"] = [item.to_private_document() for item in self.artifact_bindings]
         document["observationProvenance"] = _provenance_document(self.observation_provenance)
+        document["verifyClaim"] = _verify_claim_document(self.verify_claim)
         return document
 
 
@@ -246,8 +259,9 @@ def load_metadata_recovery_state(
 
 
 def _validate_record(record: MetadataRecoveryStateRecord) -> None:
-    _validate_recovery(record.recovery)
+    _validate_recovery(record.recovery, record.verify_claim)
     _validate_observation_provenance(record)
+    _validate_verify_claim(record)
     values = (record.id_solicitud, record.profile_id, record.authorization_ref)
     if any(not isinstance(value, str) or not value.strip() for value in values):
         raise MetadataRecoveryStateError("recovery-state-invalid")
@@ -314,7 +328,11 @@ def _validate_provenance_values(provenance: MetadataObservationProvenance) -> No
         raise MetadataRecoveryStateError("observation-provenance-invalid")
 
 
-def _provenance_counters(provenance: MetadataObservationProvenance) -> tuple[int, int, int]:
+def _provenance_counters(
+    provenance: MetadataObservationProvenance | None,
+) -> tuple[int, int, int]:
+    if provenance is None:
+        return (0, 0, 0)
     return (
         provenance.verify_contacts_not_before_due,
         provenance.verify_contacts_before_due,
@@ -370,7 +388,32 @@ def _storage_key_ordinal(storage_key: str) -> int:
     return int(storage_key.rsplit("/", 1)[1].split("-", 1)[0])
 
 
-def _validate_recovery(recovery: MetadataRecovery) -> None:
+def _validate_verify_claim(record: MetadataRecoveryStateRecord) -> None:
+    claim = record.verify_claim
+    if claim is None:
+        return
+    if (
+        type(claim) is not MetadataVerifyClaim
+        or type(claim.attempt) is not int
+        or claim.attempt < 1
+        or type(claim.due_at) is not datetime
+        or claim.due_at.utcoffset() != timedelta(0)
+        or type(claim.claimed_at) is not datetime
+        or claim.claimed_at.utcoffset() != timedelta(0)
+        or claim.claimed_at < claim.due_at
+        or claim.claimed_at >= record.recovery.deadline_at
+        or record.recovery.status is not RecoveryStatus.VERIFY_SCHEDULED
+        or record.recovery.verify_attempts != claim.attempt
+        or record.recovery.next_check_at != claim.due_at
+        or record.observation_provenance is None
+        or record.observation_provenance.observed_at != claim.claimed_at
+    ):
+        raise MetadataRecoveryStateError("verify-claim-invalid")
+
+
+def _validate_recovery(
+    recovery: MetadataRecovery, verify_claim: MetadataVerifyClaim | None = None,
+) -> None:
     """Reject lifecycle values that no public transition can produce."""
     try:
         recovery.to_redacted_document()
@@ -407,7 +450,8 @@ def _validate_recovery(recovery: MetadataRecovery) -> None:
     statuses = tuple(item.status for item in recovery.packages)
     no_packages = not statuses and recovery.record_count in {None, 0}
     pending = recovery.status is RecoveryStatus.VERIFY_SCHEDULED
-    minimum_due = _minimum_next_check(recovery) if pending else None
+    schedule_attempts = recovery.verify_attempts - (1 if verify_claim is not None else 0)
+    minimum_due = _minimum_next_check(recovery, schedule_attempts) if pending else None
     valid = {
         RecoveryStatus.VERIFY_SCHEDULED: no_packages and recovery.next_check_at is not None,
         RecoveryStatus.PENDING_AFTER_BUDGET: no_packages and recovery.next_check_at is None,
@@ -441,9 +485,9 @@ def _validate_recovery(recovery: MetadataRecovery) -> None:
         raise MetadataRecoveryStateError("recovery-state-invalid")
 
 
-def _minimum_next_check(recovery: MetadataRecovery) -> datetime | None:
+def _minimum_next_check(recovery: MetadataRecovery, attempts: int | None = None) -> datetime | None:
     probe = lifecycle.start_metadata_recovery(recovery.recovery_ref, created_at=recovery.created_at)
-    for _ in range(recovery.verify_attempts):
+    for _ in range(recovery.verify_attempts if attempts is None else attempts):
         if probe.next_check_at is None:
             return None
         probe = lifecycle.record_pending_verification(probe, checked_at=probe.next_check_at)
@@ -472,6 +516,7 @@ def _validate_replacement(
     if current == candidate:
         return
     _validate_provenance_replacement(current, candidate)
+    claim_transition = _validate_verify_claim_replacement(current, candidate)
     if current.package_bindings and current.package_bindings != candidate.package_bindings:
         raise MetadataRecoveryStateError("package-binding-immutable")
     previous_artifacts = current.artifact_bindings
@@ -490,6 +535,10 @@ def _validate_replacement(
     ):
         return
     before, after = current.recovery, candidate.recovery
+    if claim_transition == "created":
+        return
+    if claim_transition == "resolved":
+        before = replace(before, verify_attempts=before.verify_attempts - 1)
     immutable = (before.recovery_ref, before.created_at, before.deadline_at)
     if immutable != (after.recovery_ref, after.created_at, after.deadline_at):
         raise MetadataRecoveryStateError("recovery-state-regression")
@@ -517,9 +566,11 @@ def _validate_provenance_replacement(
     if after is None:
         return
     attempt_delta = candidate.recovery.verify_attempts - current.recovery.verify_attempts
+    contact_budget = 1 if current.verify_claim is not None and candidate.verify_claim is None \
+        else attempt_delta
     if before is None:
         deltas = _provenance_counters(after)
-        if attempt_delta not in {0, 1} or sum(deltas) > attempt_delta:
+        if attempt_delta not in {0, 1} or sum(deltas) > contact_budget:
             raise MetadataRecoveryStateError("observation-provenance-transition-invalid")
         return
     old, new = _provenance_counters(before), _provenance_counters(after)
@@ -528,8 +579,44 @@ def _validate_provenance_replacement(
     if after.observed_at < before.observed_at:
         raise MetadataRecoveryStateError("observation-provenance-regression")
     deltas = tuple(candidate_value - current_value for current_value, candidate_value in zip(old, new, strict=True))
-    if sum(deltas) > attempt_delta:
+    if sum(deltas) > contact_budget:
         raise MetadataRecoveryStateError("observation-provenance-transition-invalid")
+
+
+def _validate_verify_claim_replacement(
+    current: MetadataRecoveryStateRecord,
+    candidate: MetadataRecoveryStateRecord,
+) -> str | None:
+    """Allow only exact claim creation or one lifecycle-backed resolution."""
+    before, after = current.verify_claim, candidate.verify_claim
+    if before is None and after is None:
+        return None
+    if before is not None and after is not None:
+        raise MetadataRecoveryStateError("verify-claim-transition-invalid")
+    if before is None:
+        expected = replace(current.recovery, verify_attempts=current.recovery.verify_attempts + 1)
+        if (
+            candidate.recovery != expected
+            or candidate.package_bindings != current.package_bindings
+            or candidate.artifact_bindings != current.artifact_bindings
+            or _provenance_counters(candidate.observation_provenance) != _provenance_counters(
+                current.observation_provenance
+            )
+        ):
+            raise MetadataRecoveryStateError("verify-claim-transition-invalid")
+        return "created"
+    base = replace(current.recovery, verify_attempts=current.recovery.verify_attempts - 1)
+    try:
+        expected = _exact_successor(base, candidate.recovery)
+    except ValueError:
+        expected = None
+    old = _provenance_counters(current.observation_provenance)
+    new = _provenance_counters(candidate.observation_provenance)
+    contact_delta = sum(new_value - old_value for old_value, new_value in zip(old, new, strict=True))
+    successful = candidate.recovery.status in {RecoveryStatus.PACKAGES_READY, RecoveryStatus.NO_DATA}
+    if expected != candidate.recovery or contact_delta not in ({1} if successful else {0, 1}):
+        raise MetadataRecoveryStateError("verify-claim-transition-invalid")
+    return "resolved"
 
 
 def _artifact_matches_completion(
@@ -593,7 +680,11 @@ def _exact_successor(before: MetadataRecovery, after: MetadataRecovery) -> Metad
 def _record_from_document(
     value: object, *, schema_version: int,
 ) -> MetadataRecoveryStateRecord:
-    keys = _LEGACY_RECORD_KEYS if schema_version == _LEGACY_SCHEMA_VERSION else _RECORD_KEYS
+    keys = {
+        _LEGACY_SCHEMA_VERSION: _LEGACY_RECORD_KEYS,
+        _PROVENANCE_SCHEMA_VERSION: _PROVENANCE_RECORD_KEYS,
+        _SCHEMA_VERSION: _RECORD_KEYS,
+    }[schema_version]
     document = _mapping(value, keys)
     packages = document["packages"]
     if not isinstance(packages, list):
@@ -624,7 +715,35 @@ def _record_from_document(
             None if schema_version == _LEGACY_SCHEMA_VERSION
             else _provenance_from_document(document["observationProvenance"])
         ),
+        verify_claim=(
+            _verify_claim_from_document(document["verifyClaim"])
+            if schema_version == _SCHEMA_VERSION else None
+        ),
     )
+
+
+def _verify_claim_from_document(value: object) -> MetadataVerifyClaim | None:
+    if value is None:
+        return None
+    try:
+        document = _mapping(value, _VERIFY_CLAIM_KEYS)
+        return MetadataVerifyClaim(
+            attempt=_integer(document, "attempt"),
+            due_at=_parse_datetime(_string(document, "dueAt")),
+            claimed_at=_parse_datetime(_string(document, "claimedAt")),
+        )
+    except (MetadataRecoveryStateError, TypeError, ValueError):
+        raise MetadataRecoveryStateError("verify-claim-invalid") from None
+
+
+def _verify_claim_document(claim: MetadataVerifyClaim | None) -> dict[str, object] | None:
+    if claim is None:
+        return None
+    return {
+        "attempt": claim.attempt,
+        "dueAt": claim.due_at.isoformat().replace("+00:00", "Z"),
+        "claimedAt": claim.claimed_at.isoformat().replace("+00:00", "Z"),
+    }
 
 
 def _provenance_from_document(value: object) -> MetadataObservationProvenance | None:
@@ -840,7 +959,9 @@ def _read_state(path: Path) -> dict[str, object]:
     mapped = _mapping(document, _STATE_KEYS)
     if (
         type(mapped["schemaVersion"]) is not int
-        or mapped["schemaVersion"] not in {_LEGACY_SCHEMA_VERSION, _SCHEMA_VERSION}
+        or mapped["schemaVersion"] not in {
+            _LEGACY_SCHEMA_VERSION, _PROVENANCE_SCHEMA_VERSION, _SCHEMA_VERSION,
+        }
         or type(mapped["recoveries"]) is not list
     ):
         raise MetadataRecoveryStateError("recovery-state-unsupported")

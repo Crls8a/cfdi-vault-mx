@@ -307,13 +307,15 @@ def test_runner_validates_stored_permit_before_storage_and_advances_once(monkeyp
     assert "permit-synthetic" not in result.output and "profile-synthetic" not in result.output
 
 
-@pytest.mark.parametrize("terminal", ["pending_after_budget", "download_uncertain"])
+@pytest.mark.parametrize(
+    "terminal", ["pending_after_budget", "download_uncertain", "verify_failed"],
+)
 def test_runner_settles_local_terminal_before_permit_or_live_objects(
     monkeypatch, tmp_path: Path, terminal: str,
 ) -> None:
     events: list[str] = []
     profile = SimpleNamespace(profile_id="profile-synthetic", storage_root=tmp_path / "external")
-    status = RecoveryStatus.VERIFY_SCHEDULED if terminal == "pending_after_budget" else RecoveryStatus.DOWNLOADING
+    status = RecoveryStatus.DOWNLOADING if terminal == "download_uncertain" else RecoveryStatus.VERIFY_SCHEDULED
     recovery = SimpleNamespace(recovery_ref="run-000000000000", status=status,
         created_at=NOW, deadline_at=NOW, next_check_at=NOW)
     record = SimpleNamespace(profile_id=profile.profile_id, recovery=recovery,

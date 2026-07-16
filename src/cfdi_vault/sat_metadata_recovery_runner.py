@@ -148,7 +148,10 @@ def _advance(
         due_at = recovery.next_check_at
         if due_at is None or now < due_at:
             return _out(record, audit)
+        record = _claim_verification(record, tested_commit, entry_point, now, due_at)
+        state.save_metadata_recovery_state(root, record, repo_root=repo_root)
         audit.verify_count += 1
+        verification_base = _verification_base(record)
         try:
             result = verifier.verify_request(record.id_solicitud)
         except Exception as exc:
@@ -156,18 +159,22 @@ def _advance(
             audit.sat_contacted = audit.sat_contacted or contacted
             bucket = _record_verify_contact(audit, now, due_at) if contacted else None
             if _retryable_verification(exc):
-                recovery = lifecycle.record_pending_verification(recovery, checked_at=now)
+                recovery = lifecycle.record_pending_verification(
+                    verification_base.recovery, checked_at=now,
+                )
                 error = "verify_retryable"
             else:
-                recovery = lifecycle.record_verification_failure(recovery, checked_at=now)
+                recovery = lifecycle.record_verification_failure(
+                    verification_base.recovery, checked_at=now,
+                )
                 error = "verify_failed"
-            record = replace(record, recovery=recovery)
+            record = replace(verification_base, recovery=recovery)
             record = _with_provenance(record, tested_commit, entry_point, now, bucket)
             state.save_metadata_recovery_state(root, record, repo_root=repo_root)
             return _out(record, audit, error=error)
         audit.sat_contacted = True
         bucket = _record_verify_contact(audit, now, due_at)
-        record, error = _apply_verification(record, result, now)
+        record, error = _apply_verification(verification_base, result, now)
         record = _with_provenance(record, tested_commit, entry_point, now, bucket)
         audit.terminal_status_received = record.recovery.status in _VERIFIED_TERMINAL
         state.save_metadata_recovery_state(root, record, repo_root=repo_root)
@@ -223,6 +230,16 @@ def _advance(
 
 def _settle_record(root, record, now, tested_commit, entry_point, repo_root):
     recovery = record.recovery
+    if record.verify_claim is not None:
+        base = _verification_base(record)
+        recovery = lifecycle.record_verification_failure(
+            base.recovery, checked_at=record.verify_claim.claimed_at,
+        )
+        record = _with_provenance(
+            replace(base, recovery=recovery), tested_commit, entry_point, now,
+        )
+        state.save_metadata_recovery_state(root, record, repo_root=repo_root)
+        return record, "verify_uncertain", False
     if recovery.status in _TERMINAL:
         record = _with_provenance(record, tested_commit, entry_point, now)
         state.save_metadata_recovery_state(root, record, repo_root=repo_root)
@@ -273,6 +290,35 @@ def _apply_verification(record, result, now):
         return replace(record, recovery=recovery, package_bindings=bindings), None
     recovery = lifecycle.record_verification_failure(recovery, checked_at=now)
     return replace(record, recovery=recovery), "verify_failed"
+
+
+def _claim_verification(record, tested_commit, entry_point, now, due_at):  # type: ignore[no-untyped-def]
+    """Build one claim and its unchanged contact counters without an invalid intermediate."""
+    attempt = record.recovery.verify_attempts + 1
+    counts = _provenance_counters(record)
+    provenance = state.new_metadata_observation_provenance(
+        tested_commit=tested_commit, observed_at=now, entry_point=entry_point,
+        verify_contacts_not_before_due=counts[0], verify_contacts_before_due=counts[1],
+        verify_contacts_due_unknown=counts[2],
+    )
+    return replace(
+        record,
+        recovery=replace(record.recovery, verify_attempts=attempt),
+        observation_provenance=provenance,
+        verify_claim=state.MetadataVerifyClaim(attempt, due_at, now),
+    )
+
+
+def _verification_base(record):  # type: ignore[no-untyped-def]
+    """Reconstruct the pre-claim lifecycle used by public transition functions."""
+    claim = record.verify_claim
+    if claim is None:
+        return record
+    return replace(
+        record,
+        recovery=replace(record.recovery, verify_attempts=record.recovery.verify_attempts - 1),
+        verify_claim=None,
+    )
 
 
 def _retryable_verification(exc: Exception) -> bool:

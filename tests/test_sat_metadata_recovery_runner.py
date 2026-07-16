@@ -260,6 +260,9 @@ def test_verify_contact_requires_explicit_stage_or_matching_contract(
     outcome = _advance(tmp_path, _Verifier(failure), _Downloader(), NOW + timedelta(minutes=5))
 
     assert (outcome.sat_contacted, outcome.verify_count) == (contacted, 1)
+    loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
+    assert loaded.verify_claim is None
+    assert subject._provenance_counters(loaded) == ((1, 0, 0) if contacted else (0, 0, 0))
 
 
 def test_finished_without_packages_is_no_data(tmp_path) -> None:
@@ -430,6 +433,7 @@ def test_invalid_commit_and_legacy_state_stop_before_verify(tmp_path) -> None:
     document = json.loads(path.read_text(encoding="utf-8"))
     document["schemaVersion"] = 3
     del document["recoveries"][0]["observationProvenance"]
+    del document["recoveries"][0]["verifyClaim"]
     path.write_text(json.dumps(document), encoding="utf-8")
     legacy = _advance(legacy_root, verifier, _Downloader(), NOW + timedelta(minutes=5))
     assert legacy.error_kind == "observation-provenance-missing" and verifier.calls == []
@@ -465,11 +469,17 @@ def test_verify_contact_bucket_is_durable_across_restart(tmp_path, contacted, du
 def test_verify_audit_survives_state_save_failure_after_contact(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     _saved(tmp_path)
     verifier = _Verifier(_verification())
+    real_save = state.save_metadata_recovery_state
+    calls = 0
 
-    def fail_save(*args, **kwargs):  # type: ignore[no-untyped-def]
-        raise state.MetadataRecoveryStateError("synthetic-save-failed")
+    def fail_result_save(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise state.MetadataRecoveryStateError("synthetic-save-failed")
+        return real_save(*args, **kwargs)
 
-    monkeypatch.setattr(state, "save_metadata_recovery_state", fail_save)
+    monkeypatch.setattr(state, "save_metadata_recovery_state", fail_result_save)
     outcome = _advance(tmp_path, verifier, _Downloader(), NOW + timedelta(minutes=5))
 
     assert outcome.error_kind == "state_failed"
@@ -477,6 +487,14 @@ def test_verify_audit_survives_state_save_failure_after_contact(tmp_path, monkey
     assert verifier.calls == [REQUEST]
     assert "synthetic-save-failed" not in repr(outcome)
     assert REQUEST not in repr(outcome)
+    assert state.load_metadata_recovery_state(tmp_path, RUN_REF).verify_claim is not None
+
+    monkeypatch.setattr(state, "save_metadata_recovery_state", real_save)
+    restarted = _advance(tmp_path, verifier, _Downloader(), NOW + timedelta(minutes=6))
+    loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
+    assert restarted.error_kind == "verify_uncertain"
+    assert (restarted.sat_contacted, restarted.verify_count, verifier.calls) == (False, 0, [REQUEST])
+    assert loaded.recovery.status.value == "verify_failed" and loaded.verify_claim is None
 
 
 def test_download_audit_survives_state_save_failure_after_contact(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

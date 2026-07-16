@@ -54,7 +54,7 @@ def test_observation_provenance_v4_round_trips_privately_only(tmp_path) -> None:
 
     assert subject.load_metadata_recovery_state(tmp_path, record.recovery.recovery_ref) == record
     private = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
-    assert private["schemaVersion"] == 4
+    assert private["schemaVersion"] == 5
     assert private["recoveries"][0]["observationProvenance"] == {
         "projectionVersion": 1,
         "testedCommit": "f" * 40,
@@ -70,22 +70,62 @@ def test_observation_provenance_v4_round_trips_privately_only(tmp_path) -> None:
     assert "f" * 40 not in repr(redacted)
 
 
-def test_v3_state_reads_without_inferred_provenance_and_rewrites_v4(tmp_path) -> None:
+@pytest.mark.parametrize("schema_version", (3, 4))
+def test_legacy_state_reads_without_claim_and_rewrites_v5(tmp_path, schema_version: int) -> None:
     record = _pending_record()
+    if schema_version == 4:
+        record = replace(record, observation_provenance=_provenance())
     document = _state_document(record)
-    document["schemaVersion"] = 3
-    del document["recoveries"][0]["observationProvenance"]
+    document["schemaVersion"] = schema_version
+    del document["recoveries"][0]["verifyClaim"]
+    if schema_version == 3:
+        del document["recoveries"][0]["observationProvenance"]
     _write_document(tmp_path, document)
 
     loaded = subject.load_metadata_recovery_state(tmp_path, record.recovery.recovery_ref)
 
-    assert loaded.observation_provenance is None
+    assert loaded.verify_claim is None
+    assert (loaded.observation_provenance is None) is (schema_version == 3)
     subject.save_metadata_recovery_state(tmp_path, loaded)
     rewritten = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
-    assert rewritten["schemaVersion"] == 4
-    assert rewritten["recoveries"][0]["observationProvenance"] is None
-    with pytest.raises(subject.MetadataRecoveryStateError, match="observation-provenance-required"):
-        subject.require_metadata_observation_provenance(loaded)
+    assert rewritten["schemaVersion"] == 5
+    assert rewritten["recoveries"][0]["verifyClaim"] is None
+    if schema_version == 3:
+        with pytest.raises(subject.MetadataRecoveryStateError, match="observation-provenance-required"):
+            subject.require_metadata_observation_provenance(loaded)
+
+
+def test_verify_claim_requires_exact_attempt_and_contact_bucket_on_success(tmp_path) -> None:
+    current = replace(_pending_record(), observation_provenance=_provenance())
+    due = current.recovery.next_check_at
+    assert due is not None
+    claimed = replace(
+        current,
+        recovery=replace(current.recovery, verify_attempts=1),
+        observation_provenance=replace(current.observation_provenance, observed_at=due),
+        verify_claim=subject.MetadataVerifyClaim(1, due, due),
+    )
+    subject.save_metadata_recovery_state(tmp_path, current)
+    subject.save_metadata_recovery_state(tmp_path, claimed)
+    assert subject.load_metadata_recovery_state(tmp_path, current.recovery.recovery_ref).verify_claim == claimed.verify_claim
+    assert claimed.observation_provenance == replace(current.observation_provenance, observed_at=due)
+    assert "verifyClaim" not in claimed.to_redacted_document()
+
+    finished = lifecycle.record_finished_verification(
+        current.recovery, checked_at=due, package_refs=(), record_count=None,
+    )
+    without_bucket = replace(claimed, recovery=finished, verify_claim=None)
+    with pytest.raises(subject.MetadataRecoveryStateError, match="verify-claim-transition-invalid"):
+        subject.save_metadata_recovery_state(tmp_path, without_bucket)
+    resolved = replace(
+        without_bucket,
+        observation_provenance=replace(
+            without_bucket.observation_provenance,
+            verify_contacts_not_before_due=1,
+        ),
+    )
+    subject.save_metadata_recovery_state(tmp_path, resolved)
+    assert subject.load_metadata_recovery_state(tmp_path, current.recovery.recovery_ref) == resolved
 
 
 @pytest.mark.parametrize(
@@ -226,8 +266,8 @@ def test_redacted_state_excludes_all_private_resume_values() -> None:
         json.dumps({"schemaVersion": 2, "recoveries": []}),
         json.dumps({"schemaVersion": 3.0, "recoveries": []}),
         json.dumps({"schemaVersion": 4.0, "recoveries": []}),
-        json.dumps({"schemaVersion": 5, "recoveries": []}),
-        json.dumps({"schemaVersion": 4, "recoveries": [], "unexpected": True}),
+        json.dumps({"schemaVersion": 6, "recoveries": []}),
+        json.dumps({"schemaVersion": 5, "recoveries": [], "unexpected": True}),
     ),
 )
 def test_loader_fails_closed_for_invalid_or_unknown_state(tmp_path, document: str) -> None:
@@ -368,7 +408,7 @@ def test_artifacts_round_trip_privately_and_advance_sequentially(tmp_path) -> No
     with pytest.raises(subject.MetadataRecoveryStateError, match="artifact-binding-invalid"):
         replace(completed, artifact_bindings=tuple(reversed(completed.artifact_bindings)))
     private = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
-    assert private["schemaVersion"] == 4
+    assert private["schemaVersion"] == 5
     assert private["recoveries"][0]["artifacts"] == [
         item.to_private_document() for item in completed.artifact_bindings
     ]
@@ -811,8 +851,8 @@ def test_private_dataclass_repr_is_redacted() -> None:
 @pytest.mark.parametrize(
     "document",
     (
-        '{"schemaVersion":4,"schemaVersion":4,"recoveries":[]}',
-        '{"schemaVersion":4,"recoveries":[{"recovery":{},"recovery":{}}]}',
+        '{"schemaVersion":5,"schemaVersion":5,"recoveries":[]}',
+        '{"schemaVersion":5,"recoveries":[{"recovery":{},"recovery":{}}]}',
     ),
 )
 def test_loader_rejects_duplicate_json_keys_at_any_level(tmp_path, document: str) -> None:
@@ -977,7 +1017,7 @@ def _artifact(
 
 
 def _state_document(record: subject.MetadataRecoveryStateRecord) -> dict[str, object]:
-    return {"schemaVersion": 4, "recoveries": [record.to_private_document()]}
+    return {"schemaVersion": 5, "recoveries": [record.to_private_document()]}
 
 
 def _provenance(
