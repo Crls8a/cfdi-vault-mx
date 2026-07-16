@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import TypeVar
 
 from cfdi_vault.sat_campaign_manifest import (
@@ -20,10 +24,12 @@ from cfdi_vault.sat_campaign_manifest import (
     build_campaign_manifest,
     campaign_redacted_summary,
 )
+from cfdi_vault.secure_state_file import SecureStateFileError, secure_state_transaction
 
 _PHASE, _KIND, _MAX_INVOCATIONS = "metadata-proof", "metadata", 4032
 _MAX_VALIDITY, _MAX_BYTES = timedelta(days=14), 64 * 1024
 _COMMIT_RE = re.compile(r"[0-9a-fA-F]{40}")
+_CANONICAL_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _GRANT_RE = re.compile(r"grt-[0-9a-f]{24}")
 _PROFILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 _REASON_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 .,;:_-]{0,255}")
@@ -34,13 +40,32 @@ _KEYS = {
     "reason", "invocationClaims", "submissionClaims", "redactionRequired",
 }
 _T = TypeVar("_T")
+_PATH_ERRORS = {
+    "storage-root-not-absolute", "storage-root-inside-repository",
+    "state-file-name-invalid", "state-file-path-invalid",
+}
+_STORAGE_ERRORS = {
+    "state-file-busy": "campaign-grant-state-busy",
+    "state-file-too-large": "campaign-grant-state-too-large",
+    "state-file-unreadable": "campaign-grant-state-unreadable",
+    "state-file-write-failed": "campaign-grant-state-write-failed",
+    "state-file-transition-already-committed": "campaign-grant-state-write-failed",
+    "state-file-commit-uncertain": "campaign-grant-state-commit-uncertain",
+    "state-file-lock-failed": "campaign-grant-state-lock-failed",
+    "state-file-lock-release-failed": "campaign-grant-state-lock-failed",
+}
 
 
 class CampaignGrantError(ValueError):
     """Reject invalid grant authority using one sanitized reason code."""
-    def __init__(self, reason: str) -> None:
-        self.reason = reason
+    def __init__(self, reason: str, *, committed: bool = False, uncertain: bool = False) -> None:
+        self.reason, self.committed, self.uncertain = reason, committed, uncertain
         super().__init__(reason)
+
+    @property
+    def retry_safe(self) -> bool:
+        """Return whether retry is safe without reconciling persisted state."""
+        return not self.committed and not self.uncertain
 
 
 @dataclass(frozen=True)
@@ -61,6 +86,66 @@ class CampaignGrant:
     invocation_claims: tuple[object, ...] = field(default=(), repr=False)
     submission_claims: tuple[object, ...] = field(default=(), repr=False)
     redaction_required: bool = True
+
+
+def create_campaign_grant(
+    storage_root: str | Path,
+    manifest: SatCampaignManifest,
+    profile_id: str,
+    tested_commit: str,
+    repo_root: str | Path,
+    reason: str,
+    expires_in: timedelta,
+    now: datetime | None = None,
+) -> CampaignGrant:
+    """Persist a new commit-bound grant in external private storage."""
+    tested = _canonical_tested_commit(tested_commit)
+    repository, current = _repository_context(repo_root)
+    if tested != current:
+        raise CampaignGrantError("campaign-grant-commit-mismatch")
+    created_at = datetime.now(timezone.utc) if now is None else now
+    grant = _new_campaign_grant(
+        manifest, profile_id, tested, current, reason, expires_in, now=created_at,
+    )
+    payload = _encode_campaign_grant(grant)
+    validated = _decode_campaign_grant(payload, grant.grant_ref, current)
+
+    def persist() -> CampaignGrant:
+        with secure_state_transaction(
+            storage_root, _filename(grant.grant_ref), repo_root=repository,
+        ) as transaction:
+            if transaction.read(max_bytes=_MAX_BYTES) is not None:
+                raise CampaignGrantError("campaign-grant-ref-collision")
+            transaction.replace(payload)
+        return validated
+
+    return _protect(persist)
+
+
+def load_campaign_grant(
+    storage_root: str | Path,
+    grant_ref: str,
+    repo_root: str | Path,
+    now: datetime | None = None,
+) -> CampaignGrant:
+    """Load one opaque grant, rejecting stale repository or expiry authority."""
+    _validate_grant_ref(grant_ref)
+    repository, current = _repository_context(repo_root)
+    current_time = _utc_datetime(datetime.now(timezone.utc) if now is None else now)
+
+    def load() -> CampaignGrant:
+        with secure_state_transaction(
+            storage_root, _filename(grant_ref), repo_root=repository,
+        ) as transaction:
+            payload = transaction.read(max_bytes=_MAX_BYTES)
+        if payload is None:
+            raise CampaignGrantError("campaign-grant-state-not-found")
+        grant = _decode_campaign_grant(payload, grant_ref, current)
+        if grant.expires_at <= current_time:
+            raise CampaignGrantError("campaign-grant-expired")
+        return grant
+
+    return _protect(load)
 
 
 def campaign_grant_redacted_summary(grant: CampaignGrant) -> dict[str, object]:
@@ -259,6 +344,71 @@ def _validate_reason(value: object) -> None:
 def _grant_ref(authority: dict[str, object]) -> str:
     encoded = json.dumps(authority, sort_keys=True, separators=(",", ":")).encode()
     return f"grt-{hashlib.sha256(encoded).hexdigest()[:24]}"
+
+
+def _canonical_tested_commit(value: object) -> str:
+    if type(value) is not str or not _CANONICAL_COMMIT_RE.fullmatch(value):
+        raise CampaignGrantError("campaign-grant-commit-invalid")
+    return value
+
+
+def _repository_root(value: object) -> Path:
+    """Resolve the explicit repository without leaking its path on failure."""
+    try:
+        root = Path(value).expanduser().resolve(strict=True)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OSError, RuntimeError):
+        raise CampaignGrantError("campaign-grant-repository-unavailable") from None
+    if not root.is_dir():
+        raise CampaignGrantError("campaign-grant-repository-unavailable")
+    return root
+
+
+def _repository_context(value: object) -> tuple[Path, str]:
+    """Resolve canonical worktree root and HEAD with Git overrides removed."""
+    requested = _repository_root(value)
+    environment = {key: item for key, item in os.environ.items()
+                   if not key.upper().startswith("GIT_")}
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel", "HEAD"], cwd=requested,
+            capture_output=True, text=True, timeout=10, check=False, env=environment,
+        )
+    except (OSError, UnicodeError, subprocess.SubprocessError):
+        raise CampaignGrantError("campaign-grant-repository-unavailable") from None
+    output = result.stdout.splitlines() if type(result.stdout) is str else []
+    if (result.returncode != 0 or len(output) != 2
+            or not _CANONICAL_COMMIT_RE.fullmatch(output[1])):
+        raise CampaignGrantError("campaign-grant-repository-unavailable")
+    canonical = _repository_root(output[0])
+    if canonical != requested and canonical not in requested.parents:
+        raise CampaignGrantError("campaign-grant-repository-unavailable")
+    return canonical, output[1]
+
+
+def _validate_grant_ref(value: object) -> None:
+    if type(value) is not str or not _GRANT_RE.fullmatch(value):
+        raise CampaignGrantError("campaign-grant-ref-invalid")
+
+
+def _filename(grant_ref: str) -> str:
+    """Build a canonical name from only the opaque grant reference."""
+    return f"sat-campaign-grant-{grant_ref}.json"
+
+
+def _protect(operation: Callable[[], _T]) -> _T:
+    """Translate the secure store contract while preserving uncertainty flags."""
+    try:
+        return operation()
+    except SecureStateFileError as error:
+        reason = (
+            "campaign-grant-path-invalid" if error.reason in _PATH_ERRORS
+            else _STORAGE_ERRORS.get(error.reason, "campaign-grant-storage-failed")
+        )
+        raise CampaignGrantError(
+            reason, committed=error.committed, uncertain=error.uncertain,
+        ) from None
+    except OSError:
+        raise CampaignGrantError("campaign-grant-storage-failed") from None
 
 
 def _value(document: dict[str, object], key: str, expected: type[_T]) -> _T:
