@@ -28,8 +28,8 @@ from cryptography.x509.oid import NameOID
 
 from cfdi_vault.sat_auth_endpoints import RedactedEndpoint, describe_endpoint
 from cfdi_vault.sat_auth_http import build_soap11_headers
-from cfdi_vault.sat_v15_adapter import SatEfirmMaterial, _build_verify_envelope
 from cfdi_vault.sat_v15_contract import DEFAULT_VERIFY_ENDPOINT, SAT_REQUEST_NS, VERIFY_ACTION
+from cfdi_vault.sat_v15_envelopes import SatEfirmMaterial, _build_verify_envelope
 from cfdi_vault.sat_verify_envelope_lint import lint_verify_envelope
 
 SOAP11_NS = "http://schemas.xmlsoap.org/soap/envelope/"

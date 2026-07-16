@@ -9,6 +9,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from lxml import etree
 
+from cfdi_vault import sat_v15_adapter, sat_v15_envelopes
 from cfdi_vault.sat_auth_constants import AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY
 from cfdi_vault.sat_v15_contract import AUTH_ACTION
 from cfdi_vault.sat_v15_envelopes import (
@@ -36,6 +37,26 @@ def test_import_does_not_load_sat_v15_adapter() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_operation_envelope_builders_belong_only_to_neutral_module() -> None:
+    moved_names = (
+        "VERIFY_EXCLUSIVE_C14N",
+        "_build_request_envelope",
+        "_build_verify_envelope",
+        "_build_package_download_envelope",
+        "_signed_payload",
+        "_build_v15_verify_signature",
+        "_build_v15_package_download_signature",
+        "_build_v15_signed_operation_signature",
+        "_verify_key_info",
+        "_exclusive_c14n",
+        "_operation_envelope",
+        "_load_certificate",
+    )
+
+    assert all(hasattr(sat_v15_envelopes, name) for name in moved_names)
+    assert all(not hasattr(sat_v15_adapter, name) for name in moved_names)
 
 
 def test_efirma_material_repr_redacts_key_and_certificate() -> None:

@@ -14,11 +14,9 @@ from urllib.error import HTTPError, URLError
 
 from cfdi_vault.sat_auth_http import build_soap11_headers
 from cfdi_vault.sat_live_request_state import LiveMetadataRequestRecord
-from cfdi_vault.sat_v15_adapter import (
-    _build_verify_envelope,
-    load_sat_efirma_material,
-)
+from cfdi_vault.sat_v15_adapter import load_sat_efirma_material
 from cfdi_vault.sat_v15_contract import DEFAULT_VERIFY_ENDPOINT, VERIFY_ACTION
+from cfdi_vault.sat_v15_envelopes import _build_verify_envelope
 from cfdi_vault.sat_verify_envelope_lint import lint_verify_envelope
 from cfdi_vault.secrets import CredentialKind, CredentialProviderError, CredentialReference
 from cfdi_vault.setup_core import ExistenceProvider, LocalProfile, LocalProfileStatus, redact_rfc

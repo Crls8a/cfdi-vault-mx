@@ -4,8 +4,8 @@ from pathlib import Path
 
 from lxml import etree
 
-from cfdi_vault.sat_v15_adapter import DS_NS, _build_verify_envelope
 from cfdi_vault.sat_v15_contract import SAT_REQUEST_NS
+from cfdi_vault.sat_v15_envelopes import DS_NS, _build_verify_envelope
 from cfdi_vault.sat_verify_envelope_lint import (
     EXPECTED_VERIFY_C14N_METHOD,
     EXPECTED_VERIFY_DIGEST_METHOD,
@@ -97,7 +97,7 @@ def test_phpcfdi_verify_oracle_reads_only_structural_markers(tmp_path: Path) -> 
 
 
 def _previous_solicitud_signed_verify_envelope(request_id: str, requester_rfc: str) -> bytes:
-    from cfdi_vault.sat_v15_adapter import _operation_envelope, _signed_payload
+    from cfdi_vault.sat_v15_envelopes import _operation_envelope, _signed_payload
 
     payload = _signed_payload("solicitud", {"IdSolicitud": request_id, "RfcSolicitante": requester_rfc.upper()}, _material())
     return _operation_envelope("VerificaSolicitudDescarga", payload)

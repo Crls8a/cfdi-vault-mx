@@ -15,6 +15,7 @@ from cryptography.x509.oid import NameOID
 from lxml import etree
 
 from cfdi_vault import sat_v15_adapter as live_smoke_module
+from cfdi_vault import sat_v15_envelopes
 from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType
 from cfdi_vault.sat_auth_constants import (
     AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
@@ -27,12 +28,11 @@ from cfdi_vault.sat_contract import SatOperation, SatVerificationError
 from cfdi_vault.sat_transport import FakeSoapTransport, SoapReadTimeout, SoapTransportResponse
 from cfdi_vault.sat_v15_adapter import (
     DS_NS,
-    VERIFY_EXCLUSIVE_C14N,
     SatEfirmMaterial,
     SatLiveMetadataSmokeAdapter,
     SatV15Adapter,
     SatV15AdapterError,
-    _build_request_envelope,
+    _request_attrs,
     resolve_v15_request_operation,
 )
 from cfdi_vault.sat_v15_contract import (
@@ -44,6 +44,7 @@ from cfdi_vault.sat_v15_contract import (
     SatV15RequestOperation,
     v15_request_soap_action,
 )
+from cfdi_vault.sat_v15_envelopes import VERIFY_EXCLUSIVE_C14N, _build_request_envelope
 from cfdi_vault.secrets import DummySecretProvider
 from cfdi_vault.setup_core import CredentialMode, LocalProfile, LocalProfileStatus
 
@@ -406,12 +407,12 @@ def test_recognizable_sat_status_parse_failure_has_definitive_effect(
 def test_package_download_uses_precise_stages_and_effect_semantics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    original = live_smoke_module._build_package_download_envelope
-    monkeypatch.setattr(live_smoke_module, "_build_package_download_envelope", lambda *args: 1 / 0)
+    original = sat_v15_envelopes._build_package_download_envelope
+    monkeypatch.setattr(sat_v15_envelopes, "_build_package_download_envelope", lambda *args: 1 / 0)
     with pytest.raises(SatV15AdapterError) as build_exc:
         _neutral_adapter(tmp_path, FakeSoapTransport([_auth_response()]), material=_material()).download_package("SYN-PKG-BUILD")
     assert (build_exc.value.failed_stage, build_exc.value.effect_unknown) == ("package_download_build", False)
-    monkeypatch.setattr(live_smoke_module, "_build_package_download_envelope", original)
+    monkeypatch.setattr(sat_v15_envelopes, "_build_package_download_envelope", original)
 
     with pytest.raises(SatV15AdapterError) as transport_exc:
         _neutral_adapter(tmp_path, _FailAfterAuthTransport(TimeoutError()), material=_material()).download_package("SYN-PKG-TIMEOUT")
@@ -626,9 +627,34 @@ def test_v15_request_builder_emits_operation_specific_payloads() -> None:
     )
     folio = DownloadQuery("default", "XAXX010101000", DownloadDirection.FOLIO, RequestType.METADATA, uuid="SYNTHETIC-UUID")
 
-    assert _body_operation_names(_build_request_envelope(_query(), material)) == ["SolicitaDescargaRecibidos"]
-    assert _body_operation_names(_build_request_envelope(issued, material)) == ["SolicitaDescargaEmitidos"]
-    assert _body_operation_names(_build_request_envelope(folio, material)) == ["SolicitaDescargaFolio"]
+    received_operation = resolve_v15_request_operation(_query())
+    issued_operation = resolve_v15_request_operation(issued)
+    folio_operation = resolve_v15_request_operation(folio)
+    cases = (
+        (
+            _query(),
+            received_operation,
+            "SolicitaDescargaRecibidos",
+            {"FechaInicial", "FechaFinal", "RfcSolicitante", "TipoSolicitud", "RfcReceptor"},
+        ),
+        (
+            issued,
+            issued_operation,
+            "SolicitaDescargaEmitidos",
+            {"FechaInicial", "FechaFinal", "RfcSolicitante", "TipoSolicitud", "RfcEmisor"},
+        ),
+        (folio, folio_operation, "SolicitaDescargaFolio", {"Folio", "RfcSolicitante"}),
+    )
+
+    for query, operation, expected_operation, expected_attrs in cases:
+        envelope = _build_request_envelope(operation, _request_attrs(query, operation), material)
+        root = etree.fromstring(envelope)
+        payload = root.find(f".//{{{SAT_REQUEST_NS}}}solicitud")
+
+        assert _body_operation_names(envelope) == [expected_operation]
+        assert payload is not None
+        assert set(payload.attrib) == expected_attrs
+        assert payload.find(f"{{{DS_NS}}}Signature") is not None
 
 
 @pytest.mark.parametrize(

@@ -15,15 +15,11 @@ from http.client import RemoteDisconnected
 from urllib.error import HTTPError, URLError
 from uuid import uuid4
 
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import load_der_private_key, load_pem_private_key
 from lxml import etree
-from signxml import methods
-from signxml.algorithms import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 
-from cfdi_vault import sat_v15_envelopes as _auth_envelopes
+import cfdi_vault.sat_v15_envelopes as sat_v15_envelopes
 from cfdi_vault.domain import DownloadDirection, DownloadQuery
 from cfdi_vault.sat_auth_constants import (
     AUTH_ACCEPT,
@@ -71,20 +67,16 @@ from cfdi_vault.sat_v15_envelopes import (
     WSU_NS,
     SatEfirmMaterial,
     _build_auth_envelope,
-    _envelope,
-    _SatSha1XmlSigner,
     _validated_auth_envelope_variant,
 )
 from cfdi_vault.secrets import CredentialKind, CredentialProviderError, CredentialReference
 from cfdi_vault.setup_core import ExistenceProvider, LocalProfile
 
-BASE64_ENCODING_TYPE = _auth_envelopes.BASE64_ENCODING_TYPE
-X509_VALUE_TYPE = _auth_envelopes.X509_VALUE_TYPE
-_append_wcf_action_header = _auth_envelopes._append_wcf_action_header
-_fmt = _auth_envelopes._fmt
-_sign_auth_timestamp = _auth_envelopes._sign_auth_timestamp
-
-VERIFY_EXCLUSIVE_C14N = CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0.value
+BASE64_ENCODING_TYPE = sat_v15_envelopes.BASE64_ENCODING_TYPE
+X509_VALUE_TYPE = sat_v15_envelopes.X509_VALUE_TYPE
+_append_wcf_action_header = sat_v15_envelopes._append_wcf_action_header
+_fmt = sat_v15_envelopes._fmt
+_sign_auth_timestamp = sat_v15_envelopes._sign_auth_timestamp
 SAFE_LIVE_ERROR_HINT = "inspect the redacted diagnostic stage; do not copy raw SOAP or local credential data"
 TRANSPORT_HINT = "check SOAPAction, content-type, logical endpoint, TLS, and SAT service availability"
 PARSE_HINT = "check SAT response shape with redacted diagnostics only"
@@ -457,7 +449,14 @@ class SatV15Adapter:
             ) from None
     def _send_request(self, authorization: str, query: DownloadQuery) -> SatV15RequestAttempt:
         operation = resolve_v15_request_operation(query)
-        body = _build_stage("metadata_request_build", lambda: _build_request_envelope(query, self._load_material(), operation=operation))
+        body = _build_stage(
+            "metadata_request_build",
+            lambda: sat_v15_envelopes._build_request_envelope(
+                operation,
+                _request_attrs(query, operation),
+                self._load_material(),
+            ),
+        )
         envelope_sha256 = _digest(body)
         signed_reference_count = _signed_reference_count(body)
         response = self._send(
@@ -491,7 +490,10 @@ class SatV15Adapter:
                 operation=operation.value,
             ) from None
     def _send_verification(self, authorization: str, request_id: str) -> SatVerificationResult:
-        body = _build_stage("verify_request_build", lambda: _build_verify_envelope(request_id, self._profile.rfc, self._load_material()))
+        body = _build_stage(
+            "verify_request_build",
+            lambda: sat_v15_envelopes._build_verify_envelope(request_id, self._profile.rfc, self._load_material()),
+        )
         response = self._send(
             self._endpoints.verify,
             VERIFY_ACTION,
@@ -527,7 +529,11 @@ class SatV15Adapter:
     def _send_package_download(self, authorization: str, package_id: str) -> SatDownloadResult:
         body = _build_stage(
             "package_download_build",
-            lambda: _build_package_download_envelope(package_id, self._profile.rfc, self._load_material()),
+            lambda: sat_v15_envelopes._build_package_download_envelope(
+                package_id,
+                self._profile.rfc,
+                self._load_material(),
+            ),
         )
         response = self._send(
             self._endpoints.download,
@@ -805,7 +811,7 @@ def load_sat_efirma_material(
         ) from None
     started = time.perf_counter()
     try:
-        cert = _load_certificate(cert_bytes)
+        cert = sat_v15_envelopes._load_certificate(cert_bytes)
     except (TypeError, ValueError):
         raise SatV15AdapterError(
             "local e.firma certificate could not be parsed",
@@ -876,11 +882,6 @@ def _v15_guard_error(message: str, hint: str) -> SatV15AdapterError:
     )
 
 
-def _build_request_envelope(query: DownloadQuery, material: SatEfirmMaterial, *, operation: SatV15RequestOperation | None = None) -> bytes:
-    resolved_operation = operation or resolve_v15_request_operation(query)
-    return _operation_envelope(resolved_operation.value, _signed_payload("solicitud", _request_attrs(query, resolved_operation), material))
-
-
 def _request_attrs(query: DownloadQuery, operation: SatV15RequestOperation) -> dict[str, str]:
     requester_rfc = query.requester_rfc.upper()
     if operation == SatV15RequestOperation.FOLIO:
@@ -908,90 +909,6 @@ def _request_attrs(query: DownloadQuery, operation: SatV15RequestOperation) -> d
     if query.complement:
         attrs["Complemento"] = query.complement
     return attrs
-def _build_verify_envelope(request_id: str, requester_rfc: str, material: SatEfirmMaterial) -> bytes:
-    operation = etree.Element(f"{{{SAT_REQUEST_NS}}}VerificaSolicitudDescarga", nsmap={"des": SAT_REQUEST_NS})
-    solicitud = etree.SubElement(operation, f"{{{SAT_REQUEST_NS}}}solicitud", {"IdSolicitud": request_id, "RfcSolicitante": requester_rfc.upper()})
-    solicitud.append(_build_v15_verify_signature(operation, material))
-    envelope = _envelope(SAT_REQUEST_NS)
-    body = envelope.find(f"{{{SOAP11_NS}}}Body")
-    assert body is not None
-    body.append(operation)
-    return etree.tostring(envelope, encoding="UTF-8", xml_declaration=True)
-
-
-def _build_package_download_envelope(package_id: str, requester_rfc: str, material: SatEfirmMaterial) -> bytes:
-    operation = etree.Element(f"{{{SAT_REQUEST_NS}}}Descargar", nsmap={"des": SAT_REQUEST_NS})
-    peticion = etree.SubElement(
-        operation,
-        f"{{{SAT_REQUEST_NS}}}peticionDescarga",
-        {"IdPaquete": package_id, "RfcSolicitante": requester_rfc.upper()},
-    )
-    peticion.append(_build_v15_package_download_signature(operation, material))
-    envelope = _envelope(SAT_REQUEST_NS)
-    body = envelope.find(f"{{{SOAP11_NS}}}Body")
-    assert body is not None
-    body.append(operation)
-    return etree.tostring(envelope, encoding="UTF-8", xml_declaration=True)
-
-
-def _signed_payload(name: str, attrs: dict[str, str], material: SatEfirmMaterial) -> etree._Element:
-    payload = etree.Element(f"{{{SAT_REQUEST_NS}}}{name}", attrs)
-    return _SatSha1XmlSigner(
-        method=methods.enveloped,
-        signature_algorithm=SignatureMethod.RSA_SHA1,
-        digest_algorithm=DigestAlgorithm.SHA1,
-        c14n_algorithm=CanonicalizationMethod.CANONICAL_XML_1_0,
-    ).sign(payload, key=material.private_key, cert=material.certificate_pem)
-
-
-def _build_v15_verify_signature(operation: etree._Element, material: SatEfirmMaterial) -> etree._Element:
-    return _build_v15_signed_operation_signature(operation, material)
-
-
-def _build_v15_package_download_signature(operation: etree._Element, material: SatEfirmMaterial) -> etree._Element:
-    return _build_v15_signed_operation_signature(operation, material)
-
-
-def _build_v15_signed_operation_signature(operation: etree._Element, material: SatEfirmMaterial) -> etree._Element:
-    digest_value = base64.b64encode(hashlib.sha1(_exclusive_c14n(operation)).digest()).decode("ascii")
-    signature = etree.Element(f"{{{DS_NS}}}Signature", nsmap={None: DS_NS})
-    signed_info = etree.SubElement(signature, f"{{{DS_NS}}}SignedInfo")
-    etree.SubElement(signed_info, f"{{{DS_NS}}}CanonicalizationMethod", Algorithm=VERIFY_EXCLUSIVE_C14N)
-    etree.SubElement(signed_info, f"{{{DS_NS}}}SignatureMethod", Algorithm=SignatureMethod.RSA_SHA1.value)
-    reference = etree.SubElement(signed_info, f"{{{DS_NS}}}Reference", URI="")
-    transforms = etree.SubElement(reference, f"{{{DS_NS}}}Transforms")
-    etree.SubElement(transforms, f"{{{DS_NS}}}Transform", Algorithm=VERIFY_EXCLUSIVE_C14N)
-    etree.SubElement(reference, f"{{{DS_NS}}}DigestMethod", Algorithm=DigestAlgorithm.SHA1.value)
-    etree.SubElement(reference, f"{{{DS_NS}}}DigestValue").text = digest_value
-
-    signature_value = material.private_key.sign(_exclusive_c14n(signed_info), padding.PKCS1v15(), hashes.SHA1())
-    etree.SubElement(signature, f"{{{DS_NS}}}SignatureValue").text = base64.b64encode(signature_value).decode("ascii")
-    signature.append(_verify_key_info(material))
-    return signature
-
-
-def _verify_key_info(material: SatEfirmMaterial) -> etree._Element:
-    certificate = _load_certificate(material.certificate_pem)
-    key_info = etree.Element(f"{{{DS_NS}}}KeyInfo")
-    x509_data = etree.SubElement(key_info, f"{{{DS_NS}}}X509Data")
-    issuer_serial = etree.SubElement(x509_data, f"{{{DS_NS}}}X509IssuerSerial")
-    etree.SubElement(issuer_serial, f"{{{DS_NS}}}X509IssuerName").text = certificate.issuer.rfc4514_string()
-    etree.SubElement(issuer_serial, f"{{{DS_NS}}}X509SerialNumber").text = str(certificate.serial_number)
-    etree.SubElement(x509_data, f"{{{DS_NS}}}X509Certificate").text = material.certificate_der_b64
-    return key_info
-
-
-def _exclusive_c14n(node: etree._Element) -> bytes:
-    return etree.tostring(node, method="c14n", exclusive=True, with_comments=False)
-def _operation_envelope(operation: str, payload: etree._Element) -> bytes:
-    envelope = _envelope(SAT_REQUEST_NS)
-    body = envelope.find(f"{{{SOAP11_NS}}}Body")
-    assert body is not None
-    op = etree.SubElement(body, f"{{{SAT_REQUEST_NS}}}{operation}")
-    op.append(payload)
-    return etree.tostring(envelope, encoding="UTF-8", xml_declaration=True)
-def _load_certificate(data: bytes) -> x509.Certificate:
-    return x509.load_pem_x509_certificate(data) if data.startswith(b"-----BEGIN") else x509.load_der_x509_certificate(data)
 def _load_private_key(data: bytes, phrase_bytes: bytes):
     loader = load_pem_private_key if data.startswith(b"-----BEGIN") else load_der_private_key
     return loader(data, **{"pass" + "word": phrase_bytes})
