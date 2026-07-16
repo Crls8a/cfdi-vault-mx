@@ -12,8 +12,12 @@ permissions:
 
 jobs:
   lightweight-ci:
-    name: Policy, scanners, and unit tests
-    runs-on: ubuntu-latest
+    name: Policy, scanners, and unit tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout
@@ -30,42 +34,30 @@ jobs:
       - name: Install package
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -e ".[dev,release]"
 
       - name: Run static policy checks
         env:
           BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          python scripts/check_branch_policy.py --strict --branch-name "$BRANCH_NAME" --head-sha "$HEAD_SHA"
+          python scripts/check_branch_policy.py --strict
           python scripts/work_orchestrator.py validate
           python scripts/work_orchestrator.py status
           python scripts/check_ci_policy.py --strict
 
       - name: Run focused lint
         run: |
-          python -m ruff check scripts/check_ci_policy.py scripts/check_branch_policy.py tests/test_ci_policy.py tests/test_branch_policy.py tests/test_work_orchestrator.py
+          python -m ruff check scripts/check_ci_policy.py scripts/check_branch_policy.py scripts/check_diff_whitespace.py tests/test_ci_policy.py tests/test_branch_policy.py tests/test_ci_diff_check.py tests/test_work_orchestrator.py
 
       - name: Check changed lines for whitespace errors
-        shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           BEFORE_SHA: ${{ github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            base="$BASE_SHA"
-            git diff --check "$base...HEAD"
-          else
-            before="$BEFORE_SHA"
-            if [[ "$before" =~ ^0+$ ]]; then
-              empty_tree="$(git hash-object -t tree /dev/null)"
-              git diff --check "$empty_tree" "$HEAD_SHA"
-            else
-              git diff --check "$before..$HEAD_SHA"
-            fi
-          fi
+          python scripts/check_diff_whitespace.py
 
       - name: Run safety scanners
         run: |
@@ -76,7 +68,13 @@ jobs:
         run: |
           python -m pytest -q -m "not integration and not container and not external and not live and not slow"
 
+      - name: Build and check package artifacts
+        run: |
+          python -m build
+          python -m twine check dist/*
+
       - name: Validate Docker Compose configuration only
+        if: runner.os == 'Linux'
         run: |
           docker compose config --quiet
           docker compose --profile object-storage config --quiet

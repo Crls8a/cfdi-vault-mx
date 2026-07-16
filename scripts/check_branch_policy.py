@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -181,8 +182,8 @@ def main(argv: list[str] | None = None) -> int:
 
     result = evaluate(
         args.repo.resolve(),
-        branch_name=args.branch_name,
-        head_sha=args.head_sha,
+        branch_name=args.branch_name or os.environ.get("BRANCH_NAME"),
+        head_sha=args.head_sha or os.environ.get("HEAD_SHA"),
     )
     print(f"branch={result.branch}")
     for message in result.messages:

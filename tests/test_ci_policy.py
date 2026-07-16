@@ -477,14 +477,29 @@ def test_cli_normal_strict_and_explain_modes(tmp_path: Path) -> None:
 def test_repository_workflow_has_real_lint_and_range_diff_gates() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
+    assert "fail-fast: false" in workflow
+    assert "os: [ubuntu-latest, windows-latest, macos-latest]" in workflow
+    assert "runs-on: ${{ matrix.os }}" in workflow
+    assert 'python-version: "3.12"' in workflow
+    assert 'python -m pip install -e ".[dev,release]"' in workflow
     assert "python -m ruff check" in workflow
-    assert 'git diff --check "$base...HEAD"' in workflow
-    assert 'git diff --check "$before..$HEAD_SHA"' in workflow
-    assert "git hash-object -t tree /dev/null" in workflow
+    assert "python scripts/check_diff_whitespace.py" in workflow
+    assert "python scripts/scan_sensitive_fixtures.py" in workflow
+    assert "python scripts/scan_sat_context.py" in workflow
+    assert "python -m build" in workflow
+    assert "python -m twine check dist/*" in workflow
+    assert "shell: bash" not in workflow
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in workflow
     assert "BRANCH_NAME: ${{ github.head_ref || github.ref_name }}" in workflow
     assert "HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}" in workflow
-    assert 'check_branch_policy.py --strict --branch-name "$BRANCH_NAME" --head-sha "$HEAD_SHA"' in workflow
+    assert "python scripts/check_branch_policy.py --strict" in workflow
     assert "${{ github.head_ref" not in "\n".join(
         block.command for block in _run_blocks(workflow)
     )
+
+
+def test_repository_workflow_does_not_run_retired_sat_experiments() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    for retired in ("smoke", "probe", "diagnose", "live-gate"):
+        assert retired not in workflow.lower()

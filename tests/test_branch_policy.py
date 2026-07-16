@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -88,6 +89,25 @@ def test_explicit_branch_name_validates_detached_fork_pr_checkout(tmp_path: Path
     assert result.returncode == 0, result.stdout + result.stderr
     assert "branch=feat/fork-pr" in result.stdout
     assert "contains dev in its history" in result.stdout
+
+
+def test_ci_environment_validates_detached_checkout_portably(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    assert git(repo, "switch", "-c", "feat/fork-pr", "dev").returncode == 0
+    commit_file(repo, "feature.txt", "feature\n")
+    head_sha = git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert git(repo, "switch", "--detach").returncode == 0
+
+    result = subprocess.run(
+        [sys.executable, str(CHECKER), "--repo", str(repo), "--strict"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "BRANCH_NAME": "feat/fork-pr", "HEAD_SHA": head_sha},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "branch=feat/fork-pr" in result.stdout
 
 
 def test_explicit_head_sha_rejects_synthetic_merge_false_pass(tmp_path: Path) -> None:
