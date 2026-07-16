@@ -79,15 +79,18 @@ class _SatCallAudit:
 def advance_metadata_recovery_once(
     *, storage_root: str | Path, recovery_ref: str, verifier: SatVerificationPort,
     downloader: SatDownloadPort, package_storage: PackageStorage, now: datetime,
-    repo_root: str | Path | None = None,
+    tested_commit: str, entry_point: str, repo_root: str | Path | None = None,
 ) -> MetadataRecoveryAdvanceOutcome:
     """Advance one recovery while a crash-safe operation lock prevents duplicate SAT I/O."""
     audit = _SatCallAudit()
     try:
+        state.new_metadata_observation_provenance(
+            tested_commit=tested_commit, observed_at=now, entry_point=entry_point,
+        )
         with state.metadata_recovery_operation_lock(storage_root, repo_root=repo_root):
             return _advance(
                 storage_root, recovery_ref, verifier, downloader, package_storage,
-                now, repo_root, audit,
+                now, tested_commit, entry_point, repo_root, audit,
             )
     except state.MetadataRecoveryStateError as exc:
         kind = "busy" if exc.reason == "recovery-state-busy" else "state_failed"
@@ -98,19 +101,24 @@ def advance_metadata_recovery_once(
 
 def settle_metadata_recovery_locally(
     *, storage_root: str | Path, recovery_ref: str, now: datetime,
-    repo_root: str | Path | None = None,
+    tested_commit: str, entry_point: str, repo_root: str | Path | None = None,
 ) -> MetadataRecoveryAdvanceOutcome:
     """Persist local-only terminal transitions under the durable operation lock."""
 
     audit = _SatCallAudit()
     try:
+        state.new_metadata_observation_provenance(
+            tested_commit=tested_commit, observed_at=now, entry_point=entry_point,
+        )
         with state.metadata_recovery_operation_lock(storage_root, repo_root=repo_root):
             record = state.load_metadata_recovery_state(
                 storage_root, recovery_ref, repo_root=repo_root,
             )
             record, error, requires_live = _settle_record(
-                storage_root, record, now, repo_root,
+                storage_root, record, now, tested_commit, entry_point, repo_root,
             )
+            if error == "observation-provenance-missing":
+                return _failed_out(audit, error)
             return MetadataRecoveryAdvanceOutcome(
                 recovery=record.to_redacted_document(), sat_contacted=False,
                 verify_count=0, download_attempts=0, error_kind=error, requires_live=requires_live,
@@ -122,9 +130,16 @@ def settle_metadata_recovery_locally(
         return _failed_out(audit, "runner_failed")
 
 
-def _advance(root, recovery_ref, verifier, downloader, package_storage, now, repo_root, audit):
+def _advance(
+    root, recovery_ref, verifier, downloader, package_storage, now,
+    tested_commit, entry_point, repo_root, audit,
+):
     record = state.load_metadata_recovery_state(root, recovery_ref, repo_root=repo_root)
-    record, local_error, requires_live = _settle_record(root, record, now, repo_root)
+    record, local_error, requires_live = _settle_record(
+        root, record, now, tested_commit, entry_point, repo_root,
+    )
+    if local_error == "observation-provenance-missing":
+        return _failed_out(audit, local_error)
     if not requires_live:
         return _out(record, audit, error=local_error)
     recovery = record.recovery
@@ -139,8 +154,7 @@ def _advance(root, recovery_ref, verifier, downloader, package_storage, now, rep
         except Exception as exc:
             contacted = _exception_confirms_sat_contact(exc, SatOperation.VERIFY)
             audit.sat_contacted = audit.sat_contacted or contacted
-            if contacted:
-                _record_verify_contact(audit, now, due_at)
+            bucket = _record_verify_contact(audit, now, due_at) if contacted else None
             if _retryable_verification(exc):
                 recovery = lifecycle.record_pending_verification(recovery, checked_at=now)
                 error = "verify_retryable"
@@ -148,11 +162,13 @@ def _advance(root, recovery_ref, verifier, downloader, package_storage, now, rep
                 recovery = lifecycle.record_verification_failure(recovery, checked_at=now)
                 error = "verify_failed"
             record = replace(record, recovery=recovery)
+            record = _with_provenance(record, tested_commit, entry_point, now, bucket)
             state.save_metadata_recovery_state(root, record, repo_root=repo_root)
             return _out(record, audit, error=error)
         audit.sat_contacted = True
-        _record_verify_contact(audit, now, due_at)
+        bucket = _record_verify_contact(audit, now, due_at)
         record, error = _apply_verification(record, result, now)
+        record = _with_provenance(record, tested_commit, entry_point, now, bucket)
         audit.terminal_status_received = record.recovery.status in _VERIFIED_TERMINAL
         state.save_metadata_recovery_state(root, record, repo_root=repo_root)
         if record.recovery.status not in {RecoveryStatus.PACKAGES_READY, RecoveryStatus.DOWNLOADING}:
@@ -163,7 +179,9 @@ def _advance(root, recovery_ref, verifier, downloader, package_storage, now, rep
         if package.status is not PackageRecoveryStatus.PENDING:
             continue
         recovery = lifecycle.begin_package_download(record.recovery, binding.package_ref)
-        record = replace(record, recovery=recovery)
+        record = _with_provenance(
+            replace(record, recovery=recovery), tested_commit, entry_point, now,
+        )
         state.save_metadata_recovery_state(root, record, repo_root=repo_root)
         audit.download_attempts += 1
         try:
@@ -174,6 +192,7 @@ def _advance(root, recovery_ref, verifier, downloader, package_storage, now, rep
             )
             uncertain = getattr(exc, "effect_unknown", None) is not False
             record = _finish_download(record, binding.package_ref, uncertain=uncertain)
+            record = _with_provenance(record, tested_commit, entry_point, now)
             state.save_metadata_recovery_state(root, record, repo_root=repo_root)
             return _out(
                 record, audit,
@@ -182,6 +201,7 @@ def _advance(root, recovery_ref, verifier, downloader, package_storage, now, rep
         audit.sat_contacted = True
         if not _valid_download(result, binding.id_paquete):
             record = _finish_download(record, binding.package_ref, uncertain=False)
+            record = _with_provenance(record, tested_commit, entry_point, now)
             state.save_metadata_recovery_state(root, record, repo_root=repo_root)
             return _out(record, audit, error="download_failed")
         try:
@@ -194,28 +214,37 @@ def _advance(root, recovery_ref, verifier, downloader, package_storage, now, rep
                              artifact_bindings=(*record.artifact_bindings, artifact))
         except Exception:
             record = _finish_download(record, binding.package_ref, uncertain=False)
+            record = _with_provenance(record, tested_commit, entry_point, now)
             state.save_metadata_recovery_state(root, record, repo_root=repo_root)
             return _out(record, audit, error="download_failed")
         state.save_metadata_recovery_state(root, record, repo_root=repo_root)
     return _out(record, audit, error=error)
 
 
-def _settle_record(root, record, now, repo_root):
+def _settle_record(root, record, now, tested_commit, entry_point, repo_root):
     recovery = record.recovery
     if recovery.status in _TERMINAL:
+        record = _with_provenance(record, tested_commit, entry_point, now)
+        state.save_metadata_recovery_state(root, record, repo_root=repo_root)
         return record, None, False
     expired = lifecycle.apply_recovery_deadline(recovery, now=now)
     if expired != recovery:
-        record = replace(record, recovery=expired)
+        record = _with_provenance(
+            replace(record, recovery=expired), tested_commit, entry_point, now,
+        )
         state.save_metadata_recovery_state(root, record, repo_root=repo_root)
         return record, None, False
     claimed = next((item for item in recovery.packages
                     if item.status is PackageRecoveryStatus.DOWNLOADING), None)
     if claimed is not None:
         recovery = lifecycle.record_package_download(recovery, claimed.package_ref, uncertain=True)
-        record = replace(record, recovery=recovery)
+        record = _with_provenance(
+            replace(record, recovery=recovery), tested_commit, entry_point, now,
+        )
         state.save_metadata_recovery_state(root, record, repo_root=repo_root)
         return record, "download_uncertain", False
+    if record.observation_provenance is None:
+        return record, "observation-provenance-missing", False
     return record, None, True
 
 
@@ -304,10 +333,43 @@ def _out(record, audit, error=None):
     )
 
 
-def _record_verify_contact(audit, contacted_at, due_at):  # type: ignore[no-untyped-def]
+def _provenance_counters(record) -> tuple[int, int, int]:  # type: ignore[no-untyped-def]
+    provenance = record.observation_provenance
+    if provenance is None:
+        return (0, 0, 0)
+    return (
+        provenance.verify_contacts_not_before_due,
+        provenance.verify_contacts_before_due,
+        provenance.verify_contacts_due_unknown,
+    )
+
+
+def _with_provenance(
+    record, tested_commit, entry_point, observed_at, bucket=None,  # type: ignore[no-untyped-def]
+):
+    counts = list(_provenance_counters(record))
+    if bucket is not None:
+        counts[bucket] += 1
+    provenance = state.new_metadata_observation_provenance(
+        tested_commit=tested_commit, observed_at=observed_at, entry_point=entry_point,
+        verify_contacts_not_before_due=counts[0], verify_contacts_before_due=counts[1],
+        verify_contacts_due_unknown=counts[2],
+    )
+    return replace(record, observation_provenance=provenance)
+
+
+def _verify_contact_bucket(contacted_at, due_at) -> int:  # type: ignore[no-untyped-def]
     if due_at is None:
+        return 2
+    return 1 if contacted_at < due_at else 0
+
+
+def _record_verify_contact(audit, contacted_at, due_at):  # type: ignore[no-untyped-def]
+    bucket = _verify_contact_bucket(contacted_at, due_at)
+    if bucket == 2:
         audit.verify_contacts_due_unknown += 1
-    elif contacted_at < due_at:
+    elif bucket == 1:
         audit.verify_contacts_before_due += 1
     else:
         audit.verify_contacts_not_before_due += 1
+    return bucket

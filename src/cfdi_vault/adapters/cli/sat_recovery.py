@@ -80,7 +80,9 @@ def sat_metadata_recover_live(
         adapter = _new_recovery_adapter(local_profile, permit)
         claim = submit_metadata_recovery_once(requester=adapter, query=query, now=now,
             storage_root=local_profile.storage_root, profile_id=profile,
-            criteria_hash=query.criteria_hash(), authorization_ref=permit.permit_id, repo_root=repo_root)
+            criteria_hash=query.criteria_hash(), authorization_ref=permit.permit_id,
+            tested_commit=observation.tested_commit, entry_point="metadata-recover-live",
+            repo_root=repo_root)
         if claim.status is not SubmissionStatus.ACCEPTED:
             _print_submission(claim.status)
             raise typer.Exit(code=1)
@@ -89,7 +91,9 @@ def sat_metadata_recover_live(
             raise _RecoveryCliError("authorization_mismatch")
         outcome = advance_metadata_recovery_once(storage_root=local_profile.storage_root,
             recovery_ref=claim.recovery_ref, verifier=adapter, downloader=adapter,
-            package_storage=package_storage, now=now, repo_root=repo_root)
+            package_storage=package_storage, now=now,
+            tested_commit=observation.tested_commit, entry_point="metadata-recover-live",
+            repo_root=repo_root)
         if outcome.recovery is None:
             _print_runner_failure(outcome)
             raise typer.Exit(code=1)
@@ -148,7 +152,8 @@ def sat_metadata_recovery_runner(
         observation = prepare_metadata_observation_context(local_profile.storage_root, repo_root=repo_root)
         settled = settle_metadata_recovery_locally(
             storage_root=local_profile.storage_root, recovery_ref=selected,
-            now=now, repo_root=repo_root,
+            now=now, tested_commit=observation.tested_commit,
+            entry_point="metadata-recovery-runner", repo_root=repo_root,
         )
         if settled.recovery is None:
             _print_runner_failure(settled)
@@ -169,7 +174,8 @@ def sat_metadata_recovery_runner(
         outcome = advance_metadata_recovery_once(
             storage_root=local_profile.storage_root, recovery_ref=selected,
             verifier=adapter, downloader=adapter, package_storage=package_storage,
-            now=now, repo_root=repo_root,
+            now=now, tested_commit=observation.tested_commit,
+            entry_point="metadata-recovery-runner", repo_root=repo_root,
         )
         if outcome.recovery is None:
             _print_runner_failure(outcome)

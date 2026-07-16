@@ -87,10 +87,13 @@ def metadata_submission_claim_path(
 def submit_metadata_recovery_once(
     *, requester: SatRequestPort, query: DownloadQuery, now: datetime,
     storage_root: str | Path, profile_id: str, criteria_hash: str,
-    authorization_ref: str, repo_root: str | Path | None = None,
+    authorization_ref: str, tested_commit: str, entry_point: str,
+    repo_root: str | Path | None = None,
 ) -> MetadataSubmissionClaim:
     """Persist an exact claim, then submit at most once without locking over I/O."""
-    _validate_input(query, now, profile_id, criteria_hash, authorization_ref)
+    provenance = _validate_input(
+        query, now, profile_id, criteria_hash, authorization_ref, tested_commit, entry_point,
+    )
     claim, should_submit = _prepare(
         storage_root, query, now, profile_id, criteria_hash, authorization_ref, repo_root
     )
@@ -111,6 +114,7 @@ def submit_metadata_recovery_once(
         direction=query.direction.value, kind=query.request_type.value,
         fecha_inicial=period.start.date().isoformat(), fecha_final=period.end.date().isoformat(),
         criteria_hash=criteria_hash, authorization_ref=authorization_ref,
+        observation_provenance=provenance,
     )
     state.save_metadata_recovery_state(storage_root, record, repo_root=repo_root)
     return _finish(storage_root, claim, SubmissionStatus.ACCEPTED, now,
@@ -319,8 +323,9 @@ def _unique(pairs):
     return result
 
 
-def _validate_input(query, now, profile, criteria, authorization) -> None:
+def _validate_input(query, now, profile, criteria, authorization, tested_commit, entry_point):
     valid = False
+    provenance = None
     try:
         period = query.period
         query_document = _query_document(query)
@@ -337,10 +342,14 @@ def _validate_input(query, now, profile, criteria, authorization) -> None:
             and _query_from_document(query_document).criteria_hash() == criteria
             and query.criteria_hash() == criteria
         )
+        provenance = state.new_metadata_observation_provenance(
+            tested_commit=tested_commit, observed_at=now, entry_point=entry_point,
+        )
     except Exception:
         valid = False
-    if not valid:
+    if not valid or provenance is None:
         raise MetadataSubmissionError("submission-input-invalid")
+    return provenance
 
 
 def _aware_datetime(value: object) -> datetime:

@@ -14,11 +14,13 @@ from cfdi_vault.sat_metadata_recovery import PackageRecoveryStatus, RecoveryStat
 from cfdi_vault.sat_metadata_submission import SubmissionStatus
 
 NOW = datetime(2026, 6, 30, tzinfo=timezone.utc)
+COMMIT = "c" * 40
 RECOVER_ARGS = ["metadata-recover-live", "--profile", "profile-synthetic", "--direction", "received",
                 "--from", "2026-06-30", "--to", "2026-06-30", "--authorization", "permit-synthetic"]
 @pytest.fixture(autouse=True)
 def _observation_hooks(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr(subject, "prepare_metadata_observation_context", lambda *_a, **_k: object())
+    monkeypatch.setattr(subject, "prepare_metadata_observation_context",
+                        lambda *_a, **_k: SimpleNamespace(tested_commit=COMMIT))
     monkeypatch.setattr(subject, "observe_metadata_recovery", lambda *_a, **_k: 0)
 def _app() -> typer.Typer:
     app = typer.Typer()
@@ -82,16 +84,19 @@ def test_authorization_consumes_once_then_validates_read_only(monkeypatch, consu
 def test_recover_live_orders_gates_and_prints_only_aggregates(monkeypatch, tmp_path: Path) -> None:
     events: list[str] = []
     profile = _patch_front(monkeypatch, tmp_path, events)
-    monkeypatch.setattr(subject, "prepare_metadata_observation_context", lambda *_a, **_k: events.append("observation") or object())
+    monkeypatch.setattr(subject, "prepare_metadata_observation_context", lambda *_a, **_k:
+                        events.append("observation") or SimpleNamespace(tested_commit=COMMIT))
     monkeypatch.setattr(subject, "observe_metadata_recovery", lambda *_a, **_k: events.append("observe"))
     claim = SimpleNamespace(status=SubmissionStatus.ACCEPTED, recovery_ref="run-000000000000")
     record = SimpleNamespace(authorization_ref="permit-synthetic")
-    monkeypatch.setattr(subject, "submit_metadata_recovery_once", lambda **_: events.append("submit") or claim)
+    monkeypatch.setattr(subject, "submit_metadata_recovery_once", lambda **kw:
+                        events.append("submit") or claim if kw["tested_commit"] == COMMIT else None)
     monkeypatch.setattr(subject, "load_metadata_recovery_state", lambda *_a, **_k: events.append("load") or record)
     monkeypatch.setattr(
         subject,
         "advance_metadata_recovery_once",
-        lambda **_: events.append("advance") or SimpleNamespace(recovery=_document(recordCount=None)),
+        lambda **kw: events.append("advance") or SimpleNamespace(recovery=_document(recordCount=None))
+        if kw["entry_point"] == "metadata-recover-live" else None,
     )
 
     result = CliRunner().invoke(_app(), RECOVER_ARGS)
@@ -333,3 +338,27 @@ def test_runner_settles_local_terminal_before_permit_or_live_objects(
     assert result.exit_code == 0, result.output
     assert events == ["settle"]
     assert f"status={terminal}" in result.output
+
+
+def test_runner_stops_missing_provenance_before_adapter(monkeypatch, tmp_path: Path) -> None:
+    events: list[str] = []
+    profile = SimpleNamespace(profile_id="profile-synthetic", storage_root=tmp_path / "external")
+    recovery = SimpleNamespace(recovery_ref="run-000000000000", status=RecoveryStatus.VERIFY_SCHEDULED,
+                               created_at=NOW, deadline_at=NOW, next_check_at=NOW)
+    record = SimpleNamespace(profile_id=profile.profile_id, recovery=recovery)
+    monkeypatch.setattr(subject, "_load_download_profile", lambda _: profile)
+    monkeypatch.setattr(subject, "_checked_recovery_repo_root", lambda: tmp_path / "repo")
+    monkeypatch.setattr(subject, "_validate_recovery_state_path", lambda *_: None)
+    monkeypatch.setattr(subject, "list_metadata_recovery_states", lambda *_a, **_k: (record,))
+    monkeypatch.setattr(subject, "_recovery_now", lambda: NOW)
+    monkeypatch.setattr(subject, "settle_metadata_recovery_locally", lambda **_: SimpleNamespace(
+        recovery=None, error_kind="observation-provenance-missing", verify_count=0, download_attempts=0,
+    ))
+    for name in ("validate_consumed_metadata_recovery_permit_id", "_new_recovery_storage",
+                 "_new_recovery_adapter", "advance_metadata_recovery_once"):
+        monkeypatch.setattr(subject, name, lambda *_a, _name=name, **_k: events.append(_name))
+
+    result = CliRunner().invoke(_app(), ["metadata-recovery-runner", "--profile", profile.profile_id])
+
+    assert result.exit_code == 1 and events == []
+    assert "status=observation-provenance-missing" in result.output

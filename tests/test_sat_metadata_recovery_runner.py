@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -10,6 +11,7 @@ from zipfile import ZipFile
 import pytest
 
 import cfdi_vault.sat_metadata_recovery as lifecycle
+import cfdi_vault.sat_metadata_recovery_runner as subject
 import cfdi_vault.sat_metadata_recovery_state as state
 from cfdi_vault.domain import SatRequestState
 from cfdi_vault.package_processor import MemoryPackageStorage
@@ -33,6 +35,7 @@ REQUEST = "synthetic-request"
 PACKAGES = ("synthetic-package-a", "synthetic-package-b")
 PROFILE, CRITERIA = "synthetic-profile", "a" * 64
 RUN_REF = state.recovery_ref(PROFILE, CRITERIA, REQUEST)
+INITIAL_COMMIT, CURRENT_COMMIT = "a" * 40, "b" * 40
 
 
 def test_advance_outcome_preserves_legacy_positional_fields() -> None:
@@ -90,22 +93,26 @@ def _download(package_id: str, content: bytes | None = None) -> SatDownloadResul
                              _zip() if content is None else content)
 
 
-def _saved(tmp_path, recovery=None):  # type: ignore[no-untyped-def]
+def _saved(tmp_path, recovery=None, *, provenance=True):  # type: ignore[no-untyped-def]
     recovery = recovery or lifecycle.start_metadata_recovery(RUN_REF, created_at=NOW)
     record = state.new_metadata_recovery_state(
         recovery=recovery, id_solicitud=REQUEST, profile_id=PROFILE,
         direction="received", kind="metadata", fecha_inicial="2026-06-30",
         fecha_final="2026-06-30", criteria_hash=CRITERIA,
         authorization_ref="synthetic-authorization",
+        observation_provenance=(state.MetadataObservationProvenance(
+            1, INITIAL_COMMIT, NOW, "metadata-recover-live",
+        ) if provenance else None),
     )
     state.save_metadata_recovery_state(tmp_path, record)
     return record
 
 
-def _advance(tmp_path, verifier, downloader, now, storage=None):  # type: ignore[no-untyped-def]
+def _advance(tmp_path, verifier, downloader, now, storage=None, *, commit=CURRENT_COMMIT):  # type: ignore[no-untyped-def]
     return advance_metadata_recovery_once(
         storage_root=tmp_path, recovery_ref=RUN_REF, verifier=verifier,
         downloader=downloader, package_storage=storage or MemoryPackageStorage(), now=now,
+        tested_commit=commit, entry_point="metadata-recovery-runner",
     )
 
 
@@ -128,11 +135,14 @@ def test_local_settlement_persists_deadline_without_live_dependencies(tmp_path) 
 
     outcome = settle_metadata_recovery_locally(
         storage_root=tmp_path, recovery_ref=RUN_REF, now=NOW + timedelta(days=7),
+        tested_commit=CURRENT_COMMIT, entry_point="metadata-recovery-runner",
     )
 
     assert outcome.requires_live is False
     assert outcome.recovery["status"] == "pending_after_budget"
-    assert state.load_metadata_recovery_state(tmp_path, RUN_REF).recovery.status.value == "pending_after_budget"
+    loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
+    assert loaded.recovery.status.value == "pending_after_budget"
+    assert loaded.observation_provenance.tested_commit == CURRENT_COMMIT
 
 
 def test_local_settlement_persists_crash_left_download_as_uncertain(tmp_path) -> None:
@@ -152,11 +162,14 @@ def test_local_settlement_persists_crash_left_download_as_uncertain(tmp_path) ->
 
     outcome = settle_metadata_recovery_locally(
         storage_root=tmp_path, recovery_ref=RUN_REF, now=NOW + timedelta(minutes=6),
+        tested_commit=CURRENT_COMMIT, entry_point="metadata-recovery-runner",
     )
 
     assert (outcome.requires_live, outcome.error_kind) == (False, "download_uncertain")
     assert outcome.recovery["status"] == "download_uncertain"
-    assert state.load_metadata_recovery_state(tmp_path, RUN_REF).recovery.status.value == "download_uncertain"
+    loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
+    assert loaded.recovery.status.value == "download_uncertain"
+    assert loaded.observation_provenance.tested_commit == CURRENT_COMMIT
 
 
 @pytest.mark.parametrize(
@@ -176,6 +189,8 @@ def test_verify_exception_and_mismatch_classification(tmp_path, result, expected
     assert "PRIVATE" not in repr(outcome)
     loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
     assert loaded.recovery.verify_attempts == 1
+    assert sum(subject._provenance_counters(loaded)) == int(contacted)
+    assert loaded.observation_provenance.tested_commit == CURRENT_COMMIT
     if expected == "verify_scheduled":
         assert loaded.recovery.next_check_at == NOW + timedelta(minutes=20)
 
@@ -281,6 +296,7 @@ def test_two_packages_download_once_in_binding_order_and_terminal_is_idempotent(
     assert loaded.recovery.record_count is None
     assert outcome.recovery["recordCount"] == "not_reported"
     assert len(loaded.artifact_bindings) == 2
+    assert subject._provenance_counters(loaded) == (1, 0, 0)
     assert all(raw not in repr(outcome) for raw in (REQUEST, *PACKAGES))
     repeated = _advance(tmp_path, _Verifier(ValueError()), _Downloader(), NOW + timedelta(hours=1))
     assert (repeated.sat_contacted, repeated.verify_count, repeated.download_attempts) == (False, 0, 0)
@@ -358,6 +374,7 @@ def test_download_contact_requires_explicit_stage_or_matching_contract(
     )
 
     assert (outcome.sat_contacted, outcome.download_attempts) == (contacted, 1)
+    assert subject._provenance_counters(state.load_metadata_recovery_state(tmp_path, RUN_REF)) == (0, 0, 0)
 
 
 def test_download_audit_survives_artifact_persistence_failure(tmp_path) -> None:
@@ -398,6 +415,51 @@ def test_operation_lock_prevents_concurrent_duplicate_verification(tmp_path) -> 
     assert busy.error_kind == "busy"
     assert (busy.sat_contacted, busy.verify_count, busy.download_attempts) == (False, 0, 0)
     assert verifier.calls == [REQUEST]
+    assert subject._provenance_counters(state.load_metadata_recovery_state(tmp_path, RUN_REF)) == (1, 0, 0)
+
+
+def test_invalid_commit_and_legacy_state_stop_before_verify(tmp_path) -> None:
+    verifier = _Verifier(_verification())
+    _saved(tmp_path)
+    invalid = _advance(tmp_path, verifier, _Downloader(), NOW + timedelta(minutes=5), commit="bad")
+    assert invalid.error_kind == "state_failed" and verifier.calls == []
+
+    legacy_root = tmp_path / "legacy"
+    _saved(legacy_root, provenance=False)
+    path = state.metadata_recovery_state_path(legacy_root)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["schemaVersion"] = 3
+    del document["recoveries"][0]["observationProvenance"]
+    path.write_text(json.dumps(document), encoding="utf-8")
+    legacy = _advance(legacy_root, verifier, _Downloader(), NOW + timedelta(minutes=5))
+    assert legacy.error_kind == "observation-provenance-missing" and verifier.calls == []
+
+    settled = settle_metadata_recovery_locally(
+        storage_root=legacy_root, recovery_ref=RUN_REF, now=NOW + timedelta(days=7),
+        tested_commit=CURRENT_COMMIT, entry_point="metadata-recovery-runner",
+    )
+    loaded = state.load_metadata_recovery_state(legacy_root, RUN_REF)
+    assert settled.recovery["status"] == "pending_after_budget"
+    assert loaded.observation_provenance is not None
+    assert subject._provenance_counters(loaded) == (0, 0, 0)
+
+
+@pytest.mark.parametrize(
+    ("contacted", "due", "expected"),
+    ((NOW, NOW, (1, 0, 0)), (NOW, NOW + timedelta(seconds=1), (0, 1, 0)),
+     (NOW, None, (0, 0, 1))),
+)
+def test_verify_contact_bucket_is_durable_across_restart(tmp_path, contacted, due, expected) -> None:  # type: ignore[no-untyped-def]
+    record = _saved(tmp_path)
+    advanced = replace(record, recovery=lifecycle.record_pending_verification(
+        record.recovery, checked_at=record.recovery.next_check_at,
+    ))
+    bucket = subject._verify_contact_bucket(contacted, due)
+    advanced = subject._with_provenance(
+        advanced, CURRENT_COMMIT, "metadata-recovery-runner", contacted, bucket,
+    )
+    state.save_metadata_recovery_state(tmp_path, advanced)
+    assert subject._provenance_counters(state.load_metadata_recovery_state(tmp_path, RUN_REF)) == expected
 
 
 def test_verify_audit_survives_state_save_failure_after_contact(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

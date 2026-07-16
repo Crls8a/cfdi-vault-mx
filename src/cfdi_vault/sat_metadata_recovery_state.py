@@ -76,6 +76,20 @@ class MetadataObservationProvenance:
     verify_contacts_due_unknown: int = 0
 
 
+def new_metadata_observation_provenance(
+    *, tested_commit: str, observed_at: datetime, entry_point: str,
+    verify_contacts_not_before_due: int = 0, verify_contacts_before_due: int = 0,
+    verify_contacts_due_unknown: int = 0,
+) -> MetadataObservationProvenance:
+    """Build validated private provenance before any SAT side effect."""
+    provenance = MetadataObservationProvenance(
+        1, tested_commit, observed_at, entry_point, verify_contacts_not_before_due,
+        verify_contacts_before_due, verify_contacts_due_unknown,
+    )
+    _validate_provenance_values(provenance)
+    return provenance
+
+
 @dataclass(frozen=True, repr=False)
 class MetadataRecoveryStateRecord:
     """Keep private resume material beside the redacted lifecycle."""
@@ -275,6 +289,15 @@ def _validate_observation_provenance(record: MetadataRecoveryStateRecord) -> Non
     provenance = record.observation_provenance
     if provenance is None:
         return
+    _validate_provenance_values(provenance)
+    if (
+        provenance.observed_at < record.recovery.created_at
+        or sum(_provenance_counters(provenance)) > record.recovery.verify_attempts
+    ):
+        raise MetadataRecoveryStateError("observation-provenance-invalid")
+
+
+def _validate_provenance_values(provenance: MetadataObservationProvenance) -> None:
     counters = _provenance_counters(provenance) if type(provenance) is MetadataObservationProvenance else ()
     if (
         type(provenance) is not MetadataObservationProvenance
@@ -284,11 +307,9 @@ def _validate_observation_provenance(record: MetadataRecoveryStateRecord) -> Non
         or _COMMIT_RE.fullmatch(provenance.tested_commit) is None
         or type(provenance.observed_at) is not datetime
         or provenance.observed_at.utcoffset() != timedelta(0)
-        or provenance.observed_at < record.recovery.created_at
         or not isinstance(provenance.entry_point, str)
         or provenance.entry_point not in _OBSERVATION_ENTRY_POINTS
         or any(type(value) is not int or value < 0 for value in counters)
-        or sum(counters) > record.recovery.verify_attempts
     ):
         raise MetadataRecoveryStateError("observation-provenance-invalid")
 
@@ -462,6 +483,12 @@ def _validate_replacement(
     added_artifacts = candidate.artifact_bindings[len(previous_artifacts):]
     if len(added_artifacts) > 1:
         raise MetadataRecoveryStateError("artifact-binding-transition-invalid")
+    if (
+        current.recovery == candidate.recovery
+        and current.package_bindings == candidate.package_bindings
+        and current.artifact_bindings == candidate.artifact_bindings
+    ):
+        return
     before, after = current.recovery, candidate.recovery
     immutable = (before.recovery_ref, before.created_at, before.deadline_at)
     if immutable != (after.recovery_ref, after.created_at, after.deadline_at):
@@ -492,7 +519,7 @@ def _validate_provenance_replacement(
     attempt_delta = candidate.recovery.verify_attempts - current.recovery.verify_attempts
     if before is None:
         deltas = _provenance_counters(after)
-        if attempt_delta != 1 or sum(deltas) > attempt_delta:
+        if attempt_delta not in {0, 1} or sum(deltas) > attempt_delta:
             raise MetadataRecoveryStateError("observation-provenance-transition-invalid")
         return
     old, new = _provenance_counters(before), _provenance_counters(after)
@@ -501,7 +528,7 @@ def _validate_provenance_replacement(
     if after.observed_at < before.observed_at:
         raise MetadataRecoveryStateError("observation-provenance-regression")
     deltas = tuple(candidate_value - current_value for current_value, candidate_value in zip(old, new, strict=True))
-    if (attempt_delta == 0 and after != before) or sum(deltas) > attempt_delta:
+    if sum(deltas) > attempt_delta:
         raise MetadataRecoveryStateError("observation-provenance-transition-invalid")
 
 

@@ -14,6 +14,7 @@ from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, 
 from cfdi_vault.sat_contract import SatOutcomeAction, SatRequestResult
 
 NOW = datetime(2026, 6, 30, tzinfo=timezone.utc)
+COMMIT = "f" * 40
 
 
 def test_accepted_request_is_claimed_before_network_and_reused_with_new_authorization(tmp_path) -> None:
@@ -33,16 +34,21 @@ def test_accepted_request_is_claimed_before_network_and_reused_with_new_authoriz
         requester=requester, query=query, now=NOW, storage_root=tmp_path,
         profile_id="profile-synthetic", criteria_hash=query.criteria_hash(),
         authorization_ref="authorization-synthetic-a",
+        tested_commit=COMMIT, entry_point="metadata-recover-live",
     )
     repeated = subject.submit_metadata_recovery_once(
         requester=requester, query=query, now=NOW, storage_root=tmp_path,
         profile_id="profile-synthetic", criteria_hash=query.criteria_hash(),
         authorization_ref="authorization-synthetic-b",
+        tested_commit=COMMIT, entry_point="metadata-recover-live",
     )
 
     assert accepted.status == repeated.status == subject.SubmissionStatus.ACCEPTED and requester.submit_request.call_count == 1
     saved = recovery_state.load_metadata_recovery_state(tmp_path, accepted.recovery_ref)
     assert saved.recovery.record_count is None
+    assert saved.observation_provenance == recovery_state.MetadataObservationProvenance(
+        1, COMMIT, NOW, "metadata-recover-live",
+    )
     assert saved.to_redacted_document()["recordCount"] == "not_reported"
     serialized = repr(accepted.to_redacted_document())
     for private in ("profile-synthetic", query.criteria_hash(), "authorization-synthetic-a", "synthetic-request-alpha"):
@@ -126,6 +132,8 @@ def test_claim_store_rejects_duplicate_json_keys(tmp_path) -> None:
         ("authorization_ref", "\n"), ("authorization_ref", None),
         ("criteria_hash", "A" * 64), ("criteria_hash", 7),
         ("now", datetime(2026, 6, 30)), ("now", "2026-06-30"),
+        ("tested_commit", "F" * 40), ("tested_commit", None),
+        ("entry_point", "metadata-recovery-status"),
     ),
 )
 def test_invalid_identity_never_creates_claim_or_calls_requester(tmp_path, field, value) -> None:
@@ -134,6 +142,7 @@ def test_invalid_identity_never_creates_claim_or_calls_requester(tmp_path, field
         "requester": Mock(), "query": query, "now": NOW, "storage_root": tmp_path,
         "profile_id": "profile-synthetic", "criteria_hash": query.criteria_hash(),
         "authorization_ref": "authorization-synthetic",
+        "tested_commit": COMMIT, "entry_point": "metadata-recover-live",
     }
     arguments[field] = value
 
@@ -168,6 +177,7 @@ def test_invalid_query_scope_never_creates_claim_or_calls_requester(tmp_path, va
             requester=requester, query=query, now=NOW, storage_root=tmp_path,
             profile_id="profile-synthetic", criteria_hash="a" * 64,
             authorization_ref="authorization-synthetic",
+            tested_commit=COMMIT, entry_point="metadata-recover-live",
         )
 
     assert requester.submit_request.call_count == 0
@@ -291,6 +301,7 @@ def _submit(tmp_path, requester, query: DownloadQuery, authorization: str = "aut
         requester=requester, query=query, now=NOW, storage_root=tmp_path,
         profile_id="profile-synthetic", criteria_hash=query.criteria_hash(),
         authorization_ref=authorization,
+        tested_commit=COMMIT, entry_point="metadata-recover-live",
     )
 
 
