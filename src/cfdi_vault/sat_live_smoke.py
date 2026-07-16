@@ -11,7 +11,6 @@ import time
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
-from enum import StrEnum
 from http.client import RemoteDisconnected
 from urllib.error import HTTPError, URLError
 from uuid import uuid4
@@ -34,10 +33,9 @@ from cfdi_vault.sat_auth_constants import (
     AUTH_ENVELOPE_VARIANTS,
     AUTH_NAMESPACE,
     AUTH_OPERATION,
-    AUTH_SOAP_ACTION,
     DEFAULT_AUTH_ENVELOPE_VARIANT,
 )
-from cfdi_vault.sat_auth_endpoints import DEFAULT_AUTH_ENDPOINT, resolve_auth_endpoint
+from cfdi_vault.sat_auth_endpoints import resolve_auth_endpoint
 from cfdi_vault.sat_auth_http import build_soap11_headers
 from cfdi_vault.sat_contract import (
     SatDownloadResult,
@@ -55,11 +53,22 @@ from cfdi_vault.sat_soap_parse import (
     parse_verification_response,
 )
 from cfdi_vault.sat_transport import SoapConnectTimeout, SoapReadTimeout, SoapTransportPort, SoapTransportRequest
+from cfdi_vault.sat_v15_contract import (
+    AUTH_ACTION,
+    DEFAULT_DOWNLOAD_ENDPOINT,
+    DEFAULT_REQUEST_ENDPOINT,
+    DEFAULT_VERIFY_ENDPOINT,
+    DOWNLOAD_ACTION,
+    SAT_REQUEST_NS,
+    VERIFY_ACTION,
+    SatV15Endpoints,
+    SatV15RequestOperation,
+    v15_request_soap_action,
+)
 from cfdi_vault.secrets import CredentialKind, CredentialProviderError, CredentialReference
 from cfdi_vault.setup_core import ExistenceProvider, LocalProfile
 
 SOAP11_NS = "http://schemas.xmlsoap.org/soap/envelope/"
-SAT_REQUEST_NS = "http://DescargaMasivaTerceros.sat.gob.mx"
 SAT_AUTH_NS = AUTH_NAMESPACE
 WSSE_NS = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"
 WSU_NS = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"
@@ -68,13 +77,6 @@ DS_NS = "http://www.w3.org/2000/09/xmldsig#"
 VERIFY_EXCLUSIVE_C14N = CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0.value
 X509_VALUE_TYPE = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3"
 BASE64_ENCODING_TYPE = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary"
-AUTH_ACTION = AUTH_SOAP_ACTION
-REQUEST_ACTION_BASE = "http://DescargaMasivaTerceros.sat.gob.mx/ISolicitaDescargaService"
-VERIFY_ACTION = "http://DescargaMasivaTerceros.sat.gob.mx/IVerificaSolicitudDescargaService/VerificaSolicitudDescarga"
-DOWNLOAD_ACTION = "http://DescargaMasivaTerceros.sat.gob.mx/IDescargaMasivaTercerosService/Descargar"
-DEFAULT_REQUEST_ENDPOINT = "https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/SolicitaDescargaService.svc"
-DEFAULT_VERIFY_ENDPOINT = "https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/VerificaSolicitudDescargaService.svc"
-DEFAULT_DOWNLOAD_ENDPOINT = "https://cfdidescargamasiva.clouda.sat.gob.mx/DescargaMasivaService.svc"
 SAFE_LIVE_ERROR_HINT = "inspect the redacted diagnostic stage; do not copy raw SOAP or local credential data"
 TRANSPORT_HINT = "check SOAPAction, content-type, logical endpoint, TLS, and SAT service availability"
 PARSE_HINT = "check SAT response shape with redacted diagnostics only"
@@ -231,14 +233,6 @@ class SatEfirmMaterial:
         return "SatEfirmMaterial(private_key=<redacted>, certificate=<redacted>)"
 
 
-class SatV15RequestOperation(StrEnum):
-    """SAT v1.5 specialized request operations used by live metadata smoke."""
-
-    ISSUED = "SolicitaDescargaEmitidos"
-    RECEIVED = "SolicitaDescargaRecibidos"
-    FOLIO = "SolicitaDescargaFolio"
-
-
 @dataclass(frozen=True)
 class SatLiveRequestAttempt:
     """Redacted metadata request attempt details safe for CLI output."""
@@ -325,12 +319,6 @@ class VerifyRequestReadiness:
             "operation": self.operation,
         }
 @dataclass(frozen=True)
-class SatLiveSmokeEndpoints:
-    auth: str = DEFAULT_AUTH_ENDPOINT
-    request: str = DEFAULT_REQUEST_ENDPOINT
-    verify: str = DEFAULT_VERIFY_ENDPOINT
-    download: str = DEFAULT_DOWNLOAD_ENDPOINT
-@dataclass(frozen=True)
 class SatLiveSmokeSummary:
     result: str
     auth: str
@@ -381,7 +369,7 @@ class SatLiveV15MetadataAdapter:
         provider: ExistenceProvider,
         transport: SoapTransportPort,
         material: SatEfirmMaterial | None = None,
-        endpoints: SatLiveSmokeEndpoints | None = None,
+        endpoints: SatV15Endpoints | None = None,
         timeout_seconds: float = 60,
         connect_timeout_seconds: float | None = None,
         read_timeout_seconds: float | None = None,
@@ -394,7 +382,7 @@ class SatLiveV15MetadataAdapter:
         self._provider = provider
         self._transport = transport
         self._material = material
-        self._endpoints = endpoints or SatLiveSmokeEndpoints(
+        self._endpoints = endpoints or SatV15Endpoints(
             resolve_auth_endpoint(os.environ),
             os.getenv("CFDI_VAULT_SAT_REQUEST_ENDPOINT", DEFAULT_REQUEST_ENDPOINT),
             os.getenv("CFDI_VAULT_SAT_VERIFY_ENDPOINT", DEFAULT_VERIFY_ENDPOINT),
@@ -709,7 +697,7 @@ class SatLiveMetadataSmokeAdapter(SatLiveV15MetadataAdapter):
         provider: ExistenceProvider,
         transport: SoapTransportPort,
         material: SatEfirmMaterial | None = None,
-        endpoints: SatLiveSmokeEndpoints | None = None,
+        endpoints: SatV15Endpoints | None = None,
         timeout_seconds: float = 60,
         connect_timeout_seconds: float | None = None,
         read_timeout_seconds: float | None = None,
@@ -923,10 +911,6 @@ def resolve_v15_request_operation(query: DownloadQuery) -> SatV15RequestOperatio
         error_kind="guard_failed",
         safe_hint="live metadata smoke requires received, issued, or folio routing",
     )
-
-
-def v15_request_soap_action(operation: SatV15RequestOperation) -> str:
-    return f"{REQUEST_ACTION_BASE}/{operation.value}"
 
 
 def _validate_v15_live_metadata_query(query: DownloadQuery, *, max_range_days: int = 1) -> None:

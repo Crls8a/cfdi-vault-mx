@@ -18,17 +18,16 @@ from cfdi_vault.sat_auth_constants import (
 from cfdi_vault.sat_auth_contract import AuthWsdlContract, parse_auth_wsdl_contract
 from cfdi_vault.sat_auth_endpoints import DEFAULT_AUTH_ENDPOINT
 from cfdi_vault.sat_auth_post_probe import AUTH_POST_PROBE_BODY, AUTH_POST_PROBE_HEADERS
-
-from cfdi_vault.sat_live_smoke import (
+from cfdi_vault.sat_transport_probe import DEFAULT_PROBE_ENDPOINTS
+from cfdi_vault.sat_v15_contract import (
     DEFAULT_REQUEST_ENDPOINT,
     DEFAULT_VERIFY_ENDPOINT,
     SAT_REQUEST_NS,
     VERIFY_ACTION,
-    SatLiveSmokeEndpoints,
+    SatV15Endpoints,
     SatV15RequestOperation,
     v15_request_soap_action,
 )
-from cfdi_vault.sat_transport_probe import DEFAULT_PROBE_ENDPOINTS
 
 
 def test_auth_contract_constants_match_sat_auth_wsdl_shape() -> None:
@@ -73,7 +72,7 @@ def test_verify_endpoint_uses_canonical_wcf_url_and_soap_action() -> None:
 
 
 def test_live_endpoints_keep_auth_request_and_verify_urls_separate() -> None:
-    defaults = SatLiveSmokeEndpoints()
+    defaults = SatV15Endpoints()
 
     assert defaults.auth == DEFAULT_AUTH_ENDPOINT
     assert defaults.request == DEFAULT_REQUEST_ENDPOINT

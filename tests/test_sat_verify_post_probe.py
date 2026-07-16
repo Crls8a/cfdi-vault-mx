@@ -1,16 +1,16 @@
 from __future__ import annotations
 
+import socket
+import ssl
+import threading
+import time
 from contextlib import contextmanager
 from http.client import RemoteDisconnected
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Iterator, Mapping
 from urllib.error import URLError
-import socket
-import ssl
-import threading
-import time
 
-from cfdi_vault.sat_live_smoke import DEFAULT_VERIFY_ENDPOINT, VERIFY_ACTION
+from cfdi_vault.sat_v15_contract import DEFAULT_VERIFY_ENDPOINT, VERIFY_ACTION
 from cfdi_vault.sat_verify_post_probe import (
     VERIFY_POST_PROBE_BODY,
     VERIFY_POST_PROBE_ENVELOPE_SOURCES,
@@ -22,7 +22,6 @@ from cfdi_vault.sat_verify_post_probe import (
     build_verify_post_probe_headers,
     run_sat_verify_post_probe,
 )
-
 
 SOAP_OK = b'''<?xml version="1.0"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><ok /></soap:Body></soap:Envelope>'''
 SOAP_FAULT = b'''<?xml version="1.0"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><soap:Fault><faultcode>soap:Client</faultcode></soap:Fault></soap:Body></soap:Envelope>'''

@@ -15,14 +15,13 @@ from urllib.error import HTTPError, URLError
 from cfdi_vault.sat_auth_endpoints import auth_wsdl_endpoint
 from cfdi_vault.sat_auth_http import build_soap11_headers
 from cfdi_vault.sat_download_envelope_lint import lint_package_download_envelope
-from cfdi_vault.sat_live_request_state import LiveMetadataRequestRecord, PACKAGE_READY, redact_package_ref
+from cfdi_vault.sat_live_request_state import PACKAGE_READY, LiveMetadataRequestRecord, redact_package_ref
 from cfdi_vault.sat_live_smoke import (
-    DEFAULT_DOWNLOAD_ENDPOINT,
-    DOWNLOAD_ACTION,
     _build_package_download_envelope,
     load_sat_efirma_material,
 )
 from cfdi_vault.sat_package_download_offline import evaluate_package_download_gate
+from cfdi_vault.sat_v15_contract import DEFAULT_DOWNLOAD_ENDPOINT, DOWNLOAD_ACTION
 from cfdi_vault.sat_verify_live_gate import LIVE_GATE_ENV, PRODUCTION_SIGNED_ENV
 from cfdi_vault.secrets import CredentialKind, CredentialProviderError, CredentialReference
 from cfdi_vault.setup_core import ExistenceProvider, LocalProfile, LocalProfileStatus, redact_rfc

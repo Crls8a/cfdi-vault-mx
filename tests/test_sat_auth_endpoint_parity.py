@@ -7,15 +7,15 @@ from cfdi_vault.sat_auth_endpoints import (
     resolve_auth_endpoint,
 )
 from cfdi_vault.sat_auth_post_probe import run_sat_auth_post_probe
-from cfdi_vault.sat_live_smoke import SatLiveSmokeEndpoints
 from cfdi_vault.sat_transport_probe import DEFAULT_PROBE_ENDPOINTS
+from cfdi_vault.sat_v15_contract import SatV15Endpoints
 
 
 def test_default_auth_probe_post_and_live_adapter_share_host_path() -> None:
     transport_auth_url = dict(DEFAULT_PROBE_ENDPOINTS)["auth_service"]
     post_endpoint = describe_endpoint("auth", resolve_auth_endpoint({}))
     wsdl_endpoint = describe_endpoint("auth_service", transport_auth_url)
-    live_endpoint = describe_endpoint("auth", SatLiveSmokeEndpoints().auth)
+    live_endpoint = describe_endpoint("auth", SatV15Endpoints().auth)
 
     assert transport_auth_url == DEFAULT_AUTH_ENDPOINT
     assert (post_endpoint.scheme, post_endpoint.host, post_endpoint.port, post_endpoint.path) == (

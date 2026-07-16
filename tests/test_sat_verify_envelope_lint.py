@@ -4,7 +4,8 @@ from pathlib import Path
 
 from lxml import etree
 
-from cfdi_vault.sat_live_smoke import DS_NS, SAT_REQUEST_NS, _build_verify_envelope
+from cfdi_vault.sat_live_smoke import DS_NS, _build_verify_envelope
+from cfdi_vault.sat_v15_contract import SAT_REQUEST_NS
 from cfdi_vault.sat_verify_envelope_lint import (
     EXPECTED_VERIFY_C14N_METHOD,
     EXPECTED_VERIFY_DIGEST_METHOD,

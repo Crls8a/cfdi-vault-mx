@@ -2,20 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
+from dataclasses import dataclass
 
 from lxml import etree
 from signxml.algorithms import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 
 from cfdi_vault.sat_auth_constants import AUTH_ACCEPT, AUTH_CONTENT_TYPE
 from cfdi_vault.sat_live_smoke import (
-    DEFAULT_DOWNLOAD_ENDPOINT,
-    DOWNLOAD_ACTION,
     DS_NS,
-    SAT_REQUEST_NS,
     SOAP11_NS,
 )
+from cfdi_vault.sat_v15_contract import DEFAULT_DOWNLOAD_ENDPOINT, DOWNLOAD_ACTION, SAT_REQUEST_NS
 from cfdi_vault.sat_verify_envelope_lint import (
     _child,
     _digest_matches,
@@ -173,7 +171,7 @@ def lint_package_download_envelope(
         x509_data=key_info.find(f".//{{{DS_NS}}}X509Data") is not None if key_info is not None else False,
         x509_issuer_serial=_has_key_info_child(key_info, "X509IssuerSerial"),
         x509_certificate=_has_key_info_child(key_info, "X509Certificate"),
-        no_ws_security=root.find(f".//{{http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd}}Security")
+        no_ws_security=root.find(".//{http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd}Security")
         is None,
         no_authorization_in_xml=b"WRAP access_" + b"token" not in envelope,
         no_placeholders=not any(marker in envelope for marker in (b"None", b"null", b"undefined", b"TODO", b"MISSING")),

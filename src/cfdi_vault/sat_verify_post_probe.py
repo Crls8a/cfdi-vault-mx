@@ -9,13 +9,13 @@ material, but it must not be used as the production SAT verification path.
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from http.client import HTTPConnection, HTTPSConnection, RemoteDisconnected
 import hashlib
 import socket
 import ssl
 import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from http.client import HTTPConnection, HTTPSConnection, RemoteDisconnected
 from typing import Mapping, Protocol
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -28,7 +28,8 @@ from cryptography.x509.oid import NameOID
 
 from cfdi_vault.sat_auth_endpoints import RedactedEndpoint, describe_endpoint
 from cfdi_vault.sat_auth_http import build_soap11_headers
-from cfdi_vault.sat_live_smoke import DEFAULT_VERIFY_ENDPOINT, SAT_REQUEST_NS, VERIFY_ACTION, SatEfirmMaterial, _build_verify_envelope
+from cfdi_vault.sat_live_smoke import SatEfirmMaterial, _build_verify_envelope
+from cfdi_vault.sat_v15_contract import DEFAULT_VERIFY_ENDPOINT, SAT_REQUEST_NS, VERIFY_ACTION
 from cfdi_vault.sat_verify_envelope_lint import lint_verify_envelope
 
 SOAP11_NS = "http://schemas.xmlsoap.org/soap/envelope/"

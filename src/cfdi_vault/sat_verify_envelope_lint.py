@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
-from dataclasses import dataclass
 import base64
 import hashlib
+from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
-import re
 
 from lxml import etree
 from signxml.algorithms import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 
-from cfdi_vault.sat_live_smoke import DS_NS, SAT_REQUEST_NS, SOAP11_NS
+from cfdi_vault.sat_live_smoke import DS_NS, SOAP11_NS
+from cfdi_vault.sat_v15_contract import SAT_REQUEST_NS
 
 EXPECTED_VERIFY_OPERATION = "VerificaSolicitudDescarga"
 EXPECTED_VERIFY_XMLSIG_PROFILE = "sat_verify_signed_operation_wrapper"
@@ -132,7 +132,7 @@ def lint_verify_envelope(envelope: bytes) -> VerifyEnvelopeLintResult:
         x509_data=key_info.find(f".//{{{DS_NS}}}X509Data") is not None if key_info is not None else False,
         x509_issuer_serial=_has_key_info_child(key_info, "X509IssuerSerial"),
         x509_certificate=_has_key_info_child(key_info, "X509Certificate"),
-        no_ws_security=root.find(f".//{{http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd}}Security") is None,
+        no_ws_security=root.find(".//{http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd}Security") is None,
         no_authorization_in_xml=b"WRAP access_" + b"token" not in envelope,
         no_placeholders=not any(marker in envelope for marker in (b"None", b"null", b"undefined", b"TODO", b"MISSING")),
         all_checks_passed=False,

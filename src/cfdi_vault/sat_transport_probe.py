@@ -11,7 +11,7 @@ from urllib.error import HTTPError, URLError
 from uuid import uuid4
 
 from cfdi_vault.sat_auth_endpoints import RedactedEndpoint, auth_wsdl_endpoint, describe_endpoint, resolve_auth_endpoint
-from cfdi_vault.sat_live_smoke import DEFAULT_REQUEST_ENDPOINT, DEFAULT_VERIFY_ENDPOINT
+from cfdi_vault.sat_v15_contract import DEFAULT_REQUEST_ENDPOINT, DEFAULT_VERIFY_ENDPOINT
 
 DEFAULT_PROBE_ENDPOINTS = (
     ("auth_service", resolve_auth_endpoint()),

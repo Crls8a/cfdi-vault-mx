@@ -15,10 +15,6 @@ from cfdi_vault.sat_download_envelope_lint import (
     lint_package_download_envelope,
 )
 from cfdi_vault.sat_live_smoke import (
-    DEFAULT_DOWNLOAD_ENDPOINT,
-    DOWNLOAD_ACTION,
-    DS_NS,
-    SAT_REQUEST_NS,
     SatLiveMetadataSmokeAdapter,
     _build_package_download_envelope,
     _operation_envelope,
@@ -33,6 +29,7 @@ from cfdi_vault.sat_package_download_offline import (
     require_package_download_gate,
 )
 from cfdi_vault.sat_transport import FakeSoapTransport, SoapTransportResponse
+from cfdi_vault.sat_v15_contract import DEFAULT_DOWNLOAD_ENDPOINT, DOWNLOAD_ACTION, SAT_REQUEST_NS
 from cfdi_vault.secrets import DummySecretProvider
 from tests.test_sat_live_smoke import _material, _profile, _soap
 

@@ -6,7 +6,7 @@ from cfdi_vault.sat_auth_http import (
     build_soap12_headers,
     validate_auth_headers_for_contract,
 )
-from cfdi_vault.sat_live_smoke import AUTH_ACTION
+from cfdi_vault.sat_v15_contract import AUTH_ACTION
 
 
 def test_builds_soap11_headers_with_quoted_action() -> None:

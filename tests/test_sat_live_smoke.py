@@ -25,23 +25,25 @@ from cfdi_vault.sat_auth_envelope_lint import lint_auth_envelope
 from cfdi_vault.sat_auth_http import validate_auth_headers_for_contract
 from cfdi_vault.sat_contract import SatOperation, SatVerificationError
 from cfdi_vault.sat_live_smoke import (
-    AUTH_ACTION,
-    DEFAULT_VERIFY_ENDPOINT,
     DS_NS,
-    SAT_REQUEST_NS,
-    VERIFY_ACTION,
     VERIFY_EXCLUSIVE_C14N,
     SatEfirmMaterial,
     SatLiveMetadataSmokeAdapter,
-    SatLiveSmokeEndpoints,
     SatLiveSmokeError,
     SatLiveV15MetadataAdapter,
-    SatV15RequestOperation,
     _build_request_envelope,
     resolve_v15_request_operation,
-    v15_request_soap_action,
 )
 from cfdi_vault.sat_transport import FakeSoapTransport, SoapReadTimeout, SoapTransportResponse
+from cfdi_vault.sat_v15_contract import (
+    AUTH_ACTION,
+    DEFAULT_VERIFY_ENDPOINT,
+    SAT_REQUEST_NS,
+    VERIFY_ACTION,
+    SatV15Endpoints,
+    SatV15RequestOperation,
+    v15_request_soap_action,
+)
 from cfdi_vault.secrets import DummySecretProvider
 from cfdi_vault.setup_core import CredentialMode, LocalProfile, LocalProfileStatus
 
@@ -53,7 +55,7 @@ def test_metadata_smoke_uses_real_adapter_shape_without_package_download(tmp_pat
         SoapTransportResponse(200, body=_soap('<sat:VerificaSolicitudDescargaResult CodEstatus="5000" EstadoSolicitud="2" Mensaje="Working" />')),
     ]
     transport = FakeSoapTransport(responses)
-    endpoints = SatLiveSmokeEndpoints("https://auth.example", "https://request.example", DEFAULT_VERIFY_ENDPOINT)
+    endpoints = SatV15Endpoints("https://auth.example", "https://request.example", DEFAULT_VERIFY_ENDPOINT)
 
     result = SatLiveMetadataSmokeAdapter(
         profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material(), endpoints=endpoints
@@ -531,7 +533,7 @@ def test_metadata_verify_smoke_fails_before_verify_transport_when_endpoint_is_wr
     transport = FakeSoapTransport(
         [SoapTransportResponse(200, body=_soap("<sat:AutenticaResult>SYNTHETIC_TOKEN</sat:AutenticaResult>"))]
     )
-    endpoints = SatLiveSmokeEndpoints("https://auth.example", "https://request.example", "https://request.example")
+    endpoints = SatV15Endpoints("https://auth.example", "https://request.example", "https://request.example")
 
     with pytest.raises(SatLiveSmokeError) as exc:
         SatLiveMetadataSmokeAdapter(
@@ -984,8 +986,8 @@ def _auth_response() -> SoapTransportResponse:
     return SoapTransportResponse(200, body=_soap("<sat:AutenticaResult>SYNTHETIC_TOKEN</sat:AutenticaResult>"))
 
 
-def _test_endpoints() -> SatLiveSmokeEndpoints:
-    return SatLiveSmokeEndpoints("https://auth.example", "https://request.example", DEFAULT_VERIFY_ENDPOINT, "https://download.example")
+def _test_endpoints() -> SatV15Endpoints:
+    return SatV15Endpoints("https://auth.example", "https://request.example", DEFAULT_VERIFY_ENDPOINT, "https://download.example")
 
 
 def _material() -> SatEfirmMaterial:
