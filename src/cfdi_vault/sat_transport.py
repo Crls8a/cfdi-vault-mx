@@ -7,16 +7,16 @@ perform network calls accidentally.
 
 from __future__ import annotations
 
-import os
 import errno
+import os
 import socket
 import ssl
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from http.client import HTTPConnection, HTTPSConnection
 from typing import Protocol
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib import request as urllib_request
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 _FALSEY_ENV_VALUES = {"", "0", "false", "no", "off"}
 
@@ -123,6 +123,8 @@ class LiveSatGuardInput:
     range_within_limit: bool = False
     live_permit_verified: bool = False
     live_permit_allows_real_credentials: bool = False
+    campaign_grant_verified: bool = False
+    campaign_grant_allows_real_credentials: bool = False
     real_credentials_required: bool = True
     environ: Mapping[str, str] = field(default_factory=lambda: os.environ)
 
@@ -131,17 +133,24 @@ def validate_live_sat_guard(input: LiveSatGuardInput) -> None:
     """Raise before network I/O unless every live SAT gate is satisfied."""
 
     reasons: list[str] = []
+    campaign_authorized, campaign_authority_invalid = _campaign_grant_authority(input)
+    legacy_or_campaign_verified = input.live_permit_verified or campaign_authorized
+    credentials_authorized = campaign_authorized or (
+        input.live_permit_verified and input.live_permit_allows_real_credentials
+    )
+    if campaign_authority_invalid:
+        reasons.append("invalid-campaign-grant-authority")
     if _is_truthy(input.environ.get("CI")):
         reasons.append("ci-enabled")
-    if input.environ.get("CFDI_VAULT_ALLOW_REAL_SAT") != "1" and not input.live_permit_verified:
+    if input.environ.get("CFDI_VAULT_ALLOW_REAL_SAT") != "1" and not legacy_or_campaign_verified:
         reasons.append("missing-explicit-real-sat-env")
     if (
         input.real_credentials_required
         and input.environ.get("CFDI_VAULT_ALLOW_REAL_CREDENTIALS") != "1"
-        and not (input.live_permit_verified and input.live_permit_allows_real_credentials)
+        and not credentials_authorized
     ):
         reasons.append("missing-explicit-real-credentials-env")
-    if not input.live_permit_verified:
+    if not legacy_or_campaign_verified:
         if not input.manual_real_sat:
             reasons.append("missing-manual-real-sat-flag")
         if not input.terminal_interactive:
@@ -164,6 +173,23 @@ def validate_live_sat_guard(input: LiveSatGuardInput) -> None:
         reasons.append("range-too-wide")
     if reasons:
         raise LiveSatGuardError(reasons)
+
+
+def _campaign_grant_authority(input: LiveSatGuardInput) -> tuple[bool, bool]:
+    """Validate internal authority derived from a current-commit campaign grant.
+
+    Callers may set these fields only immediately after loading and validating
+    the private ``metadata-proof`` grant. A partial or non-boolean pair is an
+    invalid claimed authority rather than an absent authority.
+    """
+
+    values = (
+        input.campaign_grant_verified,
+        input.campaign_grant_allows_real_credentials,
+    )
+    authorized = all(value is True for value in values)
+    claimed = any(value is not False for value in values)
+    return authorized, claimed and not authorized
 
 
 class FakeSoapTransport:

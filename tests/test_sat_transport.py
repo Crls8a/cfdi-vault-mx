@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from cfdi_vault.sat_transport import (
@@ -11,7 +13,6 @@ from cfdi_vault.sat_transport import (
     SoapTransportResponse,
     validate_live_sat_guard,
 )
-
 
 SAFE_ENDPOINT = "https://synthetic.invalid/sat/soap?token=URL_SECRET_TOKEN&trace=SYNTHETIC_TRACE"
 SAFE_BODY = b"<soap:SYNTHETIC>OK</soap:SYNTHETIC>"
@@ -41,6 +42,21 @@ def _passing_guard() -> LiveSatGuardInput:
             "CFDI_VAULT_ALLOW_REAL_SAT": "1",
             "CFDI_VAULT_ALLOW_REAL_CREDENTIALS": "1",
         },
+    )
+
+
+def _passing_campaign_guard() -> LiveSatGuardInput:
+    return LiveSatGuardInput(
+        profile_ready=True,
+        credentials_ready=True,
+        doctor_ok=True,
+        scanner_passed=True,
+        repo_clean=True,
+        metadata_only=True,
+        range_within_limit=True,
+        campaign_grant_verified=True,
+        campaign_grant_allows_real_credentials=True,
+        environ={},
     )
 
 
@@ -315,6 +331,130 @@ def test_live_sat_guard_keeps_ci_and_credential_gates_with_permit() -> None:
             )
         )
     assert "missing-explicit-real-credentials-env" in credentials_exc.value.reasons
+
+
+def test_live_sat_guard_accepts_verified_campaign_authority_without_legacy_permit() -> None:
+    guard = _passing_campaign_guard()
+
+    validate_live_sat_guard(guard)
+
+    assert guard.live_permit_verified is False
+    assert guard.live_permit_allows_real_credentials is False
+
+
+@pytest.mark.parametrize(
+    ("verified", "allows_real_credentials"),
+    [(True, False), (False, True)],
+)
+def test_live_sat_guard_rejects_partial_campaign_authority(
+    verified: bool,
+    allows_real_credentials: bool,
+) -> None:
+    guard = replace(
+        _passing_campaign_guard(),
+        campaign_grant_verified=verified,
+        campaign_grant_allows_real_credentials=allows_real_credentials,
+    )
+
+    with pytest.raises(LiveSatGuardError) as exc_info:
+        validate_live_sat_guard(guard)
+
+    assert "invalid-campaign-grant-authority" in exc_info.value.reasons
+
+
+def test_live_sat_guard_rejects_non_boolean_campaign_authority() -> None:
+    guard = replace(
+        _passing_campaign_guard(),
+        live_permit_verified=True,
+        live_permit_allows_real_credentials=True,
+        campaign_grant_verified="verified",  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(LiveSatGuardError) as exc_info:
+        validate_live_sat_guard(guard)
+
+    assert exc_info.value.reasons == ("invalid-campaign-grant-authority",)
+
+
+def test_live_sat_guard_rejects_partial_campaign_claim_with_complete_legacy_permit() -> None:
+    guard = replace(
+        _passing_campaign_guard(),
+        live_permit_verified=True,
+        live_permit_allows_real_credentials=True,
+        campaign_grant_allows_real_credentials=False,
+    )
+
+    with pytest.raises(LiveSatGuardError) as exc_info:
+        validate_live_sat_guard(guard)
+
+    assert exc_info.value.reasons == ("invalid-campaign-grant-authority",)
+
+
+def test_live_sat_guard_does_not_combine_partial_legacy_and_campaign_authority() -> None:
+    guard = replace(
+        _passing_campaign_guard(),
+        live_permit_verified=True,
+        campaign_grant_verified=False,
+        campaign_grant_allows_real_credentials=True,
+    )
+
+    with pytest.raises(LiveSatGuardError) as exc_info:
+        validate_live_sat_guard(guard)
+
+    assert "invalid-campaign-grant-authority" in exc_info.value.reasons
+    assert "missing-explicit-real-credentials-env" in exc_info.value.reasons
+
+
+def test_live_sat_guard_rejects_when_both_noninteractive_authorities_are_absent() -> None:
+    guard = replace(
+        _passing_campaign_guard(),
+        campaign_grant_verified=False,
+        campaign_grant_allows_real_credentials=False,
+    )
+
+    with pytest.raises(LiveSatGuardError) as exc_info:
+        validate_live_sat_guard(guard)
+
+    assert "missing-explicit-real-sat-env" in exc_info.value.reasons
+    assert "missing-explicit-real-credentials-env" in exc_info.value.reasons
+    assert "missing-manual-real-sat-flag" in exc_info.value.reasons
+
+
+def test_live_sat_guard_preserves_complete_legacy_permit_authority() -> None:
+    guard = replace(
+        _passing_campaign_guard(),
+        campaign_grant_verified=False,
+        campaign_grant_allows_real_credentials=False,
+        live_permit_verified=True,
+        live_permit_allows_real_credentials=True,
+    )
+
+    validate_live_sat_guard(guard)
+
+
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        ({"environ": {"CI": "1"}}, "ci-enabled"),
+        ({"profile_ready": False}, "profile-not-ready"),
+        ({"credentials_ready": False}, "local-credentials-not-ready"),
+        ({"doctor_ok": False}, "doctor-not-ok"),
+        ({"scanner_passed": False}, "scanner-not-passed"),
+        ({"repo_clean": False}, "repo-dirty"),
+        ({"metadata_only": False}, "metadata-only-required"),
+        ({"range_within_limit": False}, "range-too-wide"),
+    ],
+)
+def test_live_sat_guard_campaign_authority_cannot_bypass_preflight(
+    changes: dict[str, object],
+    reason: str,
+) -> None:
+    guard = replace(_passing_campaign_guard(), **changes)
+
+    with pytest.raises(LiveSatGuardError) as exc_info:
+        validate_live_sat_guard(guard)
+
+    assert reason in exc_info.value.reasons
 
 
 def test_repr_and_guard_errors_do_not_leak_authorization_tokens_or_body() -> None:
