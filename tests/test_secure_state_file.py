@@ -227,6 +227,123 @@ def test_existing_state_retries_root_fsync_after_initial_sync_failure(tmp_path, 
     assert calls == [root, root]
 
 
+def test_transaction_setup_sanitizes_second_identity_lstat_failure(tmp_path, monkeypatch) -> None:
+    repository, storage = _roots(tmp_path)
+    root, original_lstat = storage.resolve(), subject.os.lstat
+    root_calls = 0
+    private_detail = f"private-path={storage}"
+
+    def fail_second_identity_lstat(path):  # type: ignore[no-untyped-def]
+        nonlocal root_calls
+        if Path(path) == root:
+            root_calls += 1
+            if root_calls == 3:
+                raise PermissionError(private_detail)
+        return original_lstat(path)
+
+    monkeypatch.setattr(subject.os, "lstat", fail_second_identity_lstat)
+    with pytest.raises(subject.SecureStateFileError, match="^state-file-path-invalid$") as raised:
+        with subject.secure_state_transaction(storage, NAME, repo_root=repository):
+            pass
+    assert private_detail not in str(raised.value)
+
+
+def test_path_validation_sanitizes_resolve_failure(tmp_path, monkeypatch) -> None:
+    repository, storage = _roots(tmp_path)
+    state = storage / "state"
+    state.mkdir(parents=True)
+    path = state / NAME
+    path.write_bytes(b"payload")
+    private_detail = f"private-path={path}"
+    original_resolve = Path.resolve
+
+    def fail_file_resolve(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if self == path:
+            raise PermissionError(private_detail)
+        return original_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_file_resolve)
+    with pytest.raises(subject.SecureStateFileError, match="^state-file-path-invalid$") as raised:
+        subject.secure_state_path(storage, NAME, repo_root=repository)
+    assert private_detail not in str(raised.value)
+
+
+def test_transaction_setup_preserves_sanitized_error_when_descriptor_cleanup_fails(
+    tmp_path, monkeypatch,
+) -> None:
+    repository, storage = _roots(tmp_path)
+    private_detail = f"private-path={storage}"
+    original_close = subject.os.close
+
+    def close_then_fail(descriptor):  # type: ignore[no-untyped-def]
+        original_close(descriptor)
+        raise OSError(private_detail)
+
+    monkeypatch.setattr(
+        subject, "_validate_open_file",
+        Mock(side_effect=subject.SecureStateFileError("state-file-path-invalid")),
+    )
+    monkeypatch.setattr(subject.os, "close", close_then_fail)
+    with pytest.raises(subject.SecureStateFileError, match="^state-file-path-invalid$") as raised:
+        with subject.secure_state_transaction(storage, NAME, repo_root=repository):
+            pass
+    assert private_detail not in str(raised.value)
+
+
+def test_transaction_read_sanitizes_namespace_validation_failure(tmp_path, monkeypatch) -> None:
+    repository, storage = _roots(tmp_path)
+    private_detail = f"private-path={storage}"
+    with subject.secure_state_transaction(storage, NAME, repo_root=repository) as transaction:
+        state, original_lstat = (storage / "state").resolve(), subject.os.lstat
+
+        def fail_state_lstat(path):  # type: ignore[no-untyped-def]
+            if Path(path) == state:
+                raise OSError(private_detail)
+            return original_lstat(path)
+
+        monkeypatch.setattr(subject.os, "lstat", fail_state_lstat)
+        with pytest.raises(subject.SecureStateFileError, match="^state-file-path-invalid$") as raised:
+            transaction.read()
+    assert private_detail not in str(raised.value)
+
+
+def test_transaction_replace_sanitizes_namespace_validation_failure(tmp_path, monkeypatch) -> None:
+    repository, storage = _roots(tmp_path)
+    private_detail = f"private-path={storage}"
+    with subject.secure_state_transaction(storage, NAME, repo_root=repository) as transaction:
+        state, original_lstat = (storage / "state").resolve(), subject.os.lstat
+
+        def fail_state_lstat(path):  # type: ignore[no-untyped-def]
+            if Path(path) == state:
+                raise PermissionError(private_detail)
+            return original_lstat(path)
+
+        monkeypatch.setattr(subject.os, "lstat", fail_state_lstat)
+        with pytest.raises(subject.SecureStateFileError, match="^state-file-path-invalid$") as raised:
+            transaction.replace(b"payload")
+    assert raised.value.retry_safe and private_detail not in str(raised.value)
+
+
+def test_transaction_read_sanitizes_unexpected_filesystem_failure(tmp_path, monkeypatch) -> None:
+    repository, storage = _roots(tmp_path)
+    private_detail = f"private-path={storage}"
+    with subject.secure_state_transaction(storage, NAME, repo_root=repository) as transaction:
+        monkeypatch.setattr(subject, "_read", Mock(side_effect=OSError(private_detail)))
+        with pytest.raises(subject.SecureStateFileError, match="^state-file-unreadable$") as raised:
+            transaction.read()
+    assert private_detail not in str(raised.value)
+
+
+def test_transaction_replace_sanitizes_unexpected_filesystem_failure(tmp_path, monkeypatch) -> None:
+    repository, storage = _roots(tmp_path)
+    private_detail = f"private-path={storage}"
+    with subject.secure_state_transaction(storage, NAME, repo_root=repository) as transaction:
+        monkeypatch.setattr(subject, "_atomic_write", Mock(side_effect=OSError(private_detail)))
+        with pytest.raises(subject.SecureStateFileError, match="^state-file-write-failed$") as raised:
+            transaction.replace(b"payload")
+    assert raised.value.retry_safe and private_detail not in str(raised.value)
+
+
 def test_post_visibility_fsync_and_lock_release_failures_are_terminal(tmp_path, monkeypatch) -> None:
     repository, storage = _roots(tmp_path)
     _write(storage, repository)

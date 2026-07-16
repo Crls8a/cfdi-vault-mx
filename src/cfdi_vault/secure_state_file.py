@@ -64,8 +64,11 @@ class _NamespaceSnapshot:
     state_identity: _Identity
 
     def validate(self) -> None:
-        _validate_directory_identity(self.root, self.root.parent, self.root_identity)
-        _validate_directory_identity(self.state, self.root, self.state_identity)
+        try:
+            _validate_directory_identity(self.root, self.root.parent, self.root_identity)
+            _validate_directory_identity(self.state, self.root, self.state_identity)
+        except OSError:
+            raise SecureStateFileError("state-file-path-invalid") from None
 
 
 @dataclass(repr=False)
@@ -75,10 +78,15 @@ class _SecureStateTransaction:
     commit_state: _CommitState
 
     def read(self) -> bytes | None:
-        self.namespace.validate()
-        payload = _read(self.path)
-        self.namespace.validate()
-        return payload
+        try:
+            self.namespace.validate()
+            payload = _read(self.path)
+            self.namespace.validate()
+            return payload
+        except SecureStateFileError:
+            raise
+        except OSError:
+            raise SecureStateFileError("state-file-unreadable") from None
 
     def replace(self, payload: bytes) -> SecureStateWriteOutcome:
         if type(payload) is not bytes:
@@ -92,6 +100,8 @@ class _SecureStateTransaction:
         except SecureStateFileError as exc:
             self.commit_state.committed |= exc.committed
             raise
+        except OSError:
+            raise SecureStateFileError("state-file-write-failed") from None
         self.commit_state.committed = True
         return outcome
 
@@ -180,8 +190,11 @@ def _validate_directory(path: Path, parent: Path) -> None:
 
 
 def _directory_identity(path: Path, parent: Path) -> _Identity:
-    _validate_directory(path, parent)
-    info = os.lstat(path)
+    try:
+        _validate_directory(path, parent)
+        info = os.lstat(path)
+    except OSError:
+        raise SecureStateFileError("state-file-path-invalid") from None
     return info.st_dev, info.st_ino
 
 
@@ -199,8 +212,12 @@ def _validate_file(path: Path, parent: Path, *, missing: bool) -> None:
         raise
     except OSError:
         raise SecureStateFileError("state-file-path-invalid") from None
-    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or _linked(info)
-            or path.resolve(strict=True).parent != parent.resolve(strict=True)):
+    try:
+        invalid = (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or _linked(info)
+                   or path.resolve(strict=True).parent != parent.resolve(strict=True))
+    except OSError:
+        raise SecureStateFileError("state-file-path-invalid") from None
+    if invalid:
         raise SecureStateFileError("state-file-path-invalid")
 
 
@@ -241,11 +258,17 @@ def _exclusive_lock(
         _validate_directory_identity(root, root.parent, root_identity)
     except SecureStateFileError:
         if descriptor is not None:
-            os.close(descriptor)
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
         raise
     except OSError:
         if descriptor is not None:
-            os.close(descriptor)
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
         raise SecureStateFileError("state-file-lock-failed") from None
     try:
         yield
