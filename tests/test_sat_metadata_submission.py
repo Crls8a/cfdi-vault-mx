@@ -8,6 +8,7 @@ from unittest.mock import Mock
 import pytest
 
 import cfdi_vault.sat_live_request_state as legacy_state
+import cfdi_vault.sat_metadata_recovery as lifecycle
 import cfdi_vault.sat_metadata_recovery_state as recovery_state
 import cfdi_vault.sat_metadata_submission as subject
 from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType
@@ -15,6 +16,100 @@ from cfdi_vault.sat_contract import SatOutcomeAction, SatRequestResult
 
 NOW = datetime(2026, 6, 30, tzinfo=timezone.utc)
 COMMIT = "f" * 40
+
+
+def test_campaign_request_uses_preallocated_recovery_ref_and_restarts_idempotently(tmp_path) -> None:
+    query = _query()
+    expected = recovery_state.campaign_metadata_recovery_ref(
+        "profile-synthetic", query.criteria_hash(),
+    )
+
+    def submit(_: DownloadQuery) -> SatRequestResult:
+        private = json.loads(subject.metadata_submission_claim_path(tmp_path).read_text())
+        assert private["claims"][0]["recoveryRef"] == expected
+        return _result()
+
+    requester = Mock(submit_request=Mock(side_effect=submit))
+
+    first = _submit_campaign(tmp_path, requester, query, expected)
+    restarted = _submit_campaign(tmp_path, requester, query, expected)
+
+    assert first == restarted
+    assert first.status is subject.SubmissionStatus.ACCEPTED
+    assert first.recovery_ref == expected
+    assert requester.submit_request.call_count == 1
+    saved = recovery_state.load_metadata_recovery_state(tmp_path, expected)
+    assert saved.id_solicitud == "synthetic-request-alpha"
+    assert saved.recovery.recovery_ref == expected
+    assert saved.observation_provenance.entry_point == "sat-campaign"
+
+
+@pytest.mark.parametrize("expected", (None, "", "run-invalid", "run-000000000000"))
+def test_campaign_missing_or_wrong_preallocated_ref_is_rejected_before_contact(
+    tmp_path, expected,
+) -> None:
+    query = _query()
+    requester = Mock()
+
+    with pytest.raises(subject.MetadataSubmissionError, match="submission-input-invalid"):
+        _submit_campaign(tmp_path, requester, query, expected)
+
+    assert requester.submit_request.call_count == 0
+    assert not subject.metadata_submission_claim_path(tmp_path).exists()
+
+
+def test_campaign_rejects_existing_same_criteria_under_different_ref_before_contact(
+    tmp_path,
+) -> None:
+    query = _query()
+    legacy_ref = recovery_state.recovery_ref(
+        "profile-synthetic", query.criteria_hash(), "synthetic-request-alpha",
+    )
+    record = recovery_state.new_metadata_recovery_state(
+        recovery=lifecycle.start_metadata_recovery(legacy_ref, created_at=NOW),
+        id_solicitud="synthetic-request-alpha", profile_id="profile-synthetic",
+        direction="received", kind="metadata", fecha_inicial="2026-06-30",
+        fecha_final="2026-06-30", criteria_hash=query.criteria_hash(),
+        authorization_ref="authorization-synthetic",
+    )
+    recovery_state.save_metadata_recovery_state(tmp_path, record)
+    requester = Mock()
+    expected = recovery_state.campaign_metadata_recovery_ref(
+        "profile-synthetic", query.criteria_hash(),
+    )
+
+    with pytest.raises(subject.MetadataSubmissionError, match="submission-recovery-ref-conflict"):
+        _submit_campaign(tmp_path, requester, query, expected)
+
+    assert requester.submit_request.call_count == 0
+    assert not subject.metadata_submission_claim_path(tmp_path).exists()
+
+
+@pytest.mark.parametrize(
+    ("outcome", "status"),
+    ((RuntimeError("private"), subject.SubmissionStatus.SUBMIT_UNCERTAIN),
+     (SatRequestResult("", "5003", "rejected", SatOutcomeAction.PERMANENT_FAILURE),
+      subject.SubmissionStatus.SUBMIT_FAILED)),
+)
+def test_campaign_terminal_submission_retains_preallocated_lineage(
+    tmp_path, outcome, status,
+) -> None:
+    query = _query()
+    expected = recovery_state.campaign_metadata_recovery_ref(
+        "profile-synthetic", query.criteria_hash(),
+    )
+    requester = Mock()
+    requester.submit_request.side_effect = outcome if isinstance(outcome, Exception) else None
+    if not isinstance(outcome, Exception):
+        requester.submit_request.return_value = outcome
+
+    claim = _submit_campaign(tmp_path, requester, query, expected)
+    restarted = _submit_campaign(tmp_path, requester, query, expected)
+
+    assert claim == restarted
+    assert claim.status is status and claim.recovery_ref == expected
+    assert requester.submit_request.call_count == 1
+    assert recovery_state.list_metadata_recovery_states(tmp_path) == ()
 
 
 def test_accepted_request_is_claimed_before_network_and_reused_with_new_authorization(tmp_path) -> None:
@@ -302,6 +397,15 @@ def _submit(tmp_path, requester, query: DownloadQuery, authorization: str = "aut
         profile_id="profile-synthetic", criteria_hash=query.criteria_hash(),
         authorization_ref=authorization,
         tested_commit=COMMIT, entry_point="metadata-recover-live",
+    )
+
+
+def _submit_campaign(tmp_path, requester, query: DownloadQuery, expected: str | None):
+    return subject.submit_metadata_recovery_once(
+        requester=requester, query=query, now=NOW, storage_root=tmp_path,
+        profile_id="profile-synthetic", criteria_hash=query.criteria_hash(),
+        authorization_ref="authorization-synthetic", expected_recovery_ref=expected,
+        tested_commit=COMMIT, entry_point="sat-campaign",
     )
 
 

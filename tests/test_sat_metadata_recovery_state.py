@@ -24,6 +24,31 @@ REQUEST_ID = "synthetic-request-alpha"
 PACKAGE_IDS = ("synthetic-package-alpha", "synthetic-package-beta")
 
 
+def test_campaign_recovery_ref_is_deterministic_opaque_and_valid_state_identity() -> None:
+    first = subject.campaign_metadata_recovery_ref("profile-private", CRITERIA_HASH)
+    second = subject.campaign_metadata_recovery_ref("profile-private", CRITERIA_HASH)
+
+    assert first == second
+    assert first.startswith("run-") and len(first) == 16
+    assert "profile-private" not in first and CRITERIA_HASH not in first
+    legacy = _pending_record()
+    campaign = replace(
+        legacy,
+        recovery=replace(legacy.recovery, recovery_ref=first),
+        profile_id="profile-private",
+    )
+    assert campaign.recovery.recovery_ref == first
+
+
+@pytest.mark.parametrize(
+    ("profile", "criteria"),
+    (("", CRITERIA_HASH), (" profile", CRITERIA_HASH), ("profile-private", "A" * 64)),
+)
+def test_campaign_recovery_ref_rejects_invalid_identity(profile: str, criteria: str) -> None:
+    with pytest.raises(subject.MetadataRecoveryStateError, match="campaign-recovery-ref-invalid"):
+        subject.campaign_metadata_recovery_ref(profile, criteria)
+
+
 def test_private_state_round_trips_exact_lifecycle_and_package_bindings(tmp_path) -> None:
     assert subject.list_metadata_recovery_states(tmp_path) == ()
     pending = _pending_record()

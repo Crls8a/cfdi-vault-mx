@@ -49,7 +49,9 @@ _RECOVERY_KEYS = {
 }
 _HASH_RE = re.compile(r"[0-9a-f]{64}")
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
-_OBSERVATION_ENTRY_POINTS = {"metadata-recover-live", "metadata-recovery-runner"}
+_OBSERVATION_ENTRY_POINTS = {
+    "metadata-recover-live", "metadata-recovery-runner", "sat-campaign",
+}
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -147,6 +149,22 @@ def recovery_ref(profile_id: str, criteria_hash: str, id_solicitud: str) -> str:
     """Derive a non-reversible reference for one exact accepted request."""
     digest = hashlib.sha256(f"{profile_id}:{criteria_hash}:{id_solicitud}".encode()).hexdigest()
     return f"run-{digest[:12]}"
+
+
+def campaign_metadata_recovery_ref(profile_id: str, criteria_hash: str) -> str:
+    """Preallocate an opaque recovery identity for exact campaign criteria."""
+    if (
+        not isinstance(profile_id, str)
+        or profile_id != profile_id.strip()
+        or not profile_id
+        or len(profile_id) > 512
+        or not profile_id.isprintable()
+        or not isinstance(criteria_hash, str)
+        or _HASH_RE.fullmatch(criteria_hash) is None
+    ):
+        raise MetadataRecoveryStateError("campaign-recovery-ref-invalid")
+    payload = f"sat-campaign-metadata-recovery-v1:{profile_id}:{criteria_hash}"
+    return f"run-{hashlib.sha256(payload.encode()).hexdigest()[:12]}"
 
 
 def package_ref(id_paquete: str) -> str:
@@ -277,9 +295,12 @@ def _validate_record(record: MetadataRecoveryStateRecord) -> None:
         dates_invalid = False
     if dates_invalid:
         raise MetadataRecoveryStateError("recovery-dates-invalid")
-    if start > end or record.recovery.recovery_ref != recovery_ref(
-        record.profile_id, record.criteria_hash, record.id_solicitud
-    ):
+    valid_refs = {recovery_ref(record.profile_id, record.criteria_hash, record.id_solicitud)}
+    try:
+        valid_refs.add(campaign_metadata_recovery_ref(record.profile_id, record.criteria_hash))
+    except MetadataRecoveryStateError:
+        pass
+    if start > end or record.recovery.recovery_ref not in valid_refs:
         raise MetadataRecoveryStateError("recovery-ref-mismatch")
     if type(record.package_bindings) is not tuple or any(
         type(item) is not PackageIdBinding for item in record.package_bindings

@@ -88,14 +88,17 @@ def submit_metadata_recovery_once(
     *, requester: SatRequestPort, query: DownloadQuery, now: datetime,
     storage_root: str | Path, profile_id: str, criteria_hash: str,
     authorization_ref: str, tested_commit: str, entry_point: str,
+    expected_recovery_ref: str | None = None,
     repo_root: str | Path | None = None,
 ) -> MetadataSubmissionClaim:
     """Persist an exact claim, then submit at most once without locking over I/O."""
     provenance = _validate_input(
         query, now, profile_id, criteria_hash, authorization_ref, tested_commit, entry_point,
+        expected_recovery_ref,
     )
     claim, should_submit = _prepare(
-        storage_root, query, now, profile_id, criteria_hash, authorization_ref, repo_root
+        storage_root, query, now, profile_id, criteria_hash, authorization_ref,
+        expected_recovery_ref, repo_root,
     )
     if not should_submit:
         return claim
@@ -105,7 +108,7 @@ def submit_metadata_recovery_once(
     status, request_id = outcome
     if status != SubmissionStatus.ACCEPTED:
         return _finish(storage_root, claim, status, now, repo_root=repo_root)
-    run_ref = state.recovery_ref(profile_id, criteria_hash, request_id)
+    run_ref = expected_recovery_ref or state.recovery_ref(profile_id, criteria_hash, request_id)
     recovery = lifecycle.start_metadata_recovery(run_ref, created_at=now)
     period = query.period
     assert period is not None
@@ -121,18 +124,27 @@ def submit_metadata_recovery_once(
                    recovery_ref=run_ref, repo_root=repo_root)
 
 
-def _prepare(storage_root, query, now, profile, criteria, authorization, repo_root):
+def _prepare(
+    storage_root, query, now, profile, criteria, authorization, expected_recovery, repo_root,
+):
     recovery_path = state._resolved_state_path(storage_root, repo_root=repo_root, create_parent=True)
     claim_path = recovery_path.with_name("sat-metadata-submission-claims.json")
     with state._exclusive_state_lock(recovery_path):
         claims = list(_read_claims(claim_path))
-        match = next((item for item in state._records_from_path(recovery_path)
-                      if item.profile_id == profile and item.criteria_hash == criteria), None)
+        matches = tuple(item for item in state._records_from_path(recovery_path)
+                        if item.profile_id == profile and item.criteria_hash == criteria)
+        if expected_recovery and any(
+            item.recovery.recovery_ref != expected_recovery for item in matches
+        ):
+            raise MetadataSubmissionError("submission-recovery-ref-conflict")
+        match = next(iter(matches), None)
         ref = "claim-" + hashlib.sha256(f"{profile}:{criteria}".encode()).hexdigest()[:12]
         existing = next((item for item in claims if item.claim_ref == ref), None)
         if existing:
             if existing.profile_id != profile or existing.criteria_hash != criteria:
                 raise MetadataSubmissionError("submission-claim-conflict")
+            if expected_recovery and existing.recovery_ref != expected_recovery:
+                raise MetadataSubmissionError("submission-recovery-ref-conflict")
             if existing.status == SubmissionStatus.ACCEPTED:
                 if match is None or match.recovery.recovery_ref != existing.recovery_ref:
                     raise MetadataSubmissionError("submission-state-inconsistent")
@@ -141,7 +153,8 @@ def _prepare(storage_root, query, now, profile, criteria, authorization, repo_ro
                 return existing, False
             replacement = replace(existing, status=(SubmissionStatus.ACCEPTED if match else
                                   SubmissionStatus.SUBMIT_UNCERTAIN), updated_at=now,
-                                  recovery_ref=(match.recovery.recovery_ref if match else ""))
+                                  recovery_ref=(match.recovery.recovery_ref if match else
+                                                existing.recovery_ref))
             _write_claims(claim_path, tuple(
                 replacement if item.claim_ref == replacement.claim_ref else item for item in claims))
             return replacement, False
@@ -151,12 +164,13 @@ def _prepare(storage_root, query, now, profile, criteria, authorization, repo_ro
         status = SubmissionStatus.ACCEPTED if match else SubmissionStatus.CLAIMED
         claim = MetadataSubmissionClaim(ref, status, now, now, profile, _query_document(query), criteria,
                                         authorization, uuid4().hex,
-                                        match.recovery.recovery_ref if match else "")
+                                        match.recovery.recovery_ref if match else
+                                        (expected_recovery or ""))
         _write_claims(claim_path, (*claims, claim))
         return claim, status == SubmissionStatus.CLAIMED
 
 
-def _finish(storage_root, original, status, now, *, recovery_ref="", repo_root=None):
+def _finish(storage_root, original, status, now, *, recovery_ref=None, repo_root=None):
     recovery_path = state._resolved_state_path(storage_root, repo_root=repo_root, create_parent=True)
     path = recovery_path.with_name("sat-metadata-submission-claims.json")
     with state._exclusive_state_lock(recovery_path):
@@ -164,7 +178,10 @@ def _finish(storage_root, original, status, now, *, recovery_ref="", repo_root=N
         current = next((item for item in claims if item.claim_ref == original.claim_ref), None)
         if current is None or current.owner_ref != original.owner_ref:
             raise MetadataSubmissionError("submission-claim-lost")
-        updated = replace(current, status=status, updated_at=now, recovery_ref=recovery_ref)
+        updated = replace(
+            current, status=status, updated_at=now,
+            recovery_ref=current.recovery_ref if recovery_ref is None else recovery_ref,
+        )
         _write_claims(path, tuple(
             updated if item.claim_ref == updated.claim_ref else item for item in claims))
         return updated
@@ -249,9 +266,11 @@ def _claim_from_document(value: object) -> MetadataSubmissionClaim:
             or not _valid_private_ref(claim.authorization_ref)
             or not _OWNER_REF.fullmatch(claim.owner_ref)
             or claim.updated_at < claim.created_at
-            or (claim.status is SubmissionStatus.ACCEPTED)
-            != bool(_RECOVERY_REF.fullmatch(claim.recovery_ref))
-            or (claim.status is not SubmissionStatus.ACCEPTED and claim.recovery_ref)):
+            or (claim.recovery_ref and not _RECOVERY_REF.fullmatch(claim.recovery_ref))
+            or (claim.status is SubmissionStatus.ACCEPTED and not claim.recovery_ref)
+            or (claim.status is not SubmissionStatus.ACCEPTED and claim.recovery_ref
+                and claim.recovery_ref != state.campaign_metadata_recovery_ref(
+                    claim.profile_id, claim.criteria_hash))):
         raise ValueError
     return claim
 
@@ -323,7 +342,10 @@ def _unique(pairs):
     return result
 
 
-def _validate_input(query, now, profile, criteria, authorization, tested_commit, entry_point):
+def _validate_input(
+    query, now, profile, criteria, authorization, tested_commit, entry_point,
+    expected_recovery,
+):
     valid = False
     provenance = None
     try:
@@ -341,6 +363,11 @@ def _validate_input(query, now, profile, criteria, authorization, tested_commit,
             and period.start <= period.end
             and _query_from_document(query_document).criteria_hash() == criteria
             and query.criteria_hash() == criteria
+            and (
+                expected_recovery is None
+                or expected_recovery == state.campaign_metadata_recovery_ref(profile, criteria)
+            )
+            and (entry_point != "sat-campaign" or expected_recovery is not None)
         )
         provenance = state.new_metadata_observation_provenance(
             tested_commit=tested_commit, observed_at=now, entry_point=entry_point,
