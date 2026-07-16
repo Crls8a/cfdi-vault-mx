@@ -66,7 +66,7 @@ def test_root_and_filename_are_canonical_absolute_and_external(tmp_path) -> None
 @pytest.mark.parametrize(
     "attack", ("state-symlink", "file-symlink", "lock-symlink", "file-hardlink", "lock-hardlink"),
 )
-def test_linked_named_nodes_cannot_escape(tmp_path, attack: str) -> None:
+def test_preexisting_linked_named_nodes_are_rejected(tmp_path, attack: str) -> None:
     repository, storage = _roots(tmp_path)
     node, kind = attack.split("-")
     outside = tmp_path / "outside"
@@ -150,10 +150,10 @@ def test_failed_replace_preserves_state_cleans_temp_and_success_fsyncs_parent(tm
     monkeypatch.setattr(subject.os, "replace", original_replace)
     monkeypatch.setattr(subject, "_fsync_directory", fsync_directory)
     _write(storage, repository)
-    fsync_directory.assert_called_once_with(path.parent)
+    assert fsync_directory.call_args_list == [call(storage.resolve()), call(path.parent)]
 
 
-def test_state_directory_swap_is_caught_before_any_outside_write(tmp_path) -> None:
+def test_detected_state_identity_change_fails_closed_as_defense_in_depth(tmp_path) -> None:
     repository, storage = _roots(tmp_path)
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -165,7 +165,7 @@ def test_state_directory_swap_is_caught_before_any_outside_write(tmp_path) -> No
     assert not raised.value.committed and raised.value.retry_safe and not tuple(outside.iterdir())
 
 
-def test_named_temp_substitution_before_replace_preserves_previous_state(tmp_path, monkeypatch) -> None:
+def test_detected_temp_identity_change_preserves_previous_state(tmp_path, monkeypatch) -> None:
     repository, storage = _roots(tmp_path)
     _write(storage, repository)
     path = subject.secure_state_path(storage, NAME, repo_root=repository)
@@ -183,7 +183,7 @@ def test_named_temp_substitution_before_replace_preserves_previous_state(tmp_pat
     assert path.read_bytes() == b"payload" and not raised.value.committed and raised.value.retry_safe
 
 
-def test_substitution_during_replace_is_commit_uncertain_never_success(tmp_path, monkeypatch) -> None:
+def test_post_replace_integrity_mismatch_is_commit_uncertain(tmp_path, monkeypatch) -> None:
     repository, storage = _roots(tmp_path)
     _write(storage, repository)
     original_replace = subject.os.replace
@@ -206,6 +206,25 @@ def test_state_creation_and_commit_fsync_their_parent_directories(tmp_path, monk
     monkeypatch.setattr(subject, "_fsync_directory", fsync_directory)
     _write(storage, repository)
     assert fsync_directory.call_args_list == [call(storage.resolve()), call((storage / "state").resolve())]
+
+
+def test_existing_state_retries_root_fsync_after_initial_sync_failure(tmp_path, monkeypatch) -> None:
+    repository, storage = _roots(tmp_path)
+    root, calls = storage.resolve(), []
+
+    def fail_first_root_sync(path):  # type: ignore[no-untyped-def]
+        calls.append(path)
+        if calls == [root]:
+            raise OSError("synthetic root fsync failure")
+
+    monkeypatch.setattr(subject, "_fsync_directory", fail_first_root_sync)
+    with pytest.raises(subject.SecureStateFileError, match="state-file-path-invalid"):
+        with subject.secure_state_transaction(storage, NAME, repo_root=repository):
+            pass
+    assert (storage / "state").is_dir()
+    with subject.secure_state_transaction(storage, NAME, repo_root=repository):
+        pass
+    assert calls == [root, root]
 
 
 def test_post_visibility_fsync_and_lock_release_failures_are_terminal(tmp_path, monkeypatch) -> None:

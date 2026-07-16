@@ -163,11 +163,21 @@ supported LIB-005B and LIB-005C rows are public library API.
 | `cfdi_vault.sat_verify_envelope_lint` | Research tool | Verification envelope inspection helper. |
 | `cfdi_vault.sat_verify_live_gate` | Live-only gate | Human-gated reference-system operation. |
 | `cfdi_vault.sat_verify_post_probe` | Probe | Research-only verification POST probe. |
-| `cfdi_vault.secure_state_file` | Internal persistence primitive | ACL-trusted canonical-root locking, typed commit outcomes, and verified atomic opaque-byte replacement; never re-exported. |
+| `cfdi_vault.secure_state_file` | Internal persistence primitive | Private canonical-root-tree ACL boundary, honest-process locking, typed commit outcomes, and verified atomic replacement; never re-exported. |
 
 The CLI, recovery service, worker, Docker Compose, PostgreSQL models,
 RabbitMQ/Redis adapters, filesystem layout, and MinIO lab profile are
 reference-system surfaces. They are not transitive requirements of this API.
+
+The internal secure-state primitive canonicalizes its configured storage root.
+That root and every descendant used during a transaction must remain private and
+protected by OS ACLs. It rejects pre-existing symlink/reparse/hardlink nodes and
+portable filename aliases, but it does not claim dependency-free containment
+against a hostile same-user process concurrently unlinking, renaming, or swapping
+any node inside that trusted tree. Identity and hash checks are fail-closed
+integrity checks within this boundary, not a namespace-pinning guarantee.
+On POSIX, each transaction fsyncs the canonical root after validating the state
+directory so a retry repairs a prior directory-entry durability failure.
 
 ## Import and behavior requirements
 

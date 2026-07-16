@@ -1,8 +1,11 @@
 """Internal canonical, locked, atomic storage for opaque local state bytes.
 
-The canonical storage root is an explicit ACL trust boundary. Same-user hostile
-replacement of that root itself cannot be pinned portably without a dependency
-and is out of scope; every detectable named-path identity change fails closed.
+After canonicalization, the configured storage root and all descendants are a
+private ACL trust boundary for each transaction. Pre-existing linked/reparse
+nodes and noncanonical filenames are rejected, and honest processes coordinate
+through the root lock. Identity and hash checks fail closed when they observe a
+change, but dependency-free code cannot promise namespace containment against a
+hostile same-user process concurrently mutating any node inside the trusted tree.
 """
 
 from __future__ import annotations
@@ -54,7 +57,7 @@ class _CommitState:
 
 
 @dataclass(frozen=True)
-class _NamespacePin:
+class _NamespaceSnapshot:
     root: Path
     state: Path
     root_identity: _Identity
@@ -68,7 +71,7 @@ class _NamespacePin:
 @dataclass(repr=False)
 class _SecureStateTransaction:
     path: Path
-    namespace: _NamespacePin
+    namespace: _NamespaceSnapshot
     commit_state: _CommitState
 
     def read(self) -> bytes | None:
@@ -106,13 +109,13 @@ def secure_state_path(
 def secure_state_transaction(
     storage_root: str | Path, filename: str, *, repo_root: str | Path | None = None,
 ) -> Iterator[_SecureStateTransaction]:
-    """Hold the stable root lock across an opaque read-transition-replace cycle."""
+    """Lock one transaction whose canonical root tree remains ACL-private."""
     _validate_name(filename)
     root = _canonical_root(storage_root, repo_root, create=True)
     root_identity, commit_state = _directory_identity(root, root.parent), _CommitState()
     with _exclusive_lock(root, root_identity, commit_state):
         path = _state_path(root, filename, create=True)
-        namespace = _NamespacePin(root, path.parent, root_identity, _directory_identity(path.parent, root))
+        namespace = _NamespaceSnapshot(root, path.parent, root_identity, _directory_identity(path.parent, root))
         namespace.validate()
         yield _SecureStateTransaction(path, namespace, commit_state)
 
@@ -150,11 +153,11 @@ def _state_path(root: Path, filename: str, *, create: bool) -> Path:
                 state.mkdir()
             except FileExistsError:
                 pass
-            else:
-                _fsync_directory(root)
         elif not (state.exists() or state.is_symlink()):
             return state / filename
         _validate_directory(state, root)
+        if create:
+            _fsync_directory(root)
     except OSError:
         raise SecureStateFileError("state-file-path-invalid") from None
     path = state / filename
