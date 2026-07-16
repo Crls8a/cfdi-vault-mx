@@ -200,6 +200,8 @@ def _validate_manifest(manifest: SatCampaignManifest) -> None:
         expected = ((base.start, base.start + timedelta(days=6)),
                     (base.start + timedelta(days=7), base.end))
         if base.state is CampaignWorkState.SPLIT:
+            if any(item.direction is not base.direction for item in children):
+                raise CampaignManifestError("split-child-direction-invalid")
             if tuple((item.start, item.end) for item in children) != expected:
                 raise CampaignManifestError("split-children-invalid")
         elif children:

@@ -6,6 +6,8 @@ from datetime import date, timedelta
 
 import pytest
 
+import cfdi_vault.sat_campaign_manifest as campaign_manifest
+from cfdi_vault.domain import DownloadDirection
 from cfdi_vault.sat_campaign_manifest import (
     CampaignManifestError,
     CampaignWorkState,
@@ -244,3 +246,34 @@ def test_mutated_campaign_ref_equality_failure_is_sanitized() -> None:
     object.__setattr__(manifest, "campaign_ref", _CampaignRefImpostor())
     with pytest.raises(CampaignManifestError, match="campaign-ref-invalid"):
         campaign_redacted_summary(manifest)
+
+
+def test_reconstructed_split_children_must_keep_parent_direction() -> None:
+    manifest = reserve_campaign_work(build_campaign_manifest(PROFILE))
+    outstanding = tuple(item for item in manifest.items if item.state is CampaignWorkState.OUTSTANDING)
+    for item, recovery_ref in zip(outstanding, (RUN_REF, SECOND_RUN_REF), strict=True):
+        manifest = record_campaign_result(
+            manifest, item.work_ref, CampaignWorkState.THRESHOLD_BLOCKED,
+            recovery_ref=recovery_ref, evidence="sat_too_many_results",
+        )
+        manifest = split_campaign_work(manifest, item.work_ref)
+    hostile_items = []
+    for item in manifest.items:
+        if item.depth == 0:
+            hostile_items.append(item)
+            continue
+        direction = (
+            DownloadDirection.ISSUED
+            if item.direction is DownloadDirection.RECEIVED
+            else DownloadDirection.RECEIVED
+        )
+        hostile_items.append(replace(
+            item,
+            direction=direction,
+            work_ref=campaign_manifest._work_ref(  # noqa: SLF001
+                manifest.campaign_ref, direction, item.start, item.end, item.depth, item.parent_ref,
+            ),
+        ))
+    canonical_hostile_items = tuple(sorted(hostile_items, key=campaign_manifest._priority))  # noqa: SLF001
+    with pytest.raises(CampaignManifestError, match="split-child-direction-invalid"):
+        replace(manifest, items=canonical_hostile_items)
