@@ -9,6 +9,7 @@ import pytest
 from cfdi_vault.sat_campaign_manifest import (
     CampaignManifestError,
     CampaignWorkState,
+    SatCampaignManifest,
     build_campaign_manifest,
     campaign_redacted_summary,
     record_campaign_result,
@@ -27,6 +28,15 @@ class _EvidenceImpostor:
 
 
 class _EvidenceAlias(str):
+    pass
+
+
+class _CampaignRefImpostor:
+    def __eq__(self, other: object) -> bool:
+        raise RuntimeError("hostile campaign ref equality")
+
+
+class _CampaignRefAlias(str):
     pass
 
 
@@ -213,3 +223,24 @@ def test_splits_preserve_and_enforce_global_canonical_item_order() -> None:
     )
     with pytest.raises(CampaignManifestError, match="campaign-item-order-invalid"):
         replace(manifest, items=bases_then_children)
+
+
+def test_constructor_rejects_campaign_ref_equality_impostor() -> None:
+    manifest = build_campaign_manifest(PROFILE)
+    with pytest.raises(CampaignManifestError, match="campaign-ref-invalid"):
+        SatCampaignManifest(
+            _CampaignRefImpostor(), manifest.profile_id, manifest.items,  # type: ignore[arg-type]
+        )
+
+
+def test_reconstruction_rejects_campaign_ref_string_subclass() -> None:
+    manifest = build_campaign_manifest(PROFILE)
+    with pytest.raises(CampaignManifestError, match="campaign-ref-invalid"):
+        replace(manifest, campaign_ref=_CampaignRefAlias(manifest.campaign_ref))
+
+
+def test_mutated_campaign_ref_equality_failure_is_sanitized() -> None:
+    manifest = build_campaign_manifest(PROFILE)
+    object.__setattr__(manifest, "campaign_ref", _CampaignRefImpostor())
+    with pytest.raises(CampaignManifestError, match="campaign-ref-invalid"):
+        campaign_redacted_summary(manifest)

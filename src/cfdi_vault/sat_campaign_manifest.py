@@ -157,6 +157,8 @@ def campaign_redacted_summary(manifest: SatCampaignManifest) -> dict[str, object
 def _validate_manifest(manifest: SatCampaignManifest) -> None:
     if type(manifest) is not SatCampaignManifest:
         raise CampaignManifestError("manifest-type-invalid")
+    if type(manifest.campaign_ref) is not str:
+        raise CampaignManifestError("campaign-ref-invalid")
     _validate_profile(manifest.profile_id)
     types = tuple(type(value) for value in (manifest.schema_version, manifest.policy_version, manifest.start,
                   manifest.end, manifest.window_days, manifest.directions, manifest.max_outstanding,
