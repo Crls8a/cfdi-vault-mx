@@ -6,6 +6,18 @@ import typer
 
 COMMAND_HELP: tuple[dict[str, str], ...] = (
     {
+        "command": "sat campaign create",
+        "purpose": "Create the fixed 2026 SAT recovery campaign in private external storage.",
+        "when": "Run once for an exact local profile before authorizing SAT contact.",
+        "example": "cfdi-vault sat campaign create --profile default",
+    },
+    {
+        "command": "sat campaign status",
+        "purpose": "Show only sanitized aggregate progress for one persisted SAT campaign.",
+        "when": "Run after creation or campaign executions to inspect durable progress.",
+        "example": "cfdi-vault sat campaign status --profile default --campaign-ref <campaign-ref>",
+    },
+    {
         "command": "doctor",
         "purpose": "Check whether database, queue, cache, storage, and setup profile are reachable.",
         "when": "Run after install or when the CLI cannot connect to dependencies.",
