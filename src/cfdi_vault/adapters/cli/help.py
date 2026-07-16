@@ -31,7 +31,7 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
     },
     {
         "command": "setup",
-        "purpose": "Create the local AppData RFC profile and import credential files without env vars.",
+        "purpose": "Create the local AppData RFC profile, import credential files, and run a local credential check.",
         "when": "Run once on the operator machine before recovery work.",
         "example": "cfdi-vault setup --source-folder <external-folder>",
     },

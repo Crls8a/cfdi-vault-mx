@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 from pathlib import Path
 
@@ -207,17 +208,24 @@ def test_missing_and_invalid_status_never_print_paths(tmp_path: Path) -> None:
     assert str(appdata_root) not in invalid
 
 
-def test_dummy_smoke_signs_and_verifies_without_exposing_phrase(tmp_path: Path) -> None:
+def test_credential_check_signs_and_verifies_without_exposing_phrase(tmp_path: Path) -> None:
     provider = _provider()
     phrase = "SYNTHETIC-LOCAL-PHRASE"
     result = _run_setup(tmp_path, provider=provider, phrase=phrase)
 
-    smoke = setup.run_dummy_smoke(result.profile, provider)
+    check = setup.run_credential_check(result.profile, provider)
 
-    assert smoke.ok is True
-    assert smoke.detail == "dummy sign/verify passed"
-    assert phrase not in smoke.detail
-    assert phrase not in smoke.backend
+    assert isinstance(check, setup.CredentialCheckResult)
+    assert check.ok is True
+    assert check.detail == "dummy sign/verify passed"
+    assert phrase not in check.detail
+    assert phrase not in check.backend
+
+
+def test_retired_setup_smoke_symbols_are_not_public() -> None:
+    assert not hasattr(setup, "SmokeResult")
+    assert not hasattr(setup, "run_dummy_smoke")
+    assert importlib.util.find_spec("cfdi_vault.setup_smoke") is None
 
 
 def test_reference_mode_keeps_external_paths_but_creates_appdata_layout(tmp_path: Path) -> None:

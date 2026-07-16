@@ -12,7 +12,9 @@ Use `cfdi-vault setup` on the operator machine to create a local AppData profile
    ```
 
 3. Enter the RFC and the private-key phrase when prompted.
-4. Verify the redacted status:
+4. Setup runs a synthetic local credential check without contacting SAT. Use
+   `--skip-credential-check` only when that local check must be deferred.
+5. Verify the redacted status:
 
    ```powershell
    cfdi-vault status

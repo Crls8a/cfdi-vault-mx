@@ -211,7 +211,7 @@ Do not treat the package as published until the release gates in `docs/release/p
 | `src/cfdi_vault/cli.py` | Compatibility shim for the public Typer entrypoint. |
 | `src/cfdi_vault/adapters/cli/` | Typer CLI app composition and command families. |
 | `src/cfdi_vault/config.py` | Safe local RFC profile configuration schema and validation. |
-| `src/cfdi_vault/setup.py` | AppData profile setup, credential intake guards, redacted status, and dummy smoke boundary. |
+| `src/cfdi_vault/setup.py` | AppData profile setup, credential intake guards, redacted status, and synthetic credential-check boundary. |
 | `src/cfdi_vault/recovery_service.py` | Fake SAT recovery, search, print, export, and reconciliation use cases. |
 | `src/cfdi_vault/recovery_db.py` | PostgreSQL-targeted recovery/accounting schema. |
 | `src/cfdi_vault/queueing.py` | In-memory and RabbitMQ queue adapters. |

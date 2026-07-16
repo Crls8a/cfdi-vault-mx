@@ -38,6 +38,8 @@ def test_setup_cli_imports_credentials_with_hidden_phrase(monkeypatch, tmp_path:
 
     assert result.exit_code == 0, result.output
     assert "Setup complete" in result.output
+    assert "Credential check:" in result.output
+    assert "Smoke:" not in result.output
     assert "dummy sign/verify passed" in result.output
     assert phrase_value not in result.output
     assert "XAXX010101000" not in result.output
@@ -49,7 +51,7 @@ def test_setup_cli_imports_credentials_with_hidden_phrase(monkeypatch, tmp_path:
     assert phrase_value not in profile_json.read_text(encoding="utf-8")
 
 
-def test_setup_cli_accepts_no_smoke_without_dual_flag_type_errors(monkeypatch, tmp_path: Path) -> None:
+def test_setup_cli_accepts_skip_credential_check(monkeypatch, tmp_path: Path) -> None:
     source_folder = _write_synthetic_credentials(tmp_path / "external")
     appdata_root = tmp_path / "appdata"
     provider = WindowsCredentialManagerSecretProvider(InMemoryWindowsCredentialBackend())
@@ -69,7 +71,7 @@ def test_setup_cli_accepts_no_smoke_without_dual_flag_type_errors(monkeypatch, t
             "dummy-profile",
             "--rfc",
             "XAXX010101000",
-            "--no-smoke",
+            "--skip-credential-check",
         ],
         input=f"{phrase_value}\n{phrase_value}\n",
         env={"LOCALAPPDATA": str(appdata_root), "CI": "0", "GITHUB_ACTIONS": "0", "TF_BUILD": "0"},
@@ -79,6 +81,13 @@ def test_setup_cli_accepts_no_smoke_without_dual_flag_type_errors(monkeypatch, t
     assert "Setup complete" in result.output
     assert "dummy sign/verify passed" not in result.output
     assert result.exception is None
+
+
+def test_setup_cli_rejects_retired_no_smoke_option() -> None:
+    result = CliRunner().invoke(app, ["setup", "--no-smoke"])
+
+    assert result.exit_code != 0
+    assert "No such option: --no-smoke" in result.output
 
 
 def test_setup_masked_phrase_reader_shows_feedback_without_secret() -> None:

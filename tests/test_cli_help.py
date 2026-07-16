@@ -48,7 +48,7 @@ def test_cli_subcommand_help_builds_for_setup_and_worker() -> None:
     for args in (
         ["--help"],
         ["setup", "--help"],
-        ["setup", "--no-smoke", "--help"],
+        ["setup", "--skip-credential-check", "--help"],
         ["doctor", "--help"],
         ["download", "plan", "--help"],
         ["download", "request", "--help"],
@@ -73,6 +73,19 @@ def test_cli_subcommand_help_builds_for_setup_and_worker() -> None:
 
         assert result.exit_code == 0, result.output
         assert result.exception is None
+
+
+def test_setup_help_exposes_only_credential_check_naming() -> None:
+    result = CliRunner().invoke(app, ["setup", "--help"])
+    catalog = CliRunner().invoke(app, ["help", "setup"])
+
+    assert result.exit_code == 0, result.output
+    assert "--skip-credential-check" in result.output
+    assert "credential check" in result.output.lower()
+    assert "--no-smoke" not in result.output
+    assert catalog.exit_code == 0, catalog.output
+    assert "local credential check" in catalog.output
+    assert "smoke" not in catalog.output.lower()
 
 
 def test_metadata_recovery_help_documents_required_options_and_safe_output() -> None:

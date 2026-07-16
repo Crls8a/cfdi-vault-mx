@@ -193,7 +193,11 @@ def setup_command(
     certificate_path: Path | None = typer.Option(None, "--cer", help="Explicit certificate file when source folder has more than one candidate."),
     private_key_path: Path | None = typer.Option(None, "--key", help="Explicit private key file when source folder has more than one candidate."),
     credential_mode: str = typer.Option("copied", "--credential-mode", help="copied or referenced."),
-    no_smoke: bool = typer.Option(False, "--no-smoke", help="Skip the local dummy sign/verify smoke check after setup."),
+    skip_credential_check: bool = typer.Option(
+        False,
+        "--skip-credential-check",
+        help="Skip the local dummy sign/verify credential check after setup.",
+    ),
 ) -> None:
     """Create the local AppData profile and import credentials safely."""
 
@@ -214,7 +218,7 @@ def setup_command(
             provider=provider,
             mode=mode,
         )
-        smoke_result = None if no_smoke else setup_flow.run_dummy_smoke(result.profile, provider)
+        credential_check = None if skip_credential_check else setup_flow.run_credential_check(result.profile, provider)
     except (setup_flow.SetupError, CredentialProviderError, ValueError) as exc:
         typer.echo("Setup failed:", err=True)
         errors = exc.errors if isinstance(exc, setup_flow.SetupError) else (str(exc),)
@@ -226,8 +230,8 @@ def setup_command(
     typer.echo(f"Profile: {result.profile.profile_id} ({setup_flow.redact_rfc(result.profile.rfc)})")
     typer.echo("Credential files were imported into the local AppData profile.")
     typer.echo("The private-key phrase was stored through the secret provider, not in profile.json.")
-    if smoke_result is not None:
-        typer.echo(f"Smoke: {smoke_result.detail} ({smoke_result.backend})")
+    if credential_check is not None:
+        typer.echo(f"Credential check: {credential_check.detail} ({credential_check.backend})")
     typer.echo("Run: cfdi-vault status")
 
 def setup_status(

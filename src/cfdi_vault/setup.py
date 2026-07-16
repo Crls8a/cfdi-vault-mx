@@ -4,12 +4,12 @@ from cfdi_vault.secrets import CredentialKind, CredentialReference, SecretValue
 from cfdi_vault.setup_core import (
     APPDATA_DIR_NAME,
     DIRECT_CREDENTIAL_ENV_VARS,
+    PROFILE_JSON_INDENT,
     AppDataPaths,
     CredentialMode,
     ExistenceProvider,
     LocalProfile,
     LocalProfileStatus,
-    PROFILE_JSON_INDENT,
     SetupError,
     SetupResult,
     build_profile_paths,
@@ -25,6 +25,7 @@ from cfdi_vault.setup_core import (
     validate_rfc,
     write_profile,
 )
+from cfdi_vault.setup_credential_check import CredentialCheckResult, DummySignatureBackend, run_credential_check
 from cfdi_vault.setup_intake import (
     CredentialSelection,
     PendingCredentialImport,
@@ -34,7 +35,6 @@ from cfdi_vault.setup_intake import (
     stage_credentials_for_appdata,
 )
 from cfdi_vault.setup_service import run_setup
-from cfdi_vault.setup_smoke import DummySignatureBackend, SmokeResult, run_dummy_smoke
 from cfdi_vault.setup_status import ProfileInspection, format_profile_status, inspect_profile
 
 __all__ = [
@@ -44,6 +44,7 @@ __all__ = [
     "AppDataPaths",
     "CredentialKind",
     "CredentialMode",
+    "CredentialCheckResult",
     "CredentialReference",
     "CredentialSelection",
     "DummySignatureBackend",
@@ -55,7 +56,6 @@ __all__ = [
     "SecretValue",
     "SetupError",
     "SetupResult",
-    "SmokeResult",
     "build_profile_paths",
     "default_phrase_reference",
     "discover_credentials",
@@ -70,7 +70,7 @@ __all__ = [
     "redact_fingerprint",
     "redact_rfc",
     "resolve_appdata_root",
-    "run_dummy_smoke",
+    "run_credential_check",
     "run_setup",
     "stage_credentials_for_appdata",
     "validate_profile_id",
