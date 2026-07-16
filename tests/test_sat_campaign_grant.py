@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from contextlib import contextmanager
 from dataclasses import replace
@@ -26,6 +27,26 @@ def _grant() -> subject.CampaignGrant:
         timedelta(days=14), now=NOW)
 
 
+def _claimed_grant(
+    *, invocation_count: int = 1, submission_count: int = 1,
+) -> subject.CampaignGrant:
+    grant = _grant()
+    invocations = tuple(
+        subject.CampaignInvocationClaim(
+            f"inv-{index:024x}", NOW, PROFILE, COMMIT,
+        )
+        for index in range(invocation_count)
+    )
+    submissions = tuple(
+        subject.CampaignSubmissionClaim(
+            grant.grant_ref, invocations[index % invocation_count].invocation_ref,
+            f"work-{index:012x}", f"run-{index:012x}", PROFILE, COMMIT, NOW,
+        )
+        for index in range(submission_count)
+    )
+    return replace(grant, invocation_claims=invocations, submission_claims=submissions)
+
+
 def test_value_codec_and_redacted_summary_are_exact() -> None:
     grant = _grant()
     payload = subject._encode_campaign_grant(grant)  # noqa: SLF001
@@ -43,6 +64,106 @@ def test_value_codec_and_redacted_summary_are_exact() -> None:
         "2026-01-01", "2026-07-15", ["received", "issued"],
     )
     assert document["invocationClaims"] == document["submissionClaims"] == []
+
+
+def test_non_empty_claims_roundtrip_are_typed_redacted_and_counted() -> None:
+    grant = _claimed_grant()
+    payload = subject._encode_campaign_grant(grant)  # noqa: SLF001
+
+    decoded = subject._decode_campaign_grant(payload, grant.grant_ref, COMMIT)  # noqa: SLF001
+
+    assert decoded == grant
+    assert isinstance(decoded.invocation_claims[0], subject.CampaignInvocationClaim)
+    assert isinstance(decoded.submission_claims[0], subject.CampaignSubmissionClaim)
+    assert PROFILE not in repr(decoded.invocation_claims[0])
+    assert PROFILE not in repr(decoded.submission_claims[0])
+    assert "run-000000000000" not in repr(decoded.submission_claims[0])
+    assert subject.campaign_grant_redacted_summary(decoded)["invocation_count"] == 1
+    assert subject.campaign_grant_redacted_summary(decoded)["submission_count"] == 1
+
+
+def test_new_invocation_reference_is_opaque() -> None:
+    first, second = subject.new_campaign_invocation_ref(), subject.new_campaign_invocation_ref()
+    assert first != second
+    assert re.fullmatch(r"inv-[0-9a-f]{24}", first)
+    assert re.fullmatch(r"inv-[0-9a-f]{24}", second)
+
+
+def test_rejects_duplicate_or_incoherent_typed_claims() -> None:
+    grant = _claimed_grant(invocation_count=2)
+    invocation = grant.invocation_claims[0]
+    submission = grant.submission_claims[0]
+    other_work = campaign.build_campaign_manifest(PROFILE).items[1].work_ref
+    invalid = (
+        replace(grant, invocation_claims=list(grant.invocation_claims)),  # type: ignore[arg-type]
+        replace(grant, submission_claims=list(grant.submission_claims)),  # type: ignore[arg-type]
+        replace(grant, invocation_claims=(invocation, invocation)),
+        replace(grant, submission_claims=(submission, submission)),
+        replace(grant, submission_claims=(replace(submission, recovery_ref="run-222222222222"),
+                                          replace(submission, invocation_ref=grant.invocation_claims[1].invocation_ref,
+                                                  recovery_ref="run-333333333333"))),
+        replace(grant, submission_claims=(submission, replace(submission, work_ref=other_work))),
+        replace(grant, submission_claims=(replace(submission, invocation_ref="inv-" + "f" * 24),)),
+        replace(grant, invocation_claims=(replace(invocation, invocation_ref="invalid"),)),
+        replace(grant, invocation_claims=(replace(invocation, claimed_at="invalid"),)),  # type: ignore[arg-type]
+        replace(grant, submission_claims=(replace(submission, recovery_ref="invalid"),)),
+        replace(grant, invocation_claims=(replace(invocation, profile_id="other"),)),
+        replace(grant, invocation_claims=(replace(invocation, tested_commit="b" * 40),)),
+        replace(grant, submission_claims=(replace(submission, grant_ref="grt-" + "f" * 24),)),
+        replace(grant, submission_claims=(replace(submission, profile_id="other"),)),
+        replace(grant, submission_claims=(replace(submission, tested_commit="b" * 40),)),
+    )
+    for corrupted in invalid:
+        with pytest.raises(subject.CampaignGrantError, match="^campaign-grant-state-invalid$"):
+            subject.campaign_grant_redacted_summary(corrupted)
+
+
+@pytest.mark.parametrize(
+    ("claim_key", "mutation"),
+    [
+        ("invocationClaims", {"invocationRef": "inv-" + "1" * 24, "claimedAt": "bad",
+                              "profileId": PROFILE, "testedCommit": COMMIT}),
+        ("invocationClaims", {"invocationRef": "inv-" + "1" * 24, "claimedAt": NOW.isoformat(),
+                              "profileId": PROFILE, "testedCommit": COMMIT, "extra": True}),
+        ("invocationClaims", {"invocationRef": 1, "claimedAt": "2026-07-16T12:00:00Z",
+                              "profileId": PROFILE, "testedCommit": COMMIT}),
+        ("submissionClaims", {"grantRef": "grt-" + "1" * 24,
+                              "invocationRef": "inv-" + "1" * 24,
+                              "workRef": "work-" + "1" * 12, "recoveryRef": "run-" + "1" * 12,
+                              "profileId": PROFILE, "testedCommit": COMMIT}),
+    ],
+)
+def test_decode_rejects_malformed_claim_keys_types_and_timestamps(
+    claim_key: str, mutation: dict[str, object],
+) -> None:
+    grant = _grant()
+    document = json.loads(subject._encode_campaign_grant(grant))  # noqa: SLF001
+    document[claim_key] = [mutation]
+    with pytest.raises(subject.CampaignGrantError, match="^campaign-grant-state-invalid$"):
+        subject._decode_campaign_grant(  # noqa: SLF001
+            json.dumps(document).encode(), grant.grant_ref, COMMIT,
+        )
+
+
+def test_valid_claim_state_larger_than_64k_roundtrips_below_1mib(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _head(monkeypatch)
+    grant = _claimed_grant(invocation_count=4032, submission_count=84)
+    payload = subject._encode_campaign_grant(grant)  # noqa: SLF001
+    assert 64 * 1024 < len(payload) <= 1024 * 1024
+    assert subject._decode_campaign_grant(payload, grant.grant_ref, COMMIT) == grant  # noqa: SLF001
+    subject.create_campaign_grant(
+        tmp_path / "private", campaign.build_campaign_manifest(PROFILE), PROFILE,
+        COMMIT, REPO_ROOT, "metadata proof", timedelta(days=14), now=NOW,
+    )
+    with secure_state.secure_state_transaction(
+        tmp_path / "private", subject._filename(grant.grant_ref), repo_root=REPO_ROOT,  # noqa: SLF001
+    ) as transaction:
+        transaction.replace(payload)
+    assert subject.load_campaign_grant(
+        tmp_path / "private", grant.grant_ref, REPO_ROOT, now=NOW,
+    ) == grant
 
 
 def test_manifest_digest_ignores_mutable_state_recovery_and_splits() -> None:
@@ -115,7 +236,7 @@ def test_rejects_fixed_policy_mismatch() -> None:
      ("manifestDigest", "0" * 64), ("testedCommit", "0" * 40),
      ("dateFrom", "2026-01-02"), ("directions", ["issued", "received"]),
      ("maxOutstanding", 3), ("maxSubmissions", 85), ("maxInvocations", 1),
-     ("redactionRequired", False), ("invocationClaims", [{}]), ("submissionClaims", [{}])],
+     ("redactionRequired", False)],
 )
 def test_decode_rejects_corrupted_authority(key: str, value: object) -> None:
     grant = _grant()
@@ -245,7 +366,7 @@ def test_load_rejects_expired_grant(
 @pytest.mark.parametrize(
     ("payload", "reason"),
     [(b"{", "campaign-grant-state-invalid"),
-     (b"x" * (64 * 1024 + 1), "campaign-grant-state-too-large")],
+     (b"x" * (1024 * 1024 + 1), "campaign-grant-state-too-large")],
     ids=("corrupt", "oversize"),
 )
 def test_load_rejects_corrupt_or_oversize_state(

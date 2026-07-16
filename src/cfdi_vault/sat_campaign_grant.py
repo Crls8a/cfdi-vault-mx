@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -27,10 +28,13 @@ from cfdi_vault.sat_campaign_manifest import (
 from cfdi_vault.secure_state_file import SecureStateFileError, secure_state_transaction
 
 _PHASE, _KIND, _MAX_INVOCATIONS = "metadata-proof", "metadata", 4032
-_MAX_VALIDITY, _MAX_BYTES = timedelta(days=14), 64 * 1024
+_MAX_VALIDITY, _MAX_BYTES = timedelta(days=14), 1024 * 1024
 _COMMIT_RE = re.compile(r"[0-9a-fA-F]{40}")
 _CANONICAL_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _GRANT_RE = re.compile(r"grt-[0-9a-f]{24}")
+_INVOCATION_RE = re.compile(r"inv-[0-9a-f]{24}")
+_WORK_RE = re.compile(r"work-[0-9a-f]{12}")
+_RECOVERY_RE = re.compile(r"run-[0-9a-f]{12}")
 _PROFILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 _REASON_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 .,;:_-]{0,255}")
 _KEYS = {
@@ -69,6 +73,27 @@ class CampaignGrantError(ValueError):
 
 
 @dataclass(frozen=True)
+class CampaignInvocationClaim:
+    """One persisted authority claim for a single runner invocation."""
+    invocation_ref: str
+    claimed_at: datetime
+    profile_id: str = field(repr=False)
+    tested_commit: str
+
+
+@dataclass(frozen=True)
+class CampaignSubmissionClaim:
+    """One persisted authority claim reserved before a SAT submission."""
+    grant_ref: str
+    invocation_ref: str
+    work_ref: str
+    recovery_ref: str = field(repr=False)
+    profile_id: str = field(repr=False)
+    tested_commit: str
+    claimed_at: datetime
+
+
+@dataclass(frozen=True)
 class CampaignGrant:
     """Commit-bound authority for the fixed offline Metadata campaign."""
     grant_ref: str
@@ -83,9 +108,14 @@ class CampaignGrant:
     max_outstanding: int = MAX_OUTSTANDING
     max_submissions: int = MAX_REQUESTS
     max_invocations: int = _MAX_INVOCATIONS
-    invocation_claims: tuple[object, ...] = field(default=(), repr=False)
-    submission_claims: tuple[object, ...] = field(default=(), repr=False)
+    invocation_claims: tuple[CampaignInvocationClaim, ...] = field(default=(), repr=False)
+    submission_claims: tuple[CampaignSubmissionClaim, ...] = field(default=(), repr=False)
     redaction_required: bool = True
+
+
+def new_campaign_invocation_ref() -> str:
+    """Return a pre-generatable opaque reference for an invocation claim."""
+    return f"inv-{secrets.token_hex(12)}"
 
 
 def create_campaign_grant(
@@ -149,7 +179,7 @@ def load_campaign_grant(
 
 
 def campaign_grant_redacted_summary(grant: CampaignGrant) -> dict[str, object]:
-    """Expose only opaque reference, expiry, ceilings, and empty claim counts."""
+    """Expose only opaque reference, expiry, ceilings, and aggregate claim counts."""
     _validate_grant(grant)
     return {
         "grant_ref": grant.grant_ref,
@@ -158,8 +188,8 @@ def campaign_grant_redacted_summary(grant: CampaignGrant) -> dict[str, object]:
         "max_outstanding": grant.max_outstanding,
         "max_submissions": grant.max_submissions,
         "max_invocations": grant.max_invocations,
-        "invocation_count": 0,
-        "submission_count": 0,
+        "invocation_count": len(grant.invocation_claims),
+        "submission_count": len(grant.submission_claims),
     }
 
 
@@ -204,8 +234,12 @@ def _decode_campaign_grant(payload: bytes, grant_ref: str, current_commit: str) 
         document = json.loads(payload.decode(), object_pairs_hook=_unique)
         if type(document) is not dict or set(document) != _KEYS:
             raise CampaignGrantError("campaign-grant-state-invalid")
-        claims = (_value(document, "invocationClaims", list),
-                  _value(document, "submissionClaims", list))
+        invocation_claims = tuple(
+            _decode_invocation_claim(item) for item in _value(document, "invocationClaims", list)
+        )
+        submission_claims = tuple(
+            _decode_submission_claim(item) for item in _value(document, "submissionClaims", list)
+        )
         grant = CampaignGrant(
             _value(document, "grantRef", str), _value(document, "campaignRef", str),
             _value(document, "manifestDigest", str), _value(document, "testedCommit", str),
@@ -213,15 +247,14 @@ def _decode_campaign_grant(payload: bytes, grant_ref: str, current_commit: str) 
             _datetime(document, "expiresAt"), _value(document, "reason", str),
             _value(document, "phase", str), _value(document, "maxOutstanding", int),
             _value(document, "maxSubmissions", int), _value(document, "maxInvocations", int),
-            (), (), _value(document, "redactionRequired", bool),
+            invocation_claims, submission_claims, _value(document, "redactionRequired", bool),
         )
         fixed = (
             _value(document, "schemaVersion", int), _value(document, "dateFrom", str),
             _value(document, "dateTo", str), document["directions"], _value(document, "kind", str),
-            claims,
         )
         if fixed != (1, CAMPAIGN_START.isoformat(), CAMPAIGN_END.isoformat(),
-                     [item.value for item in DIRECTIONS], _KIND, ([], [])):
+                     [item.value for item in DIRECTIONS], _KIND):
             raise CampaignGrantError("campaign-grant-state-invalid")
         _validate_grant(grant)
         if grant.grant_ref != grant_ref or grant.tested_commit != current:
@@ -243,8 +276,8 @@ def _document(grant: CampaignGrant) -> dict[str, object]:
         "maxOutstanding": grant.max_outstanding, "maxSubmissions": grant.max_submissions,
         "maxInvocations": grant.max_invocations, "createdAt": _format_dt(grant.created_at),
         "expiresAt": _format_dt(grant.expires_at), "reason": grant.reason,
-        "invocationClaims": list(grant.invocation_claims),
-        "submissionClaims": list(grant.submission_claims),
+        "invocationClaims": [_invocation_document(item) for item in grant.invocation_claims],
+        "submissionClaims": [_submission_document(item) for item in grant.submission_claims],
         "redactionRequired": grant.redaction_required,
     }
 
@@ -260,8 +293,12 @@ def _validate_grant(grant: object) -> None:
         raise CampaignGrantError("campaign-grant-state-invalid") from None
     invalid = (not _GRANT_RE.fullmatch(grant.grant_ref) or grant.phase != _PHASE
                or grant.max_outstanding != MAX_OUTSTANDING or grant.max_submissions != MAX_REQUESTS
-               or grant.max_invocations != _MAX_INVOCATIONS or grant.invocation_claims != ()
-               or grant.submission_claims != () or grant.redaction_required is not True
+               or grant.max_invocations != _MAX_INVOCATIONS
+               or type(grant.invocation_claims) is not tuple
+               or type(grant.submission_claims) is not tuple
+               or len(grant.invocation_claims) > grant.max_invocations
+               or len(grant.submission_claims) > grant.max_submissions
+               or grant.redaction_required is not True
                or not _PROFILE_RE.fullmatch(grant.profile_id)
                or grant.campaign_ref != expected.campaign_ref
                or grant.manifest_digest != _manifest_digest(expected)
@@ -276,6 +313,90 @@ def _validate_grant(grant: object) -> None:
     }
     if invalid or grant.grant_ref != _grant_ref(authority):
         raise CampaignGrantError("campaign-grant-state-invalid")
+    _validate_claims(grant)
+
+
+def _validate_claims(grant: CampaignGrant) -> None:
+    invocation_refs: set[str] = set()
+    invocation_times: dict[str, datetime] = {}
+    for claim in grant.invocation_claims:
+        if type(claim) is not CampaignInvocationClaim:
+            raise CampaignGrantError("campaign-grant-state-invalid")
+        claimed_at = _claim_time(claim.claimed_at, grant)
+        if (type(claim.invocation_ref) is not str
+                or not _INVOCATION_RE.fullmatch(claim.invocation_ref)
+                or claim.invocation_ref in invocation_refs
+                or claim.profile_id != grant.profile_id
+                or claim.tested_commit != grant.tested_commit):
+            raise CampaignGrantError("campaign-grant-state-invalid")
+        invocation_refs.add(claim.invocation_ref)
+        invocation_times[claim.invocation_ref] = claimed_at
+    work_refs: set[str] = set()
+    recovery_refs: set[str] = set()
+    for claim in grant.submission_claims:
+        if type(claim) is not CampaignSubmissionClaim:
+            raise CampaignGrantError("campaign-grant-state-invalid")
+        claimed_at = _claim_time(claim.claimed_at, grant)
+        if (type(claim.grant_ref) is not str or type(claim.invocation_ref) is not str
+                or type(claim.work_ref) is not str or type(claim.recovery_ref) is not str
+                or claim.grant_ref != grant.grant_ref or claim.invocation_ref not in invocation_refs
+                or not _WORK_RE.fullmatch(claim.work_ref)
+                or not _RECOVERY_RE.fullmatch(claim.recovery_ref)
+                or claim.work_ref in work_refs or claim.recovery_ref in recovery_refs
+                or claim.profile_id != grant.profile_id
+                or claim.tested_commit != grant.tested_commit
+                or claimed_at < invocation_times[claim.invocation_ref]):
+            raise CampaignGrantError("campaign-grant-state-invalid")
+        work_refs.add(claim.work_ref)
+        recovery_refs.add(claim.recovery_ref)
+
+
+def _claim_time(value: object, grant: CampaignGrant) -> datetime:
+    if type(value) is not datetime or value.tzinfo is None or value.utcoffset() is None:
+        raise CampaignGrantError("campaign-grant-state-invalid")
+    claimed_at = value.astimezone(timezone.utc)
+    if not grant.created_at <= claimed_at <= grant.expires_at:
+        raise CampaignGrantError("campaign-grant-state-invalid")
+    return claimed_at
+
+
+def _invocation_document(claim: CampaignInvocationClaim) -> dict[str, object]:
+    return {"invocationRef": claim.invocation_ref, "claimedAt": _format_dt(claim.claimed_at),
+            "profileId": claim.profile_id, "testedCommit": claim.tested_commit}
+
+
+def _submission_document(claim: CampaignSubmissionClaim) -> dict[str, object]:
+    return {"grantRef": claim.grant_ref, "invocationRef": claim.invocation_ref,
+            "workRef": claim.work_ref, "recoveryRef": claim.recovery_ref,
+            "profileId": claim.profile_id, "testedCommit": claim.tested_commit,
+            "claimedAt": _format_dt(claim.claimed_at)}
+
+
+def _decode_invocation_claim(value: object) -> CampaignInvocationClaim:
+    document = _strict_claim(value, {"invocationRef", "claimedAt", "profileId", "testedCommit"})
+    return CampaignInvocationClaim(
+        _value(document, "invocationRef", str), _datetime(document, "claimedAt"),
+        _value(document, "profileId", str), _value(document, "testedCommit", str),
+    )
+
+
+def _decode_submission_claim(value: object) -> CampaignSubmissionClaim:
+    document = _strict_claim(
+        value, {"grantRef", "invocationRef", "workRef", "recoveryRef",
+                "profileId", "testedCommit", "claimedAt"},
+    )
+    return CampaignSubmissionClaim(
+        _value(document, "grantRef", str), _value(document, "invocationRef", str),
+        _value(document, "workRef", str), _value(document, "recoveryRef", str),
+        _value(document, "profileId", str), _value(document, "testedCommit", str),
+        _datetime(document, "claimedAt"),
+    )
+
+
+def _strict_claim(value: object, keys: set[str]) -> dict[str, object]:
+    if type(value) is not dict or set(value) != keys:
+        raise CampaignGrantError("campaign-grant-state-invalid")
+    return value
 
 
 def _validate_manifest(manifest: object, profile_id: object) -> None:
