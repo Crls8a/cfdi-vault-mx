@@ -14,7 +14,11 @@ from cfdi_vault.sat_campaign_manifest import (
     CampaignWorkItem,
     CampaignWorkState,
     SatCampaignManifest,
+    bind_campaign_recovery,
     campaign_redacted_summary,
+    record_campaign_result,
+    reserve_campaign_work,
+    split_campaign_work,
 )
 from cfdi_vault.secure_state_file import (
     SecureStateFileError,
@@ -28,6 +32,7 @@ _ITEM_KEYS = {"workRef", "direction", "start", "end", "depth", "parentRef", "sta
 _PATH_ERRORS = {"storage-root-not-absolute", "storage-root-inside-repository", "state-file-name-invalid", "state-file-path-invalid"}
 _ERROR_MAP = {
     "state-file-busy": "campaign-state-busy",
+    "state-file-too-large": "campaign-state-too-large",
     "state-file-unreadable": "campaign-state-unreadable",
     "state-file-write-failed": "campaign-state-write-failed",
     "state-file-transition-already-committed": "campaign-state-write-failed",
@@ -76,19 +81,61 @@ def load_campaign_manifest(
     return _protect(lambda: _load(storage_root, campaign_ref, repo_root))
 
 
-def transition_campaign_manifest(
-    storage_root: str | Path, campaign_ref: str,
-    transition: Callable[[SatCampaignManifest], SatCampaignManifest], *,
+def reserve_campaign_manifest(
+    storage_root: str | Path, campaign_ref: str, *,
     repo_root: str | Path | None = None,
 ) -> SatCampaignManifest:
-    """Apply one pure transition and atomically persist it under the same lock."""
+    """Atomically reserve campaign capacity using the fixed domain policy."""
     _validate_ref(campaign_ref)
-    return _protect(lambda: _transition(storage_root, campaign_ref, transition, repo_root))
+    return _protect(lambda: _transaction(
+        storage_root, campaign_ref, reserve_campaign_work, repo_root,
+    ))
+
+
+def bind_campaign_manifest_recovery(
+    storage_root: str | Path, campaign_ref: str, work_ref: str, recovery_ref: str, *,
+    repo_root: str | Path | None = None,
+) -> SatCampaignManifest:
+    """Atomically bind one outstanding work item before external contact."""
+    _validate_ref(campaign_ref)
+    return _protect(lambda: _transaction(
+        storage_root, campaign_ref,
+        lambda manifest: bind_campaign_recovery(manifest, work_ref, recovery_ref=recovery_ref),
+        repo_root,
+    ))
+
+
+def record_campaign_manifest_result(
+    storage_root: str | Path, campaign_ref: str, work_ref: str,
+    state: CampaignWorkState, recovery_ref: str, evidence: str | None = None, *,
+    repo_root: str | Path | None = None,
+) -> SatCampaignManifest:
+    """Atomically record one terminal domain result for bound campaign work."""
+    _validate_ref(campaign_ref)
+    return _protect(lambda: _transaction(
+        storage_root, campaign_ref,
+        lambda manifest: record_campaign_result(
+            manifest, work_ref, state, recovery_ref=recovery_ref, evidence=evidence,
+        ),
+        repo_root,
+    ))
+
+
+def split_campaign_manifest_work(
+    storage_root: str | Path, campaign_ref: str, work_ref: str, *,
+    repo_root: str | Path | None = None,
+) -> SatCampaignManifest:
+    """Atomically split one threshold-blocked base window using domain policy."""
+    _validate_ref(campaign_ref)
+    return _protect(lambda: _transaction(
+        storage_root, campaign_ref,
+        lambda manifest: split_campaign_work(manifest, work_ref), repo_root,
+    ))
 
 
 def _initialize(root: str | Path, manifest: SatCampaignManifest, repo: str | Path | None) -> SatCampaignManifest:
     with secure_state_transaction(root, _filename(manifest.campaign_ref), repo_root=repo) as transaction:
-        payload = transaction.read()
+        payload = transaction.read(max_bytes=_MAX_BYTES)
         if payload is None:
             _replace(transaction, manifest)
             return manifest
@@ -100,18 +147,18 @@ def _initialize(root: str | Path, manifest: SatCampaignManifest, repo: str | Pat
 
 def _load(root: str | Path, campaign_ref: str, repo: str | Path | None) -> SatCampaignManifest:
     with secure_state_transaction(root, _filename(campaign_ref), repo_root=repo) as transaction:
-        payload = transaction.read()
+        payload = transaction.read(max_bytes=_MAX_BYTES)
         if payload is None:
             raise CampaignManifestStoreError("campaign-state-not-found")
         return _decode(payload, campaign_ref)
 
 
-def _transition(
+def _transaction(
     root: str | Path, campaign_ref: str,
     transition: Callable[[SatCampaignManifest], SatCampaignManifest], repo: str | Path | None,
 ) -> SatCampaignManifest:
     with secure_state_transaction(root, _filename(campaign_ref), repo_root=repo) as transaction:
-        payload = transaction.read()
+        payload = transaction.read(max_bytes=_MAX_BYTES)
         if payload is None:
             raise CampaignManifestStoreError("campaign-state-not-found")
         before = _decode(payload, campaign_ref)
@@ -168,7 +215,7 @@ def _decode(payload: bytes, campaign_ref: str) -> SatCampaignManifest:
         return manifest
     except CampaignManifestStoreError:
         raise
-    except (CampaignManifestError, UnicodeError, ValueError, TypeError, KeyError):
+    except (CampaignManifestError, UnicodeError, ValueError, TypeError, KeyError, RecursionError):
         raise CampaignManifestStoreError("campaign-state-invalid") from None
 
 
