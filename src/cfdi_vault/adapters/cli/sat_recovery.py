@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from io import StringIO
@@ -49,6 +50,8 @@ from .common import (
     _setup_provider,
 )
 
+_RECOVERY_REF_RE = re.compile(r"run-[0-9a-f]{12}")
+
 
 class _RecoveryCliError(ValueError):
     """Carry one allowlisted CLI failure code without private context."""
@@ -63,7 +66,7 @@ def sat_metadata_recover_live(
     to_date: str = typer.Option(..., "--to", help="Inclusive end date: YYYY-MM-DD."),
     authorization: str = typer.Option(..., "--authorization", help="Exact local recovery permit id."),
 ) -> None:
-    """Submit or advance one permitted Metadata recovery using local state and sanitized aggregate output."""
+    """Submit or advance one permitted Metadata recovery using local state, sanitized aggregate output, and its opaque local recovery reference."""
 
     try:
         query, local_profile = _safe_recovery_query(profile, direction, from_date, to_date)
@@ -82,7 +85,7 @@ def sat_metadata_recover_live(
                 entry_point="metadata-recover-live", repo_root=repo_root,
             )
             if settled.recovery is None:
-                _print_runner_failure(settled)
+                _print_runner_failure(settled, existing.recovery.recovery_ref)
                 raise typer.Exit(code=1)
             if not settled.requires_live:
                 final = load_metadata_recovery_state(
@@ -117,7 +120,7 @@ def sat_metadata_recover_live(
             tested_commit=observation.tested_commit, entry_point="metadata-recover-live",
             repo_root=repo_root)
         if outcome.recovery is None:
-            _print_runner_failure(outcome)
+            _print_runner_failure(outcome, claim.recovery_ref)
             raise typer.Exit(code=1)
         final = load_metadata_recovery_state(local_profile.storage_root, claim.recovery_ref, repo_root=repo_root)
         observe_metadata_recovery(observation, before=existing, after=final, outcome=outcome,
@@ -137,7 +140,7 @@ def sat_metadata_recovery_status(
     profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
     recovery_ref: str = typer.Option(..., "--recovery-ref", help="Opaque local recovery reference."),
 ) -> None:
-    """Read local persisted recovery state and print sanitized aggregates only."""
+    """Read local persisted recovery state and print sanitized aggregates plus its opaque local recovery reference."""
 
     try:
         local_profile = _safe_recovery_profile(profile)
@@ -154,7 +157,7 @@ def sat_metadata_recovery_status(
 def sat_metadata_recovery_runner(
     profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
 ) -> None:
-    """Advance at most one due persisted recovery and print sanitized aggregates."""
+    """Print the opaque local recovery reference and sanitized totals after advancing one due recovery."""
 
     try:
         local_profile = _safe_recovery_profile(profile)
@@ -178,7 +181,7 @@ def sat_metadata_recovery_runner(
             entry_point="metadata-recovery-runner", repo_root=repo_root,
         )
         if settled.recovery is None:
-            _print_runner_failure(settled)
+            _print_runner_failure(settled, selected)
             raise typer.Exit(code=1)
         if not settled.requires_live:
             final = load_metadata_recovery_state(local_profile.storage_root, selected, repo_root=repo_root)
@@ -200,7 +203,7 @@ def sat_metadata_recovery_runner(
             entry_point="metadata-recovery-runner", repo_root=repo_root,
         )
         if outcome.recovery is None:
-            _print_runner_failure(outcome)
+            _print_runner_failure(outcome, selected)
             raise typer.Exit(code=1)
         final = load_metadata_recovery_state(local_profile.storage_root, selected, repo_root=repo_root)
         observe_metadata_recovery(observation, before=record, after=final, outcome=outcome,
@@ -283,14 +286,20 @@ def _print_recovery_document(document: dict[str, object]) -> None:
         ("record_count", "not_reported" if record_count is None else record_count))
     for key, value in values:
         typer.echo(f"{key}={value}")
+    _print_safe_recovery_ref(document.get("recoveryRef"))
 def _print_submission(status: SubmissionStatus) -> None:
     typer.echo("stage=submission")
     typer.echo(f"status={status.value}")
     typer.echo("operation_attempts=1")
-def _print_runner_failure(outcome) -> None:  # type: ignore[no-untyped-def]
+def _print_runner_failure(outcome, recovery_ref=None) -> None:  # type: ignore[no-untyped-def]
     typer.echo("stage=runner")
     typer.echo(f"status={outcome.error_kind or 'runner_failed'}")
     typer.echo(f"operation_attempts={outcome.verify_count + outcome.download_attempts}")
+    _print_safe_recovery_ref(recovery_ref)
+def _print_safe_recovery_ref(value) -> None:  # type: ignore[no-untyped-def]
+    """Print only the validated opaque local recovery reference."""
+    if isinstance(value, str) and _RECOVERY_REF_RE.fullmatch(value):
+        typer.echo(f"recovery_ref={value}")
 def _print_scheduler_idle() -> None:
     typer.echo("stage=scheduler")
     typer.echo("status=no_due")

@@ -38,6 +38,7 @@ def _query() -> DownloadQuery:
     )
 def _document(**overrides: object) -> dict[str, object]:
     value: dict[str, object] = {
+        "recoveryRef": "run-000000000000",
         "status": "verify_scheduled",
         "verifyAttempts": 0,
         "nextCheckAt": "2026-06-30T00:05:00+00:00",
@@ -97,7 +98,10 @@ def test_recover_live_orders_gates_and_prints_only_aggregates(monkeypatch, tmp_p
     monkeypatch.setattr(
         subject,
         "advance_metadata_recovery_once",
-        lambda **kw: events.append("advance") or SimpleNamespace(recovery=_document(recordCount=None))
+        lambda **kw: events.append("advance") or SimpleNamespace(recovery=_document(
+            recordCount=None, idSolicitud="synthetic-request-id",
+            packageIds=["synthetic-package-id"], permitId="permit-synthetic",
+        ))
         if kw["entry_point"] == "metadata-recover-live" else None,
     )
 
@@ -110,13 +114,15 @@ def test_recover_live_orders_gates_and_prints_only_aggregates(monkeypatch, tmp_p
     assert "status=verify_scheduled" in result.output
     assert "operation_attempts=0" in result.output
     assert "record_count=not_reported" in result.output
+    assert "recovery_ref=run-000000000000" in result.output
     for forbidden in (
         "profile-synthetic",
         "permit-synthetic",
         "tenant-synthetic",
         "XAXX010101000",
         str(profile.storage_root),
-        "recovery_ref",
+        "synthetic-request-id",
+        "synthetic-package-id",
         "packages=",
         "artifacts=",
     ):
@@ -157,7 +163,10 @@ def test_recover_live_stops_active_legacy_before_permit_or_live_dependencies(
     assert events == ["query", "guard", "path", "observation", "list", "settle"]
     assert (settle_calls[0]["tested_commit"], settle_calls[0]["entry_point"],
             settle_calls[0]["now"]) == (COMMIT, "metadata-recover-live", NOW)
-    assert result.output == "stage=runner\nstatus=observation-provenance-missing\noperation_attempts=0\n"
+    assert result.output == (
+        "stage=runner\nstatus=observation-provenance-missing\noperation_attempts=0\n"
+        "recovery_ref=run-000000000000\n"
+    )
 
 
 @pytest.mark.parametrize("terminal", ("pending_after_budget", "verify_failed"))
@@ -278,9 +287,9 @@ def test_status_is_read_only_and_omits_private_and_structural_arrays(monkeypatch
     assert result.exit_code == 0, result.output
     assert "stage=downloading\nstatus=packages_ready\noperation_attempts=3" in result.output
     assert "package_count=2\nzip_valid_count=1\ntxt_extracted=1" in result.output
+    assert "recovery_ref=run-000000000000" in result.output
     for forbidden in (
         "profile-synthetic",
-        "run-000000000000",
         "private",
         "headers",
         "packages=",
@@ -389,6 +398,7 @@ def test_runner_validates_stored_permit_before_storage_and_advances_once(monkeyp
 
     assert result.exit_code == 0, result.output
     assert events == ["guard", "path", "list", "settle", "permit", "storage", "adapter", "advance"]
+    assert "recovery_ref=run-000000000000" in result.output
     assert "permit-synthetic" not in result.output and "profile-synthetic" not in result.output
 
 
@@ -449,3 +459,4 @@ def test_runner_stops_missing_provenance_before_adapter(monkeypatch, tmp_path: P
 
     assert result.exit_code == 1 and events == []
     assert "status=observation-provenance-missing" in result.output
+    assert "recovery_ref=run-000000000000" in result.output

@@ -195,6 +195,23 @@ def test_verify_exception_and_mismatch_classification(tmp_path, result, expected
         assert loaded.recovery.next_check_at == NOW + timedelta(minutes=20)
 
 
+def test_runner_rejects_foreign_verify_identity_without_persisting_or_downloading(tmp_path) -> None:
+    foreign = "synthetic-foreign-request"
+    _saved(tmp_path)
+    verifier = _Verifier(_verification(request_id=foreign, packages=PACKAGES))
+    downloader = _Downloader({item: _download(item) for item in PACKAGES})
+
+    outcome = _advance(tmp_path, verifier, downloader, NOW + timedelta(minutes=5))
+
+    loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
+    assert (outcome.error_kind, outcome.sat_contacted, outcome.verify_count) == (
+        "verify_failed", True, 1,
+    )
+    assert verifier.calls == [REQUEST] and downloader.calls == []
+    assert loaded.id_solicitud == REQUEST and loaded.package_bindings == ()
+    assert foreign not in state.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize(
     ("error_kind", "expected"),
     [

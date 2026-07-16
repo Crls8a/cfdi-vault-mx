@@ -23,6 +23,7 @@ from cfdi_vault.sat_auth_constants import (
 from cfdi_vault.sat_auth_contract import AuthWsdlContract
 from cfdi_vault.sat_auth_envelope_lint import lint_auth_envelope
 from cfdi_vault.sat_auth_http import validate_auth_headers_for_contract
+from cfdi_vault.sat_contract import SatOperation, SatVerificationError
 from cfdi_vault.sat_live_smoke import (
     AUTH_ACTION,
     DEFAULT_VERIFY_ENDPOINT,
@@ -189,6 +190,64 @@ def test_neutral_adapter_enforces_constructor_range_limit_before_transport(tmp_p
     )
     result = _neutral_adapter(tmp_path, allowed, material=_material(), max_range_days=2).submit_request(query)
     assert result.request_id == "SYN-REQ-RANGE"
+
+
+@pytest.mark.parametrize(
+    ("response", "expected_state", "expected_packages"),
+    [
+        ('<sat:VerificaSolicitudDescargaResult CodEstatus="5000" EstadoSolicitud="2" />',
+         "in_process", ()),
+        ("""<sat:VerificaSolicitudDescargaResult CodEstatus="5000" EstadoSolicitud="3">
+              <sat:IdsPaquetes><sat:IdPaquete>SYN-PKG-BOUND</sat:IdPaquete></sat:IdsPaquetes>
+            </sat:VerificaSolicitudDescargaResult>""", "finished", ("SYN-PKG-BOUND",)),
+    ],
+)
+def test_neutral_verify_binds_trusted_request_when_v15_response_omits_id(
+    tmp_path: Path, response: str, expected_state: str, expected_packages: tuple[str, ...],
+) -> None:
+    trusted = "SYN-REQ-TRUSTED"
+    transport = FakeSoapTransport([
+        _auth_response(), SoapTransportResponse(200, body=_soap(response)),
+    ])
+
+    result = _neutral_adapter(tmp_path, transport, material=_material()).verify_request(trusted)
+
+    assert (result.request_id, result.state.value, result.package_ids) == (
+        trusted, expected_state, expected_packages,
+    )
+    assert len(transport.requests) == 2
+
+
+def test_neutral_verify_accepts_identical_echo_and_rejects_foreign_echo_after_contact(
+    tmp_path: Path,
+) -> None:
+    trusted, foreign = "SYN-REQ-TRUSTED", "SYN-REQ-FOREIGN"
+    accepted = FakeSoapTransport([
+        _auth_response(), SoapTransportResponse(200, body=_soap(
+            f'<sat:VerificaSolicitudDescargaResult IdSolicitud="{trusted}" '
+            'CodEstatus="5000" EstadoSolicitud="2" />',
+        )),
+    ])
+    assert _neutral_adapter(tmp_path, accepted, material=_material()).verify_request(
+        trusted,
+    ).request_id == trusted
+
+    rejected = FakeSoapTransport([
+        _auth_response(), SoapTransportResponse(200, body=_soap(
+            f'<sat:VerificaSolicitudDescargaResult IdSolicitud="{foreign}" '
+            'CodEstatus="5000" EstadoSolicitud="3"><sat:IdsPaquetes>'
+            '<sat:IdPaquete>SYN-PKG-FOREIGN</sat:IdPaquete></sat:IdsPaquetes>'
+            '</sat:VerificaSolicitudDescargaResult>',
+        )),
+    ])
+    with pytest.raises(SatVerificationError) as captured:
+        _neutral_adapter(tmp_path, rejected, material=_material()).verify_request(trusted)
+
+    assert (captured.value.operation, captured.value.code, captured.value.retryable) == (
+        SatOperation.VERIFY, "response_identity_mismatch", False,
+    )
+    assert len(rejected.requests) == 2
+    assert all(value not in str(captured.value) for value in (trusted, foreign, "SYN-PKG-FOREIGN"))
 
 
 @pytest.mark.parametrize("failure", [TimeoutError(), SoapReadTimeout(), ConnectionResetError(), EOFError()])
@@ -399,7 +458,7 @@ def test_metadata_verify_smoke_reports_finished_packages_without_download(tmp_pa
             200,
             body=_soap(
                 """
-                <sat:VerificaSolicitudDescargaResult IdSolicitud="SYN-REQ-003" CodEstatus="5000" EstadoSolicitud="3" Mensaje="Finished">
+                <sat:VerificaSolicitudDescargaResult IdSolicitud="648a0000-1111-2222-3333-444444447b27" CodEstatus="5000" EstadoSolicitud="3" Mensaje="Finished">
                   <sat:IdsPaquetes>
                     <sat:IdPaquete>SYN-PKG-001</sat:IdPaquete>
                     <sat:IdPaquete>SYN-PKG-002</sat:IdPaquete>

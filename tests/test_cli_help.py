@@ -86,15 +86,18 @@ def test_metadata_recovery_help_documents_required_options_and_safe_output() -> 
         assert option in recover.output
     assert "local state" in recover.output
     assert "sanitized aggregate output" in recover.output
+    assert "opaque local recovery reference" in recover.output
 
     assert status.exit_code == 0, status.output
     for option in ("--profile", "--recovery-ref"):
         assert option in status.output
     assert "local persisted recovery state" in status.output
     assert "sanitized aggregates" in status.output
+    assert "opaque local recovery reference" in status.output
 
     runner_help = runner.invoke(app, ["sat", "metadata-recovery-runner", "--help"])
     assert runner_help.exit_code == 0, runner_help.output
     assert "--profile" in runner_help.output
+    assert "opaque local recovery reference" in runner_help.output
     for forbidden in ("--authorization", "--recovery-ref", "--direction", "--from", "--to"):
         assert forbidden not in runner_help.output

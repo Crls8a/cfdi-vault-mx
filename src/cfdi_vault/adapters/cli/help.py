@@ -115,19 +115,19 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
     },
     {
         "command": "sat metadata-recover-live",
-        "purpose": "Submit or resume one permitted Metadata recovery with external local state and sanitized aggregate output.",
+        "purpose": "Submit or resume one permitted Metadata recovery with external local state, sanitized aggregate output, and its opaque local recovery reference.",
         "when": "Run only with the exact local permit; an existing request is never replaced automatically.",
         "example": "cfdi-vault sat metadata-recover-live --profile <profile-id> --direction received --from YYYY-MM-DD --to YYYY-MM-DD --authorization <permit-id>",
     },
     {
         "command": "sat metadata-recovery-status",
-        "purpose": "Read local recovery state and print sanitized aggregate progress only.",
+        "purpose": "Read local recovery state and print sanitized aggregate progress plus its opaque local recovery reference.",
         "when": "Use a local recovery reference to inspect progress without contacting SAT.",
         "example": "cfdi-vault sat metadata-recovery-status --profile <profile-id> --recovery-ref <recovery-ref>",
     },
     {
         "command": "sat metadata-recovery-runner",
-        "purpose": "Advance at most one due persisted recovery with sanitized aggregate output.",
+        "purpose": "Advance at most one due persisted recovery with sanitized aggregate output and its opaque local recovery reference.",
         "when": "Wake periodically; SAT is not contacted before the persisted due time.",
         "example": "cfdi-vault sat metadata-recovery-runner --profile <profile-id>",
     },

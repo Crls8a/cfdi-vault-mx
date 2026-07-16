@@ -9,7 +9,7 @@ import socket
 import ssl
 import time
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from http.client import RemoteDisconnected
@@ -39,7 +39,14 @@ from cfdi_vault.sat_auth_constants import (
 )
 from cfdi_vault.sat_auth_endpoints import DEFAULT_AUTH_ENDPOINT, resolve_auth_endpoint
 from cfdi_vault.sat_auth_http import build_soap11_headers
-from cfdi_vault.sat_contract import SatDownloadResult, SatOutcomeAction, SatRequestResult, SatVerificationResult
+from cfdi_vault.sat_contract import (
+    SatDownloadResult,
+    SatOperation,
+    SatOutcomeAction,
+    SatRequestResult,
+    SatVerificationError,
+    SatVerificationResult,
+)
 from cfdi_vault.sat_soap_parse import (
     SatSoapParseError,
     parse_authentication_response,
@@ -508,7 +515,7 @@ class SatLiveV15MetadataAdapter:
         )
         started = time.perf_counter()
         try:
-            return parse_verification_response(response)
+            result = parse_verification_response(response)
         except (SatSoapParseError, ValueError):
             raise SatLiveSmokeError(
                 "SAT verification response could not be parsed",
@@ -519,6 +526,16 @@ class SatLiveV15MetadataAdapter:
                 payload_size=len(response),
                 duration_ms=_elapsed_ms(started),
             ) from None
+        echoed_request_id = result.request_id.strip()
+        if echoed_request_id and echoed_request_id != request_id:
+            raise SatVerificationError(
+                operation=SatOperation.VERIFY,
+                code="response_identity_mismatch",
+                message="SAT VERIFY response identity did not match the trusted request",
+                retryable=False,
+                next_action="stop this recovery and inspect sanitized local audit state",
+            )
+        return result if echoed_request_id else replace(result, request_id=request_id)
 
     def _send_package_download(self, authorization: str, package_id: str) -> SatDownloadResult:
         body = _build_stage(
