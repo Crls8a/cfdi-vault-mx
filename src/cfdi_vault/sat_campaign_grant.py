@@ -1,0 +1,277 @@
+"""Pure internal campaign-grant values and codec; owns no persistence or SAT contact."""
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import TypeVar
+
+from cfdi_vault.sat_campaign_manifest import (
+    BASE_WORK_COUNT,
+    CAMPAIGN_END,
+    CAMPAIGN_START,
+    DIRECTIONS,
+    MAX_OUTSTANDING,
+    MAX_REQUESTS,
+    CampaignManifestError,
+    SatCampaignManifest,
+    build_campaign_manifest,
+    campaign_redacted_summary,
+)
+
+_PHASE, _KIND, _MAX_INVOCATIONS = "metadata-proof", "metadata", 4032
+_MAX_VALIDITY, _MAX_BYTES = timedelta(days=14), 64 * 1024
+_COMMIT_RE = re.compile(r"[0-9a-fA-F]{40}")
+_GRANT_RE = re.compile(r"grt-[0-9a-f]{24}")
+_PROFILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+_REASON_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 .,;:_-]{0,255}")
+_KEYS = {
+    "schemaVersion", "grantRef", "phase", "campaignRef", "manifestDigest",
+    "testedCommit", "profileId", "dateFrom", "dateTo", "directions", "kind",
+    "maxOutstanding", "maxSubmissions", "maxInvocations", "createdAt", "expiresAt",
+    "reason", "invocationClaims", "submissionClaims", "redactionRequired",
+}
+_T = TypeVar("_T")
+
+
+class CampaignGrantError(ValueError):
+    """Reject invalid grant authority using one sanitized reason code."""
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+@dataclass(frozen=True)
+class CampaignGrant:
+    """Commit-bound authority for the fixed offline Metadata campaign."""
+    grant_ref: str
+    campaign_ref: str
+    manifest_digest: str
+    tested_commit: str
+    profile_id: str = field(repr=False)
+    created_at: datetime
+    expires_at: datetime
+    reason: str = field(repr=False)
+    phase: str = _PHASE
+    max_outstanding: int = MAX_OUTSTANDING
+    max_submissions: int = MAX_REQUESTS
+    max_invocations: int = _MAX_INVOCATIONS
+    invocation_claims: tuple[object, ...] = field(default=(), repr=False)
+    submission_claims: tuple[object, ...] = field(default=(), repr=False)
+    redaction_required: bool = True
+
+
+def campaign_grant_redacted_summary(grant: CampaignGrant) -> dict[str, object]:
+    """Expose only opaque reference, expiry, ceilings, and empty claim counts."""
+    _validate_grant(grant)
+    return {
+        "grant_ref": grant.grant_ref,
+        "phase": grant.phase,
+        "expires_at": _format_dt(grant.expires_at),
+        "max_outstanding": grant.max_outstanding,
+        "max_submissions": grant.max_submissions,
+        "max_invocations": grant.max_invocations,
+        "invocation_count": 0,
+        "submission_count": 0,
+    }
+
+
+def _new_campaign_grant(
+    manifest: SatCampaignManifest, profile_id: str, tested_commit: str, current_commit: str,
+    reason: str, expires_in: timedelta, *, now: datetime,
+) -> CampaignGrant:
+    """Build deterministic fixed authority after exact policy and commit checks."""
+    _validate_manifest(manifest, profile_id)
+    _validate_reason(reason)
+    if type(expires_in) is not timedelta or not timedelta(0) < expires_in <= _MAX_VALIDITY:
+        raise CampaignGrantError("campaign-grant-validity-invalid")
+    created_at = _utc_datetime(now)
+    commit = _commit(tested_commit)
+    if commit != _commit(current_commit):
+        raise CampaignGrantError("campaign-grant-commit-mismatch")
+    authority = {
+        "campaignRef": manifest.campaign_ref,
+        "manifestDigest": _manifest_digest(manifest),
+        "testedCommit": commit,
+        "profileId": profile_id,
+        "createdAt": _format_dt(created_at),
+        "expiresAt": _format_dt(created_at + expires_in),
+        "reason": reason,
+    }
+    return CampaignGrant(_grant_ref(authority), manifest.campaign_ref, authority["manifestDigest"],
+                         commit, profile_id, created_at, created_at + expires_in, reason)
+
+
+def _encode_campaign_grant(grant: CampaignGrant) -> bytes:
+    """Encode one canonical strict document for later secure persistence."""
+    _validate_grant(grant)
+    return (json.dumps(_document(grant), sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+def _decode_campaign_grant(payload: bytes, grant_ref: str, current_commit: str) -> CampaignGrant:
+    """Decode and fully validate fixed authority without performing I/O."""
+    current = _commit(current_commit)
+    try:
+        if type(payload) is not bytes or len(payload) > _MAX_BYTES or payload.startswith(b"\xef\xbb\xbf"):
+            raise CampaignGrantError("campaign-grant-state-invalid")
+        document = json.loads(payload.decode(), object_pairs_hook=_unique)
+        if type(document) is not dict or set(document) != _KEYS:
+            raise CampaignGrantError("campaign-grant-state-invalid")
+        claims = (_value(document, "invocationClaims", list),
+                  _value(document, "submissionClaims", list))
+        grant = CampaignGrant(
+            _value(document, "grantRef", str), _value(document, "campaignRef", str),
+            _value(document, "manifestDigest", str), _value(document, "testedCommit", str),
+            _value(document, "profileId", str), _datetime(document, "createdAt"),
+            _datetime(document, "expiresAt"), _value(document, "reason", str),
+            _value(document, "phase", str), _value(document, "maxOutstanding", int),
+            _value(document, "maxSubmissions", int), _value(document, "maxInvocations", int),
+            (), (), _value(document, "redactionRequired", bool),
+        )
+        fixed = (
+            _value(document, "schemaVersion", int), _value(document, "dateFrom", str),
+            _value(document, "dateTo", str), document["directions"], _value(document, "kind", str),
+            claims,
+        )
+        if fixed != (1, CAMPAIGN_START.isoformat(), CAMPAIGN_END.isoformat(),
+                     [item.value for item in DIRECTIONS], _KIND, ([], [])):
+            raise CampaignGrantError("campaign-grant-state-invalid")
+        _validate_grant(grant)
+        if grant.grant_ref != grant_ref or grant.tested_commit != current:
+            raise CampaignGrantError("campaign-grant-state-invalid")
+        return grant
+    except CampaignGrantError:
+        raise CampaignGrantError("campaign-grant-state-invalid") from None
+    except (CampaignManifestError, UnicodeError, ValueError, TypeError, KeyError, RecursionError):
+        raise CampaignGrantError("campaign-grant-state-invalid") from None
+
+
+def _document(grant: CampaignGrant) -> dict[str, object]:
+    return {
+        "schemaVersion": 1, "grantRef": grant.grant_ref, "phase": grant.phase,
+        "campaignRef": grant.campaign_ref, "manifestDigest": grant.manifest_digest,
+        "testedCommit": grant.tested_commit, "profileId": grant.profile_id,
+        "dateFrom": CAMPAIGN_START.isoformat(), "dateTo": CAMPAIGN_END.isoformat(),
+        "directions": [item.value for item in DIRECTIONS], "kind": _KIND,
+        "maxOutstanding": grant.max_outstanding, "maxSubmissions": grant.max_submissions,
+        "maxInvocations": grant.max_invocations, "createdAt": _format_dt(grant.created_at),
+        "expiresAt": _format_dt(grant.expires_at), "reason": grant.reason,
+        "invocationClaims": list(grant.invocation_claims),
+        "submissionClaims": list(grant.submission_claims),
+        "redactionRequired": grant.redaction_required,
+    }
+
+
+def _validate_grant(grant: object) -> None:
+    if type(grant) is not CampaignGrant:
+        raise CampaignGrantError("campaign-grant-state-invalid")
+    _validate_reason(grant.reason)
+    try:
+        expected = build_campaign_manifest(grant.profile_id)
+        created_at, expires_at = _utc_datetime(grant.created_at), _utc_datetime(grant.expires_at)
+    except (CampaignManifestError, CampaignGrantError):
+        raise CampaignGrantError("campaign-grant-state-invalid") from None
+    invalid = (not _GRANT_RE.fullmatch(grant.grant_ref) or grant.phase != _PHASE
+               or grant.max_outstanding != MAX_OUTSTANDING or grant.max_submissions != MAX_REQUESTS
+               or grant.max_invocations != _MAX_INVOCATIONS or grant.invocation_claims != ()
+               or grant.submission_claims != () or grant.redaction_required is not True
+               or not _PROFILE_RE.fullmatch(grant.profile_id)
+               or grant.campaign_ref != expected.campaign_ref
+               or grant.manifest_digest != _manifest_digest(expected)
+               or not re.fullmatch(r"[0-9a-f]{64}", grant.manifest_digest)
+               or _commit(grant.tested_commit) != grant.tested_commit
+               or not timedelta(0) < expires_at - created_at <= _MAX_VALIDITY)
+    authority = {
+        "campaignRef": grant.campaign_ref, "manifestDigest": grant.manifest_digest,
+        "testedCommit": grant.tested_commit, "profileId": grant.profile_id,
+        "createdAt": _format_dt(grant.created_at), "expiresAt": _format_dt(grant.expires_at),
+        "reason": grant.reason,
+    }
+    if invalid or grant.grant_ref != _grant_ref(authority):
+        raise CampaignGrantError("campaign-grant-state-invalid")
+
+
+def _validate_manifest(manifest: object, profile_id: object) -> None:
+    try:
+        campaign_redacted_summary(manifest)  # type: ignore[arg-type]
+    except CampaignManifestError:
+        raise CampaignGrantError("campaign-grant-manifest-invalid") from None
+    if type(profile_id) is not str or not _PROFILE_RE.fullmatch(profile_id):
+        raise CampaignGrantError("campaign-grant-profile-invalid")
+    if manifest.profile_id != profile_id:  # type: ignore[union-attr]
+        raise CampaignGrantError("campaign-grant-profile-mismatch")
+
+
+def _manifest_digest(manifest: SatCampaignManifest) -> str:
+    """Hash only fixed policy and the 28 immutable base work identities."""
+    _validate_manifest(manifest, manifest.profile_id)
+    bases = [
+        {"workRef": item.work_ref, "direction": item.direction.value,
+         "start": item.start.isoformat(), "end": item.end.isoformat(),
+         "depth": item.depth, "parentRef": item.parent_ref}
+        for item in manifest.items if item.depth == 0
+    ]
+    policy = {
+        "schemaVersion": manifest.schema_version, "policyVersion": manifest.policy_version,
+        "start": manifest.start.isoformat(), "end": manifest.end.isoformat(),
+        "windowDays": manifest.window_days, "directions": [x.value for x in manifest.directions],
+        "maxOutstanding": manifest.max_outstanding, "maxSplitDepth": manifest.max_split_depth,
+        "kind": manifest.kind.value, "baseWorkCount": BASE_WORK_COUNT,
+        "maxSubmissions": MAX_REQUESTS, "baseWorkIdentities": bases,
+    }
+    encoded = json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _commit(value: object) -> str:
+    if type(value) is not str or not _COMMIT_RE.fullmatch(value):
+        raise CampaignGrantError("campaign-grant-commit-invalid")
+    return value.lower()
+
+
+def _utc_datetime(value: object) -> datetime:
+    if type(value) is not datetime or value.tzinfo is None or value.utcoffset() is None:
+        raise CampaignGrantError("campaign-grant-time-invalid")
+    return value.astimezone(timezone.utc)
+
+
+def _format_dt(value: datetime) -> str:
+    return _utc_datetime(value).isoformat().replace("+00:00", "Z")
+
+
+def _datetime(document: dict[str, object], key: str) -> datetime:
+    value = _value(document, key, str)
+    if not value.endswith("Z"):
+        raise CampaignGrantError("campaign-grant-state-invalid")
+    parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    if _format_dt(parsed) != value:
+        raise CampaignGrantError("campaign-grant-state-invalid")
+    return parsed
+
+
+def _validate_reason(value: object) -> None:
+    if type(value) is not str or not _REASON_RE.fullmatch(value) or ".." in value:
+        raise CampaignGrantError("campaign-grant-reason-invalid")
+
+
+def _grant_ref(authority: dict[str, object]) -> str:
+    encoded = json.dumps(authority, sort_keys=True, separators=(",", ":")).encode()
+    return f"grt-{hashlib.sha256(encoded).hexdigest()[:24]}"
+
+
+def _value(document: dict[str, object], key: str, expected: type[_T]) -> _T:
+    value = document[key]
+    if type(value) is not expected:
+        raise CampaignGrantError("campaign-grant-state-invalid")
+    return value  # type: ignore[return-value]
+
+
+def _unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    document: dict[str, object] = {}
+    for key, value in pairs:
+        if key in document:
+            raise CampaignGrantError("campaign-grant-state-invalid")
+        document[key] = value
+    return document
