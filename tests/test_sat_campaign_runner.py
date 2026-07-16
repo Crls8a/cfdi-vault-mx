@@ -6,7 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Barrier, Event
+from threading import Barrier, Event, Lock
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +15,7 @@ import cfdi_vault.sat_campaign_grant as grants
 import cfdi_vault.sat_campaign_manifest_store as manifests
 import cfdi_vault.sat_campaign_runner as subject
 import cfdi_vault.secure_state_file as secure_state
+from cfdi_vault.domain import DateTimePeriod, DownloadQuery, RequestType
 from cfdi_vault.sat_campaign_manifest import (
     CampaignWorkState,
     SatCampaignManifest,
@@ -52,6 +54,28 @@ def _reserve(storage: Path, manifest: SatCampaignManifest, grant: grants.Campaig
         profile_id=manifest.profile_id,
         invocation_ref=f"inv-{invocation:024x}",
         now=NOW,
+    )
+
+
+def _queries(manifest: SatCampaignManifest) -> dict[str, DownloadQuery]:
+    return {
+        item.work_ref: DownloadQuery(
+            PROFILE, "RFC-SYNTHETIC", item.direction, RequestType.METADATA,
+            DateTimePeriod(
+                datetime.combine(item.start, datetime.min.time(), tzinfo=timezone.utc),
+                datetime.combine(item.end, datetime.max.time(), tzinfo=timezone.utc),
+            ),
+        )
+        for item in manifest.items
+        if item.state is CampaignWorkState.OUTSTANDING
+    }
+
+
+def _prepare(storage, manifest, grant, queries, invocation=None):
+    return subject.prepare_reserved_metadata_submissions_once(
+        storage_root=storage, repo_root=REPO, campaign_ref=manifest.campaign_ref,
+        grant_ref=grant.grant_ref, profile_id=PROFILE, queries_by_work=queries,
+        invocation_ref=invocation, now=NOW,
     )
 
 
@@ -226,4 +250,166 @@ def test_import_graph_has_only_internal_campaign_dependencies() -> None:
     }
     forbidden = ("adapter", "credential", "transport", "common", "experimental")
     assert not any(part in name for name in imported for part in forbidden)
-    assert "cfdi_vault.domain" not in imported
+
+
+def test_prepares_same_process_reserved_work_without_second_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage, manifest, grant = _setup(tmp_path, monkeypatch)
+    reserved = _reserve(storage, manifest, grant)
+    current = manifests.load_campaign_manifest(storage, manifest.campaign_ref, repo_root=REPO)
+
+    queries = _queries(current)
+    result = _prepare(storage, manifest, grant, queries, reserved.invocation_ref)
+
+    actions = tuple(action.action for action in result.actions)
+    assert actions.count(subject.CampaignSubmissionAction.RECOVERY_LINKED) == 2
+    assert actions.count(subject.CampaignSubmissionAction.SUBMISSION_ALLOWED) == 2
+    loaded = grants.load_campaign_grant(storage, grant.grant_ref, REPO, now=NOW)
+    assert len(loaded.invocation_claims) == 1
+    replay = _prepare(storage, manifest, grant, queries, reserved.invocation_ref)
+    assert all(item.action is subject.CampaignSubmissionAction.ORPHAN_UNCERTAIN
+               for item in replay.actions)
+    recover = subject.campaign_metadata_recovery_ref
+    by_recovery = {recover(PROFILE, query.criteria_hash()): query for query in queries.values()}
+
+    def accepted(_root, recovery_ref, **_kwargs):
+        query, period = by_recovery[recovery_ref], by_recovery[recovery_ref].period
+        return SimpleNamespace(
+            recovery=SimpleNamespace(recovery_ref=recovery_ref), profile_id=PROFILE,
+            criteria_hash=query.criteria_hash(), direction=query.direction.value,
+            kind=query.request_type.value, fecha_inicial=period.start.date().isoformat(),
+            fecha_final=period.end.date().isoformat(), authorization_ref=grant.grant_ref,
+        )
+
+    monkeypatch.setattr(subject, "load_metadata_recovery_state", accepted)
+    accepted_replay = _prepare(storage, manifest, grant, queries, reserved.invocation_ref)
+    assert all(item.action is subject.CampaignSubmissionAction.CLAIMED_REPLAY
+               for item in accepted_replay.actions)
+
+
+def test_restart_after_reserve_claims_new_invocation_without_more_capacity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage, manifest, grant = _setup(tmp_path, monkeypatch)
+    reserved = _reserve(storage, manifest, grant)
+    current = manifests.load_campaign_manifest(storage, manifest.campaign_ref, repo_root=REPO)
+    result = _prepare(storage, manifest, grant, _queries(current))
+    loaded = grants.load_campaign_grant(storage, grant.grant_ref, REPO, now=NOW)
+    stored = manifests.load_campaign_manifest(storage, manifest.campaign_ref, repo_root=REPO)
+    assert result.invocation_ref != reserved.invocation_ref
+    assert len(loaded.invocation_claims) == 2 and len(loaded.submission_claims) == 2
+    assert sum(item.state is CampaignWorkState.OUTSTANDING for item in stored.items) == 2
+
+
+def test_restart_after_bind_resumes_claim_without_rebinding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage, manifest, grant = _setup(tmp_path, monkeypatch)
+    _reserve(storage, manifest, grant)
+    current = manifests.load_campaign_manifest(storage, manifest.campaign_ref, repo_root=REPO)
+    queries = _queries(current)
+    first = current.items[0]
+    recovery_ref = subject.campaign_metadata_recovery_ref(PROFILE, queries[first.work_ref].criteria_hash())
+    manifests.bind_campaign_manifest_recovery(
+        storage, manifest.campaign_ref, first.work_ref, recovery_ref, repo_root=REPO,
+    )
+    result = _prepare(storage, manifest, grant, queries)
+    first_actions = [item.action for item in result.actions if item.work_ref == first.work_ref]
+    assert first_actions == [subject.CampaignSubmissionAction.SUBMISSION_ALLOWED]
+
+
+@pytest.mark.parametrize("change", ["direction", "period", "criteria"])
+def test_rejects_query_lineage_before_bind_or_submission_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str,
+) -> None:
+    storage, manifest, grant = _setup(tmp_path, monkeypatch)
+    _reserve(storage, manifest, grant)
+    current = manifests.load_campaign_manifest(storage, manifest.campaign_ref, repo_root=REPO)
+    queries = _queries(current)
+    first = current.items[0]
+    query = queries[first.work_ref]
+    if change == "direction":
+        query = replace(query, direction=current.items[1].direction)
+    elif change == "period":
+        assert query.period is not None
+        query = replace(query, period=replace(query.period, end=query.period.end - timedelta(seconds=1)))
+    else:
+        query = replace(query, document_type="I")
+    queries[first.work_ref] = query
+    with pytest.raises(subject.CampaignRunnerError, match="^campaign-query-lineage-invalid$"):
+        _prepare(storage, manifest, grant, queries)
+    stored = manifests.load_campaign_manifest(storage, manifest.campaign_ref, repo_root=REPO)
+    assert not any(item.recovery_ref for item in stored.items)
+    loaded = grants.load_campaign_grant(storage, grant.grant_ref, REPO, now=NOW)
+    assert loaded.submission_claims == ()
+
+
+@pytest.mark.parametrize("target", ["bind", "claim"])
+@pytest.mark.parametrize("uncertain", [False, True])
+def test_partial_failure_is_committed_non_retry_safe_without_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str, uncertain: bool,
+) -> None:
+    storage, manifest, grant = _setup(tmp_path, monkeypatch)
+    reserved = _reserve(storage, manifest, grant)
+    current = manifests.load_campaign_manifest(storage, manifest.campaign_ref, repo_root=REPO)
+    if target == "bind":
+        error = manifests.CampaignManifestStoreError("failed", uncertain=uncertain)
+        attribute = "bind_campaign_manifest_recovery"
+    else:
+        error = grants.CampaignGrantError("failed", uncertain=uncertain)
+        attribute = "claim_campaign_grant_submission"
+    monkeypatch.setattr(subject, attribute, lambda *a, **k: (_ for _ in ()).throw(error))
+    with pytest.raises(subject.CampaignRunnerError) as caught:
+        _prepare(storage, manifest, grant, _queries(current), reserved.invocation_ref)
+    assert caught.value.committed and caught.value.uncertain is uncertain
+    assert not caught.value.retry_safe
+    assert grants.load_campaign_grant(
+        storage, grant.grant_ref, REPO, now=NOW,
+    ).submission_claims == ()
+
+
+def test_concurrent_preparation_allows_each_submission_at_most_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage, manifest, grant = _setup(tmp_path, monkeypatch)
+    first = _reserve(storage, manifest, grant).invocation_ref
+    current = manifests.load_campaign_manifest(storage, manifest.campaign_ref, repo_root=REPO)
+    queries, barrier, gate = _queries(current), Barrier(2), Lock()
+    original = subject.claim_campaign_grant_submission
+    for item in current.items[:2]:
+        recovery = subject.campaign_metadata_recovery_ref(PROFILE, queries[item.work_ref].criteria_hash())
+        manifests.bind_campaign_manifest_recovery(
+            storage, manifest.campaign_ref, item.work_ref, recovery, repo_root=REPO,
+        )
+    current = manifests.load_campaign_manifest(storage, manifest.campaign_ref, repo_root=REPO)
+
+    def race(*args, **kwargs):
+        if args[4] == current.items[0].work_ref:
+            barrier.wait()
+        with gate:
+            return original(*args, **kwargs)
+
+    monkeypatch.setattr(subject, "claim_campaign_grant_invocation", lambda *a, **k: None)
+    monkeypatch.setattr(subject, "load_campaign_manifest", lambda *a, **k: current)
+    original_load = subject.load_campaign_grant
+
+    def load_grant(*args, **kwargs):
+        with gate:
+            return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(subject, "load_campaign_grant", load_grant)
+    monkeypatch.setattr(subject, "claim_campaign_grant_submission", race)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = tuple(pool.map(
+            lambda invocation: _prepare(storage, manifest, grant, queries, invocation),
+            (first, first),
+        ))
+    allowed = [item.work_ref for result in results for item in result.actions
+               if item.action is subject.CampaignSubmissionAction.SUBMISSION_ALLOWED]
+    orphaned = [item.work_ref for result in results for item in result.actions
+                if item.action is subject.CampaignSubmissionAction.ORPHAN_UNCERTAIN]
+    assert all(allowed.count(item.work_ref) == 1 for item in current.items[:2])
+    assert all(orphaned.count(item.work_ref) == 1 for item in current.items[:2])
+    loaded = grants.load_campaign_grant(storage, grant.grant_ref, REPO, now=NOW)
+    assert len(loaded.submission_claims) == 2

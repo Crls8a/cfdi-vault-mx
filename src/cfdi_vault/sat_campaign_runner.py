@@ -1,22 +1,37 @@
 """Reserve fixed Metadata campaign capacity without granting SAT contact."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time, timezone
 from enum import StrEnum
 from pathlib import Path
 
+from cfdi_vault.domain import DownloadQuery, RequestType
 from cfdi_vault.sat_campaign_grant import (
     CampaignGrant,
+    CampaignGrantError,
+    CampaignSubmissionClaim,
     claim_campaign_grant_invocation,
+    claim_campaign_grant_submission,
     load_campaign_grant,
     new_campaign_invocation_ref,
 )
-from cfdi_vault.sat_campaign_manifest import CampaignWorkState, SatCampaignManifest
+from cfdi_vault.sat_campaign_manifest import (
+    CampaignWorkItem,
+    CampaignWorkState,
+    SatCampaignManifest,
+)
 from cfdi_vault.sat_campaign_manifest_store import (
     CampaignManifestStoreError,
+    bind_campaign_manifest_recovery,
     load_campaign_manifest,
     reserve_campaign_manifest_capacity,
+)
+from cfdi_vault.sat_metadata_recovery_state import (
+    MetadataRecoveryStateError,
+    campaign_metadata_recovery_ref,
+    load_metadata_recovery_state,
 )
 
 
@@ -58,6 +73,31 @@ class CampaignCapacityResult:
     actions: tuple[CampaignCapacityWork, ...]
 
 
+class CampaignSubmissionAction(StrEnum):
+    """Sanitized outcomes that never expose query or recovery material."""
+
+    RECOVERY_LINKED = "recovery_linked"
+    SUBMISSION_ALLOWED = "submission_allowed"
+    CLAIMED_REPLAY = "claimed_replay"
+    ORPHAN_UNCERTAIN = "orphan_uncertain"
+
+
+@dataclass(frozen=True)
+class CampaignSubmissionWork:
+    """One opaque preparation result for already-outstanding work."""
+
+    action: CampaignSubmissionAction
+    work_ref: str
+
+
+@dataclass(frozen=True)
+class CampaignSubmissionResult:
+    """Aggregate bind and claim results; owns no SAT side effect."""
+
+    invocation_ref: str
+    actions: tuple[CampaignSubmissionWork, ...]
+
+
 def reserve_metadata_campaign_capacity_once(
     *,
     storage_root: str | Path,
@@ -97,6 +137,170 @@ def reserve_metadata_campaign_capacity_once(
         for work_ref in reservation.new_work_refs
     )
     return CampaignCapacityResult(claimed_ref, outstanding, actions)
+
+
+def prepare_reserved_metadata_submissions_once(
+    *,
+    storage_root: str | Path,
+    repo_root: str | Path,
+    campaign_ref: str,
+    grant_ref: str,
+    profile_id: str,
+    queries_by_work: Mapping[str, DownloadQuery],
+    invocation_ref: str | None = None,
+    now: datetime | None = None,
+) -> CampaignSubmissionResult:
+    """Bind and claim existing Metadata work without contacting SAT."""
+    manifest = load_campaign_manifest(storage_root, campaign_ref, repo_root=repo_root)
+    grant = load_campaign_grant(storage_root, grant_ref, repo_root, now=now)
+    _validate_authority(manifest, grant, profile_id)
+    outstanding = tuple(
+        item for item in manifest.items if item.state is CampaignWorkState.OUTSTANDING
+    )
+    queries = _validated_queries(outstanding, queries_by_work, profile_id)
+    claimed_ref = new_campaign_invocation_ref() if invocation_ref is None else invocation_ref
+    claim_campaign_grant_invocation(
+        storage_root, grant_ref, claimed_ref, profile_id, repo_root, now=now,
+    )
+    grant = load_campaign_grant(storage_root, grant_ref, repo_root, now=now)
+    actions: list[CampaignSubmissionWork] = []
+    for work in outstanding:
+        query = queries[work.work_ref]
+        recovery_ref = campaign_metadata_recovery_ref(profile_id, query.criteria_hash())
+        existing = _submission_for(grant, work, recovery_ref)
+        if existing is not None:
+            action = _existing_claim_action(
+                existing, storage_root, repo_root, grant_ref, query,
+            )
+            actions.append(CampaignSubmissionWork(action, work.work_ref))
+            continue
+        if work.recovery_ref is None:
+            try:
+                manifest = bind_campaign_manifest_recovery(
+                    storage_root, campaign_ref, work.work_ref, recovery_ref,
+                    repo_root=repo_root,
+                )
+            except CampaignManifestStoreError as error:
+                raise CampaignRunnerError(
+                    "campaign-recovery-bind-failed", committed=True,
+                    uncertain=error.uncertain,
+                ) from error
+            actions.append(CampaignSubmissionWork(
+                CampaignSubmissionAction.RECOVERY_LINKED, work.work_ref,
+            ))
+        elif work.recovery_ref != recovery_ref:
+            raise CampaignRunnerError("campaign-query-lineage-invalid", committed=True)
+        try:
+            claim = claim_campaign_grant_submission(
+                storage_root, grant_ref, claimed_ref, manifest, work.work_ref,
+                recovery_ref, profile_id, repo_root, now=now,
+            )
+        except CampaignGrantError as error:
+            if error.reason == "campaign-grant-submission-conflict":
+                grant = load_campaign_grant(storage_root, grant_ref, repo_root, now=now)
+                reconciled = _submission_for(grant, work, recovery_ref)
+                if reconciled is not None:
+                    action = _existing_claim_action(
+                        reconciled, storage_root, repo_root, grant_ref, query,
+                    )
+                    actions.append(CampaignSubmissionWork(action, work.work_ref))
+                    continue
+            raise CampaignRunnerError(
+                "campaign-submission-claim-failed", committed=True,
+                uncertain=error.uncertain,
+            ) from error
+        if claim.created:
+            action = CampaignSubmissionAction.SUBMISSION_ALLOWED
+        else:
+            grant = load_campaign_grant(storage_root, grant_ref, repo_root, now=now)
+            reconciled = _submission_for(grant, work, recovery_ref)
+            if reconciled is None:
+                raise CampaignRunnerError("campaign-submission-state-invalid", committed=True)
+            action = _existing_claim_action(
+                reconciled, storage_root, repo_root, grant_ref, query,
+            )
+        actions.append(CampaignSubmissionWork(action, work.work_ref))
+        grant = load_campaign_grant(storage_root, grant_ref, repo_root, now=now)
+    return CampaignSubmissionResult(claimed_ref, tuple(actions))
+
+
+def _validated_queries(
+    outstanding: tuple[CampaignWorkItem, ...],
+    supplied: Mapping[str, DownloadQuery],
+    profile_id: str,
+) -> dict[str, DownloadQuery]:
+    if not isinstance(supplied, Mapping) or set(supplied) != {
+        item.work_ref for item in outstanding
+    }:
+        raise CampaignRunnerError("campaign-query-lineage-invalid")
+    result: dict[str, DownloadQuery] = {}
+    for item in outstanding:
+        query = supplied[item.work_ref]
+        period = query.period if type(query) is DownloadQuery else None
+        extras = (
+            query.issuer_rfc, query.receiver_rfcs, query.uuid, query.document_status,
+            query.document_type, query.complement, query.rfc_on_behalf,
+            query.recovery_variant_reason,
+        ) if type(query) is DownloadQuery else (True,)
+        if (
+            period is None or query.validate() or query.tenant_id != profile_id
+            or query.direction is not item.direction
+            or query.request_type is not RequestType.METADATA
+            or period.start != datetime.combine(item.start, time.min, tzinfo=timezone.utc)
+            or period.end != datetime.combine(item.end, time.max, tzinfo=timezone.utc)
+            or any(extras)
+        ):
+            raise CampaignRunnerError("campaign-query-lineage-invalid")
+        result[item.work_ref] = query
+    return result
+
+
+def _submission_for(
+    grant: CampaignGrant, work: CampaignWorkItem, recovery_ref: str,
+) -> CampaignSubmissionClaim | None:
+    matches = tuple(
+        claim for claim in grant.submission_claims
+        if claim.work_ref == work.work_ref or claim.recovery_ref == recovery_ref
+    )
+    if len(matches) > 1 or matches and (
+        matches[0].work_ref != work.work_ref or matches[0].recovery_ref != recovery_ref
+    ):
+        raise CampaignRunnerError("campaign-submission-lineage-invalid", committed=True)
+    return matches[0] if matches else None
+
+
+def _existing_claim_action(
+    claim: CampaignSubmissionClaim,
+    storage_root: str | Path,
+    repo_root: str | Path,
+    grant_ref: str,
+    query: DownloadQuery,
+) -> CampaignSubmissionAction:
+    try:
+        record = load_metadata_recovery_state(
+            storage_root, claim.recovery_ref, repo_root=repo_root,
+        )
+    except MetadataRecoveryStateError as error:
+        if error.reason == "recovery-state-not-found":
+            return CampaignSubmissionAction.ORPHAN_UNCERTAIN
+        raise CampaignRunnerError(
+            "campaign-recovery-state-invalid", committed=True,
+        ) from error
+    period = query.period
+    assert period is not None
+    exact = (
+        record.recovery.recovery_ref == claim.recovery_ref
+        and record.profile_id == claim.profile_id
+        and record.criteria_hash == query.criteria_hash()
+        and record.direction == query.direction.value
+        and record.kind == query.request_type.value
+        and record.fecha_inicial == period.start.date().isoformat()
+        and record.fecha_final == period.end.date().isoformat()
+        and record.authorization_ref == grant_ref
+    )
+    if not exact:
+        raise CampaignRunnerError("campaign-recovery-lineage-invalid", committed=True)
+    return CampaignSubmissionAction.CLAIMED_REPLAY
 
 
 def _validate_authority(
