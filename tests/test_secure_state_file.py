@@ -334,6 +334,65 @@ def test_transaction_read_sanitizes_unexpected_filesystem_failure(tmp_path, monk
     assert private_detail not in str(raised.value)
 
 
+def test_transaction_read_enforces_exact_byte_boundary(tmp_path) -> None:
+    repository, storage = _roots(tmp_path)
+    with subject.secure_state_transaction(storage, NAME, repo_root=repository) as transaction:
+        transaction.replace(b"four")
+        assert transaction.read(max_bytes=4) == b"four"
+    with subject.secure_state_transaction(storage, NAME, repo_root=repository) as transaction:
+        transaction.replace(b"five!")
+        with pytest.raises(subject.SecureStateFileError, match="^state-file-too-large$") as raised:
+            transaction.read(max_bytes=4)
+    assert raised.value.retry_safe and not raised.value.committed and not raised.value.uncertain
+
+
+def test_transaction_bounded_read_requests_only_limit_plus_one_bytes(tmp_path, monkeypatch) -> None:
+    repository, storage = _roots(tmp_path)
+    with subject.secure_state_transaction(storage, NAME, repo_root=repository) as transaction:
+        transaction.replace(b"x" * 4096)
+    with subject.secure_state_transaction(storage, NAME, repo_root=repository) as transaction:
+        original_read, requested_sizes = subject.os.read, []
+
+        def record_read(descriptor, size):  # type: ignore[no-untyped-def]
+            requested_sizes.append(size)
+            return original_read(descriptor, size)
+
+        monkeypatch.setattr(subject.os, "read", record_read)
+        with pytest.raises(subject.SecureStateFileError, match="^state-file-too-large$"):
+            transaction.read(max_bytes=8)
+    assert requested_sizes == [9]
+
+
+def test_transaction_bounded_read_preserves_absent_state(tmp_path) -> None:
+    repository, storage = _roots(tmp_path)
+    with subject.secure_state_transaction(storage, NAME, repo_root=repository) as transaction:
+        assert transaction.read(max_bytes=8) is None
+
+
+@pytest.mark.parametrize(
+    "invalid_limit", (True, 1.0, "1", 0, -1, subject._MAX_STATE_READ_BYTES + 1),  # noqa: SLF001
+)
+def test_transaction_read_rejects_invalid_byte_limit(tmp_path, invalid_limit) -> None:  # type: ignore[no-untyped-def]
+    repository, storage = _roots(tmp_path)
+    with subject.secure_state_transaction(storage, NAME, repo_root=repository) as transaction:
+        with pytest.raises(
+            subject.SecureStateFileError, match="^state-file-read-limit-invalid$",
+        ) as raised:
+            transaction.read(max_bytes=invalid_limit)
+    assert raised.value.retry_safe and not raised.value.committed and not raised.value.uncertain
+
+
+def test_transaction_bounded_read_sanitizes_descriptor_failure(tmp_path, monkeypatch) -> None:
+    repository, storage = _roots(tmp_path)
+    _write(storage, repository)
+    private_detail = f"private-path={storage}"
+    with subject.secure_state_transaction(storage, NAME, repo_root=repository) as transaction:
+        monkeypatch.setattr(subject.os, "read", Mock(side_effect=PermissionError(private_detail)))
+        with pytest.raises(subject.SecureStateFileError, match="^state-file-unreadable$") as raised:
+            transaction.read(max_bytes=8)
+    assert raised.value.retry_safe and private_detail not in str(raised.value)
+
+
 def test_transaction_replace_sanitizes_unexpected_filesystem_failure(tmp_path, monkeypatch) -> None:
     repository, storage = _roots(tmp_path)
     private_detail = f"private-path={storage}"

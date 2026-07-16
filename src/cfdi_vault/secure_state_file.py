@@ -25,6 +25,7 @@ from typing import Iterator
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _NAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}")
 _LOCK_NAME = ".secure-state-file.lock"
+_MAX_STATE_READ_BYTES = 1_073_741_824
 _RESERVED = {"con", "prn", "aux", "nul"} | {f"{prefix}{number}" for prefix in ("com", "lpt") for number in range(1, 10)}
 _Identity = tuple[int, int]
 
@@ -77,10 +78,12 @@ class _SecureStateTransaction:
     namespace: _NamespaceSnapshot
     commit_state: _CommitState
 
-    def read(self) -> bytes | None:
+    def read(self, *, max_bytes: int | None = None) -> bytes | None:
+        """Read state, optionally failing before buffering more than the limit."""
+        _validate_read_limit(max_bytes)
         try:
             self.namespace.validate()
-            payload = _read(self.path)
+            payload = _read(self.path, max_bytes=max_bytes)
             self.namespace.validate()
             return payload
         except SecureStateFileError:
@@ -301,12 +304,34 @@ def _operate_lock(descriptor: int, *, acquire: bool) -> None:
         fcntl.flock(descriptor, mode)
 
 
-def _read(path: Path) -> bytes | None:
+def _validate_read_limit(max_bytes: int | None) -> None:
+    if (max_bytes is not None
+            and (type(max_bytes) is not int or not 0 < max_bytes <= _MAX_STATE_READ_BYTES)):
+        raise SecureStateFileError("state-file-read-limit-invalid")
+
+
+def _read_bounded_descriptor(descriptor: int, max_bytes: int) -> bytes:
+    remaining, chunks = max_bytes + 1, []
+    while remaining:
+        chunk = os.read(descriptor, remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _read(path: Path, *, max_bytes: int | None = None) -> bytes | None:
     descriptor: int | None = None
     try:
         _validate_file(path, path.parent, missing=False)
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         _validate_open_file(path, path.parent, descriptor)
+        if max_bytes is not None:
+            payload = _read_bounded_descriptor(descriptor, max_bytes)
+            if len(payload) > max_bytes:
+                raise SecureStateFileError("state-file-too-large")
+            return payload
         with os.fdopen(descriptor, "rb") as stream:
             descriptor = None
             return stream.read()
@@ -318,7 +343,12 @@ def _read(path: Path) -> bytes | None:
         raise SecureStateFileError("state-file-unreadable") from None
     finally:
         if descriptor is not None:
-            os.close(descriptor)
+            exception_active = sys.exc_info()[0] is not None
+            try:
+                os.close(descriptor)
+            except OSError:
+                if not exception_active:
+                    raise SecureStateFileError("state-file-unreadable") from None
 
 
 def _atomic_write(
