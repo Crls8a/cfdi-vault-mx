@@ -1,4 +1,4 @@
-"""Pure internal campaign-grant values and codec; owns no persistence or SAT contact."""
+"""Internal campaign-grant authority and atomic private persistence; owns no SAT contact."""
 from __future__ import annotations
 
 import hashlib
@@ -8,7 +8,7 @@ import re
 import secrets
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TypeVar
@@ -21,6 +21,7 @@ from cfdi_vault.sat_campaign_manifest import (
     MAX_OUTSTANDING,
     MAX_REQUESTS,
     CampaignManifestError,
+    CampaignWorkState,
     SatCampaignManifest,
     build_campaign_manifest,
     campaign_redacted_summary,
@@ -113,6 +114,13 @@ class CampaignGrant:
     redaction_required: bool = True
 
 
+@dataclass(frozen=True)
+class CampaignGrantClaimOutcome:
+    """Return the persisted typed claim and whether this call created it."""
+    claim: CampaignInvocationClaim | CampaignSubmissionClaim
+    created: bool
+
+
 def new_campaign_invocation_ref() -> str:
     """Return a pre-generatable opaque reference for an invocation claim."""
     return f"inv-{secrets.token_hex(12)}"
@@ -176,6 +184,118 @@ def load_campaign_grant(
         return grant
 
     return _protect(load)
+
+
+def claim_campaign_grant_invocation(
+    storage_root: str | Path,
+    grant_ref: str,
+    invocation_ref: str,
+    profile_id: str,
+    repo_root: str | Path,
+    now: datetime | None = None,
+) -> CampaignGrantClaimOutcome:
+    """Atomically claim one pre-generated runner invocation without SAT contact."""
+    _validate_grant_ref(grant_ref)
+    _validate_invocation_ref(invocation_ref)
+    repository, current = _repository_context(repo_root)
+    claimed_at = _utc_datetime(datetime.now(timezone.utc) if now is None else now)
+
+    def persist() -> CampaignGrantClaimOutcome:
+        with secure_state_transaction(
+            storage_root, _filename(grant_ref), repo_root=repository,
+        ) as transaction:
+            grant = _read_claimable_grant(transaction, grant_ref, current, claimed_at)
+            existing = next(
+                (item for item in grant.invocation_claims
+                 if item.invocation_ref == invocation_ref), None,
+            )
+            if existing is not None:
+                if existing.profile_id == profile_id and existing.tested_commit == current:
+                    return CampaignGrantClaimOutcome(existing, False)
+                raise CampaignGrantError("campaign-grant-invocation-conflict")
+            if profile_id != grant.profile_id:
+                raise CampaignGrantError("campaign-grant-profile-mismatch")
+            if len(grant.invocation_claims) >= grant.max_invocations:
+                raise CampaignGrantError("campaign-grant-invocation-limit")
+            claim = CampaignInvocationClaim(invocation_ref, claimed_at, profile_id, current)
+            transaction.replace(_encode_campaign_grant(replace(
+                grant, invocation_claims=(*grant.invocation_claims, claim),
+            )))
+            return CampaignGrantClaimOutcome(claim, True)
+
+    return _protect(persist)
+
+
+def claim_campaign_grant_submission(
+    storage_root: str | Path,
+    grant_ref: str,
+    invocation_ref: str,
+    manifest: SatCampaignManifest,
+    work_ref: str,
+    recovery_ref: str,
+    profile_id: str,
+    repo_root: str | Path,
+    now: datetime | None = None,
+) -> CampaignGrantClaimOutcome:
+    """Persist authority; only created=True permits contact and an orphan is uncertain."""
+    _validate_grant_ref(grant_ref)
+    _validate_invocation_ref(invocation_ref)
+    _validate_work_recovery_refs(work_ref, recovery_ref)
+    try:
+        campaign_redacted_summary(manifest)
+    except CampaignManifestError:
+        raise CampaignGrantError("campaign-grant-manifest-invalid") from None
+    repository, current = _repository_context(repo_root)
+    claimed_at = _utc_datetime(datetime.now(timezone.utc) if now is None else now)
+
+    def persist() -> CampaignGrantClaimOutcome:
+        with secure_state_transaction(
+            storage_root, _filename(grant_ref), repo_root=repository,
+        ) as transaction:
+            grant = _read_claimable_grant(transaction, grant_ref, current, claimed_at)
+            if (manifest.campaign_ref != grant.campaign_ref
+                    or manifest.profile_id != profile_id
+                    or profile_id != grant.profile_id
+                    or _manifest_digest(manifest) != grant.manifest_digest):
+                raise CampaignGrantError("campaign-grant-manifest-mismatch")
+            requested = (grant_ref, invocation_ref, work_ref, recovery_ref, profile_id, current)
+            for existing in grant.submission_claims:
+                identity = (
+                    existing.grant_ref, existing.invocation_ref, existing.work_ref,
+                    existing.recovery_ref, existing.profile_id, existing.tested_commit,
+                )
+                if identity == requested:
+                    return CampaignGrantClaimOutcome(existing, False)
+                if existing.work_ref == work_ref or existing.recovery_ref == recovery_ref:
+                    raise CampaignGrantError("campaign-grant-submission-conflict")
+            invocation = next(
+                (item for item in grant.invocation_claims
+                 if item.invocation_ref == invocation_ref), None,
+            )
+            if invocation is None:
+                raise CampaignGrantError("campaign-grant-invocation-not-found")
+            if claimed_at < invocation.claimed_at:
+                raise CampaignGrantError("campaign-grant-time-invalid")
+            if len(grant.submission_claims) >= grant.max_submissions:
+                raise CampaignGrantError("campaign-grant-submission-limit")
+            if sum(item.invocation_ref == invocation_ref for item in grant.submission_claims) >= 2:
+                raise CampaignGrantError("campaign-grant-invocation-submission-limit")
+            work = next((item for item in manifest.items if item.work_ref == work_ref), None)
+            if work is None or work.state is not CampaignWorkState.OUTSTANDING:
+                raise CampaignGrantError("campaign-grant-work-not-outstanding")
+            if work.recovery_ref is None:
+                raise CampaignGrantError("campaign-grant-recovery-unbound")
+            if work.recovery_ref != recovery_ref:
+                raise CampaignGrantError("campaign-grant-recovery-mismatch")
+            claim = CampaignSubmissionClaim(
+                grant_ref, invocation_ref, work_ref, recovery_ref, profile_id, current, claimed_at,
+            )
+            transaction.replace(_encode_campaign_grant(replace(
+                grant, submission_claims=(*grant.submission_claims, claim),
+            )))
+            return CampaignGrantClaimOutcome(claim, True)
+
+    return _protect(persist)
 
 
 def campaign_grant_redacted_summary(grant: CampaignGrant) -> dict[str, object]:
@@ -509,6 +629,32 @@ def _repository_context(value: object) -> tuple[Path, str]:
 def _validate_grant_ref(value: object) -> None:
     if type(value) is not str or not _GRANT_RE.fullmatch(value):
         raise CampaignGrantError("campaign-grant-ref-invalid")
+
+
+def _validate_invocation_ref(value: object) -> None:
+    if type(value) is not str or not _INVOCATION_RE.fullmatch(value):
+        raise CampaignGrantError("campaign-grant-invocation-ref-invalid")
+
+
+def _validate_work_recovery_refs(work_ref: object, recovery_ref: object) -> None:
+    if type(work_ref) is not str or not _WORK_RE.fullmatch(work_ref):
+        raise CampaignGrantError("campaign-grant-work-ref-invalid")
+    if type(recovery_ref) is not str or not _RECOVERY_RE.fullmatch(recovery_ref):
+        raise CampaignGrantError("campaign-grant-recovery-ref-invalid")
+
+
+def _read_claimable_grant(
+    transaction: object, grant_ref: str, current: str, now: datetime,
+) -> CampaignGrant:
+    payload = transaction.read(max_bytes=_MAX_BYTES)  # type: ignore[attr-defined]
+    if payload is None:
+        raise CampaignGrantError("campaign-grant-state-not-found")
+    grant = _decode_campaign_grant(payload, grant_ref, current)
+    if now < grant.created_at:
+        raise CampaignGrantError("campaign-grant-not-yet-valid")
+    if now >= grant.expires_at:
+        raise CampaignGrantError("campaign-grant-expired")
+    return grant
 
 
 def _filename(grant_ref: str) -> str:
