@@ -20,14 +20,18 @@ import cfdi_vault.sat_metadata_recovery_state as state
 from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType
 from cfdi_vault.ports import SatRequestPort
 from cfdi_vault.sat_contract import SatOutcomeAction, SatRequestResult
+from cfdi_vault.sat_v15_adapter import SatV15AdapterError
 
-_SCHEMA = 1
+_SCHEMA = 2
+_LEGACY_SCHEMA = 1
 _HASH = re.compile(r"[0-9a-f]{64}")
 _CLAIM_REF = re.compile(r"claim-[0-9a-f]{12}")
 _RECOVERY_REF = re.compile(r"run-[0-9a-f]{12}")
 _OWNER_REF = re.compile(r"[0-9a-f]{32}")
 _RECORD_KEYS = {"claimRef", "status", "createdAt", "updatedAt", "profileId", "query",
-                "criteriaHash", "authorizationRef", "ownerRef", "recoveryRef"}
+                "criteriaHash", "authorizationRef", "ownerRef", "recoveryRef",
+                "failureCategory"}
+_LEGACY_RECORD_KEYS = _RECORD_KEYS - {"failureCategory"}
 _QUERY_KEYS = {"tenantId", "requesterRfc", "direction", "requestType", "period", "issuerRfc",
                "receiverRfcs", "uuid", "documentStatus", "documentType", "complement",
                "rfcOnBehalf", "recoveryVariantReason"}
@@ -44,6 +48,27 @@ class SubmissionStatus(StrEnum):
     SUBMIT_UNCERTAIN = "submit_uncertain"
 
 
+class SubmissionFailureCategory(StrEnum):
+    """Allowlisted failure evidence persisted without raw SAT or local detail."""
+
+    CONFIGURATION_INVALID = "configuration_invalid"
+    CREDENTIAL_INVALID = "credential_invalid"
+    SIGNATURE_INVALID = "signature_invalid"
+    IDENTITY_INVALID = "identity_invalid"
+    ENDPOINT_FAILED = "endpoint_failed"
+    SAT_TOO_MANY_RESULTS = "sat_too_many_results"
+    SAT_REJECTED = "sat_rejected"
+    SUBMIT_UNCERTAIN = "submit_uncertain"
+    LEGACY_FAILURE = "legacy_failure"
+
+
+@dataclass(frozen=True, repr=False)
+class _SubmissionOutcome:
+    status: SubmissionStatus
+    request_id: str = ""
+    failure_category: SubmissionFailureCategory | None = None
+
+
 @dataclass(frozen=True, repr=False)
 class MetadataSubmissionClaim:
     claim_ref: str
@@ -56,6 +81,7 @@ class MetadataSubmissionClaim:
     authorization_ref: str
     owner_ref: str
     recovery_ref: str = ""
+    failure_category: SubmissionFailureCategory | None = None
 
     def to_redacted_document(self) -> dict[str, object]:
         document: dict[str, object] = {
@@ -64,15 +90,23 @@ class MetadataSubmissionClaim:
         }
         if self.recovery_ref:
             document["recoveryRef"] = self.recovery_ref
+        if self.failure_category is not None:
+            document["failureCategory"] = self.failure_category.value
         return document
 
     def _private_document(self) -> dict[str, object]:
+        status = self.status
+        category = self.failure_category
+        if category is SubmissionFailureCategory.LEGACY_FAILURE:
+            status = SubmissionStatus.SUBMIT_UNCERTAIN
+            category = SubmissionFailureCategory.SUBMIT_UNCERTAIN
         return {
-            "claimRef": self.claim_ref, "status": self.status.value,
+            "claimRef": self.claim_ref, "status": status.value,
             "createdAt": self.created_at.isoformat(), "updatedAt": self.updated_at.isoformat(),
             "profileId": self.profile_id, "query": dict(self.query),
             "criteriaHash": self.criteria_hash, "authorizationRef": self.authorization_ref,
             "ownerRef": self.owner_ref, "recoveryRef": self.recovery_ref,
+            "failureCategory": category.value if category is not None else None,
         }
 
 
@@ -105,9 +139,14 @@ def submit_metadata_recovery_once(
     outcome = _call_requester(requester=requester, query=query)
     if outcome == SubmissionStatus.CLAIMED:  # testable crash boundary before the call result exists
         return claim
-    status, request_id = outcome
+    status, request_id, failure_category = (
+        outcome.status, outcome.request_id, outcome.failure_category
+    )
     if status != SubmissionStatus.ACCEPTED:
-        return _finish(storage_root, claim, status, now, repo_root=repo_root)
+        return _finish(
+            storage_root, claim, status, now, failure_category=failure_category,
+            repo_root=repo_root,
+        )
     run_ref = expected_recovery_ref or state.recovery_ref(profile_id, criteria_hash, request_id)
     recovery = lifecycle.start_metadata_recovery(run_ref, created_at=now)
     period = query.period
@@ -153,6 +192,8 @@ def _prepare(
                 return existing, False
             replacement = replace(existing, status=(SubmissionStatus.ACCEPTED if match else
                                   SubmissionStatus.SUBMIT_UNCERTAIN), updated_at=now,
+                                  failure_category=(None if match else
+                                                    SubmissionFailureCategory.SUBMIT_UNCERTAIN),
                                   recovery_ref=(match.recovery.recovery_ref if match else
                                                 existing.recovery_ref))
             _write_claims(claim_path, tuple(
@@ -170,7 +211,10 @@ def _prepare(
         return claim, status == SubmissionStatus.CLAIMED
 
 
-def _finish(storage_root, original, status, now, *, recovery_ref=None, repo_root=None):
+def _finish(
+    storage_root, original, status, now, *, recovery_ref=None,
+    failure_category=None, repo_root=None,
+):
     recovery_path = state._resolved_state_path(storage_root, repo_root=repo_root, create_parent=True)
     path = recovery_path.with_name("sat-metadata-submission-claims.json")
     with state._exclusive_state_lock(recovery_path):
@@ -181,6 +225,7 @@ def _finish(storage_root, original, status, now, *, recovery_ref=None, repo_root
         updated = replace(
             current, status=status, updated_at=now,
             recovery_ref=current.recovery_ref if recovery_ref is None else recovery_ref,
+            failure_category=failure_category,
         )
         _write_claims(path, tuple(
             updated if item.claim_ref == updated.claim_ref else item for item in claims))
@@ -190,15 +235,77 @@ def _finish(storage_root, original, status, now, *, recovery_ref=None, repo_root
 def _call_requester(*, requester, query):
     try:
         result = requester.submit_request(query)
+    except SatV15AdapterError as exc:
+        return _adapter_failure_outcome(exc)
     except Exception:
-        return SubmissionStatus.SUBMIT_UNCERTAIN, ""
+        return _uncertain_outcome()
     if not isinstance(result, SatRequestResult):
-        return SubmissionStatus.SUBMIT_UNCERTAIN, ""
+        return _uncertain_outcome()
     if result.action != SatOutcomeAction.ACCEPTED:
-        return (SubmissionStatus.SUBMIT_FAILED if isinstance(result.action, SatOutcomeAction) and result.action in {SatOutcomeAction.PERMANENT_FAILURE, SatOutcomeAction.UNAUTHORIZED, SatOutcomeAction.DUPLICATE, SatOutcomeAction.EXPIRED, SatOutcomeAction.DOWNLOADS_EXHAUSTED} else SubmissionStatus.SUBMIT_UNCERTAIN), ""
+        terminal_actions = {
+            SatOutcomeAction.PERMANENT_FAILURE,
+            SatOutcomeAction.UNAUTHORIZED,
+            SatOutcomeAction.DUPLICATE,
+            SatOutcomeAction.EXPIRED,
+            SatOutcomeAction.DOWNLOADS_EXHAUSTED,
+        }
+        if not isinstance(result.action, SatOutcomeAction) or result.action not in terminal_actions:
+            return _uncertain_outcome()
+        category = (
+            SubmissionFailureCategory.SAT_TOO_MANY_RESULTS
+            if type(result.sat_code) is str and result.sat_code.strip() == "5003"
+            else SubmissionFailureCategory.SAT_REJECTED
+        )
+        return _SubmissionOutcome(SubmissionStatus.SUBMIT_FAILED, failure_category=category)
     request_id = result.request_id.strip() if isinstance(result.request_id, str) else ""
-    return (SubmissionStatus.ACCEPTED, request_id) if request_id else (
-        SubmissionStatus.SUBMIT_UNCERTAIN, "")
+    return (_SubmissionOutcome(SubmissionStatus.ACCEPTED, request_id)
+            if request_id else _uncertain_outcome())
+
+
+def _adapter_failure_outcome(error: SatV15AdapterError) -> _SubmissionOutcome:
+    if error.effect_unknown:
+        return _uncertain_outcome()
+    stage, kind = error.failed_stage, error.error_kind
+    category = None
+    if (stage, kind) in {
+        ("preflight", "guard_failed"),
+        ("profile_load", "profile_not_ready"),
+        ("auth_request_readiness", "client_configuration_error"),
+    }:
+        category = SubmissionFailureCategory.CONFIGURATION_INVALID
+    elif (stage, kind) in {
+        ("secret_resolve", "secret_unavailable"),
+        ("credential_load", "credential_load_failed"),
+        ("certificate_parse", "certificate_parse_failed"),
+        ("private_key_load", "private_key_load_failed"),
+    }:
+        category = SubmissionFailureCategory.CREDENTIAL_INVALID
+    elif stage in {"auth_envelope_build", "metadata_request_build"} and kind in {
+        "xmlsig_failed", "envelope_build_failed",
+    }:
+        category = SubmissionFailureCategory.SIGNATURE_INVALID
+    elif ((stage in {"auth_response_parse", "token_extract"}
+           and kind in {"soap_fault", "token_missing", "token_parse_failed", "sat_unauthorized"})
+          or (stage == "auth_transport" and kind == "client_cert_rejected")):
+        category = SubmissionFailureCategory.IDENTITY_INVALID
+    elif stage in {"auth_transport", "metadata_request_transport"} and kind in {
+        "client_configuration_error", "connect_timeout", "proxy_connect_failed",
+        "certificate_verify_failed", "tls_handshake_failed", "transport_tls_failed",
+    }:
+        category = SubmissionFailureCategory.ENDPOINT_FAILED
+    elif stage == "metadata_request_transport" and kind in {
+        "http_status_error", "transport_http_error", "soap_fault", "sat_status_error",
+    }:
+        category = SubmissionFailureCategory.SAT_REJECTED
+    return (_SubmissionOutcome(SubmissionStatus.SUBMIT_FAILED, failure_category=category)
+            if category is not None else _uncertain_outcome())
+
+
+def _uncertain_outcome() -> _SubmissionOutcome:
+    return _SubmissionOutcome(
+        SubmissionStatus.SUBMIT_UNCERTAIN,
+        failure_category=SubmissionFailureCategory.SUBMIT_UNCERTAIN,
+    )
 
 
 def _query_document(query: DownloadQuery) -> dict[str, object]:
@@ -225,11 +332,12 @@ def _read_claims(path: Path) -> tuple[MetadataSubmissionClaim, ...]:
         document = json.loads(raw, object_pairs_hook=_unique)
         if not isinstance(document, Mapping) or set(document) != {"schemaVersion", "claims"}:
             raise ValueError
-        if type(document["schemaVersion"]) is not int or document["schemaVersion"] != _SCHEMA:
+        schema = document["schemaVersion"]
+        if type(schema) is not int or schema not in {_LEGACY_SCHEMA, _SCHEMA}:
             raise ValueError
         if not isinstance(document["claims"], list):
             raise ValueError
-        claims = tuple(_claim_from_document(item) for item in document["claims"])
+        claims = tuple(_claim_from_document(item, schema=schema) for item in document["claims"])
         if len({item.claim_ref for item in claims}) != len(claims):
             raise ValueError
     except Exception:
@@ -239,8 +347,9 @@ def _read_claims(path: Path) -> tuple[MetadataSubmissionClaim, ...]:
     return claims
 
 
-def _claim_from_document(value: object) -> MetadataSubmissionClaim:
-    if not isinstance(value, Mapping) or set(value) != _RECORD_KEYS:
+def _claim_from_document(value: object, *, schema: int) -> MetadataSubmissionClaim:
+    expected_keys = _LEGACY_RECORD_KEYS if schema == _LEGACY_SCHEMA else _RECORD_KEYS
+    if not isinstance(value, Mapping) or set(value) != expected_keys:
         raise ValueError
     query = value["query"]
     if not isinstance(query, Mapping) or set(query) != _QUERY_KEYS:
@@ -250,11 +359,13 @@ def _claim_from_document(value: object) -> MetadataSubmissionClaim:
     if any(not isinstance(value[key], str) for key in strings):
         raise ValueError
     parsed_query = _query_from_document(query)
+    status = SubmissionStatus(value["status"])
+    category = _failure_category_from_document(value, schema=schema, status=status)
     claim = MetadataSubmissionClaim(
-        value["claimRef"], SubmissionStatus(value["status"]),
+        value["claimRef"], status,
         _aware_datetime(value["createdAt"]), _aware_datetime(value["updatedAt"]),
         value["profileId"], dict(query), value["criteriaHash"], value["authorizationRef"],
-        value["ownerRef"], value["recoveryRef"],
+        value["ownerRef"], value["recoveryRef"], category,
     )
     expected_ref = "claim-" + hashlib.sha256(
         f"{claim.profile_id}:{claim.criteria_hash}".encode()).hexdigest()[:12]
@@ -270,9 +381,47 @@ def _claim_from_document(value: object) -> MetadataSubmissionClaim:
             or (claim.status is SubmissionStatus.ACCEPTED and not claim.recovery_ref)
             or (claim.status is not SubmissionStatus.ACCEPTED and claim.recovery_ref
                 and claim.recovery_ref != state.campaign_metadata_recovery_ref(
-                    claim.profile_id, claim.criteria_hash))):
+                    claim.profile_id, claim.criteria_hash))
+            or not _failure_category_matches(
+                claim.status, claim.failure_category, allow_legacy=schema == _LEGACY_SCHEMA,
+            )):
         raise ValueError
     return claim
+
+
+def _failure_category_from_document(
+    value: Mapping[str, object], *, schema: int, status: SubmissionStatus,
+) -> SubmissionFailureCategory | None:
+    if schema == _LEGACY_SCHEMA:
+        if status is SubmissionStatus.SUBMIT_FAILED:
+            return SubmissionFailureCategory.LEGACY_FAILURE
+        if status is SubmissionStatus.SUBMIT_UNCERTAIN:
+            return SubmissionFailureCategory.SUBMIT_UNCERTAIN
+        return None
+    raw = value["failureCategory"]
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ValueError
+    return SubmissionFailureCategory(raw)
+
+
+def _failure_category_matches(
+    status: SubmissionStatus, category: SubmissionFailureCategory | None, *, allow_legacy: bool,
+) -> bool:
+    if status in {SubmissionStatus.CLAIMED, SubmissionStatus.ACCEPTED}:
+        return category is None
+    if status is SubmissionStatus.SUBMIT_UNCERTAIN:
+        return category is SubmissionFailureCategory.SUBMIT_UNCERTAIN
+    return category in {
+        SubmissionFailureCategory.CONFIGURATION_INVALID,
+        SubmissionFailureCategory.CREDENTIAL_INVALID,
+        SubmissionFailureCategory.SIGNATURE_INVALID,
+        SubmissionFailureCategory.IDENTITY_INVALID,
+        SubmissionFailureCategory.ENDPOINT_FAILED,
+        SubmissionFailureCategory.SAT_TOO_MANY_RESULTS,
+        SubmissionFailureCategory.SAT_REJECTED,
+    } or (allow_legacy and category is SubmissionFailureCategory.LEGACY_FAILURE)
 
 
 def _query_from_document(value: Mapping[str, object]) -> DownloadQuery:

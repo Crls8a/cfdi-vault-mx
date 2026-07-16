@@ -13,6 +13,7 @@ import cfdi_vault.sat_metadata_recovery_state as recovery_state
 import cfdi_vault.sat_metadata_submission as subject
 from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType
 from cfdi_vault.sat_contract import SatOutcomeAction, SatRequestResult
+from cfdi_vault.sat_v15_adapter import SatV15AdapterError
 
 NOW = datetime(2026, 6, 30, tzinfo=timezone.utc)
 COMMIT = "f" * 40
@@ -169,6 +170,185 @@ def test_terminal_outcomes_never_submit_again(tmp_path, outcome, expected) -> No
     second = _submit(tmp_path, requester, query, authorization="authorization-replacement")
     assert first.status == second.status == expected
     assert requester.submit_request.call_count == 1
+
+
+@pytest.mark.parametrize(
+    ("sat_code", "category"),
+    (
+        ("5003", "sat_too_many_results"),
+        (" 5003\t", "sat_too_many_results"),
+        (5003, "sat_rejected"),
+        ("5004", "sat_rejected"),
+    ),
+)
+def test_sat_rejection_category_is_persisted_without_raw_response(
+    tmp_path, sat_code: object, category: str,
+) -> None:
+    private = f"synthetic-private:{tmp_path.resolve()}"
+    requester = Mock(submit_request=Mock(return_value=SatRequestResult(
+        "", sat_code, private, SatOutcomeAction.PERMANENT_FAILURE,
+        raw_response={"private": private},
+    )))
+
+    first = _submit(tmp_path, requester, _query())
+    restarted = _submit(tmp_path, requester, _query())
+
+    assert first == restarted
+    assert first.status is subject.SubmissionStatus.SUBMIT_FAILED
+    assert first.failure_category.value == category
+    assert first.to_redacted_document()["failureCategory"] == category
+    persisted = subject.metadata_submission_claim_path(tmp_path).read_text(encoding="utf-8")
+    assert private not in persisted
+
+
+@pytest.mark.parametrize("action", (SatOutcomeAction.RETRY, object()))
+def test_retry_or_unexpected_action_remains_uncertain(tmp_path, action: object) -> None:
+    requester = Mock(submit_request=Mock(return_value=SatRequestResult(
+        "", "5004", "private", action,
+    )))
+
+    claim = _submit(tmp_path, requester, _query())
+
+    assert claim.status is subject.SubmissionStatus.SUBMIT_UNCERTAIN
+    assert claim.failure_category is subject.SubmissionFailureCategory.SUBMIT_UNCERTAIN
+
+
+def test_internal_outcome_repr_never_exposes_request_id() -> None:
+    private_id = "synthetic-private-request-id"
+    requester = Mock(submit_request=Mock(return_value=SatRequestResult(
+        private_id, "5000", "accepted", SatOutcomeAction.ACCEPTED,
+    )))
+
+    outcome = subject._call_requester(requester=requester, query=_query())
+
+    assert private_id not in repr(outcome)
+
+
+@pytest.mark.parametrize(
+    ("stage", "kind", "category"),
+    (
+        ("preflight", "guard_failed", "configuration_invalid"),
+        ("credential_load", "credential_load_failed", "credential_invalid"),
+        ("auth_envelope_build", "xmlsig_failed", "signature_invalid"),
+        ("token_extract", "token_missing", "identity_invalid"),
+        ("auth_transport", "connect_timeout", "endpoint_failed"),
+    ),
+)
+def test_precontact_adapter_failure_persists_only_safe_category(
+    tmp_path, stage: str, kind: str, category: str,
+) -> None:
+    private = f"synthetic-private:{tmp_path.resolve()}"
+    requester = Mock(submit_request=Mock(side_effect=SatV15AdapterError(
+        private, stage=stage, error_kind=kind, safe_hint=private,
+    )))
+
+    claim = _submit(tmp_path, requester, _query())
+
+    assert claim.status is subject.SubmissionStatus.SUBMIT_FAILED
+    assert claim.failure_category.value == category
+    assert private not in subject.metadata_submission_claim_path(tmp_path).read_text()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        SatV15AdapterError(
+            "private", stage="metadata_request_transport", error_kind="timeout",
+            effect_unknown=True,
+        ),
+        SatV15AdapterError(
+            "private", stage="unknown", error_kind="unknown_live_adapter_failure",
+        ),
+        RuntimeError("private"),
+    ),
+)
+def test_unknown_or_effect_unknown_failure_is_terminal_uncertain(tmp_path, failure) -> None:
+    claim = _submit(tmp_path, Mock(submit_request=Mock(side_effect=failure)), _query())
+
+    assert claim.status is subject.SubmissionStatus.SUBMIT_UNCERTAIN
+    assert claim.failure_category is subject.SubmissionFailureCategory.SUBMIT_UNCERTAIN
+
+
+@pytest.mark.parametrize(
+    ("status", "category"),
+    (
+        ("accepted", "sat_too_many_results"),
+        ("submit_uncertain", "sat_too_many_results"),
+        ("submit_failed", "submit_uncertain"),
+        ("submit_failed", "forged-5003"),
+    ),
+)
+def test_claim_codec_rejects_forged_or_incoherent_category(
+    tmp_path, status: str, category: str,
+) -> None:
+    _submit(tmp_path, Mock(submit_request=Mock(return_value=_result())), _query())
+    path = subject.metadata_submission_claim_path(tmp_path)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["claims"][0]["status"] = status
+    document["claims"][0]["failureCategory"] = category
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(subject.MetadataSubmissionError, match="submission-state-invalid"):
+        _submit(tmp_path, Mock(), _query())
+
+
+def test_legacy_failure_without_category_loads_conservatively(tmp_path) -> None:
+    requester = Mock(submit_request=Mock(return_value=SatRequestResult(
+        "", "5003", "private", SatOutcomeAction.PERMANENT_FAILURE,
+    )))
+    _submit(tmp_path, requester, _query())
+    path = subject.metadata_submission_claim_path(tmp_path)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["schemaVersion"] = 1
+    document["claims"][0].pop("failureCategory")
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    loaded = _submit(tmp_path, requester, _query())
+
+    assert loaded.status is subject.SubmissionStatus.SUBMIT_FAILED
+    assert loaded.failure_category is subject.SubmissionFailureCategory.LEGACY_FAILURE
+    assert loaded.failure_category is not subject.SubmissionFailureCategory.SAT_TOO_MANY_RESULTS
+    assert requester.submit_request.call_count == 1
+
+
+def test_schema2_rejects_forged_legacy_failure_category(tmp_path) -> None:
+    requester = Mock(submit_request=Mock(return_value=SatRequestResult(
+        "", "5004", "private", SatOutcomeAction.PERMANENT_FAILURE,
+    )))
+    _submit(tmp_path, requester, _query())
+    path = subject.metadata_submission_claim_path(tmp_path)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["claims"][0]["failureCategory"] = "legacy_failure"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(subject.MetadataSubmissionError, match="submission-state-invalid"):
+        _submit(tmp_path, Mock(), _query())
+
+
+def test_rewriting_schema1_failure_normalizes_it_to_conservative_schema2(tmp_path) -> None:
+    first_query = _query()
+    requester = Mock(submit_request=Mock(return_value=SatRequestResult(
+        "", "5003", "private", SatOutcomeAction.PERMANENT_FAILURE,
+    )))
+    _submit(tmp_path, requester, first_query)
+    path = subject.metadata_submission_claim_path(tmp_path)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["schemaVersion"] = 1
+    document["claims"][0].pop("failureCategory")
+    path.write_text(json.dumps(document), encoding="utf-8")
+    legacy = _submit(tmp_path, requester, first_query)
+    assert legacy.failure_category is subject.SubmissionFailureCategory.LEGACY_FAILURE
+
+    second_query = replace(
+        first_query,
+        period=DateTimePeriod(NOW - timedelta(days=1), NOW - timedelta(minutes=1)),
+    )
+    _submit(tmp_path, requester, second_query)
+    migrated = _submit(tmp_path, requester, first_query)
+
+    assert migrated.status is subject.SubmissionStatus.SUBMIT_UNCERTAIN
+    assert migrated.failure_category is subject.SubmissionFailureCategory.SUBMIT_UNCERTAIN
+    assert migrated.failure_category is not subject.SubmissionFailureCategory.SAT_TOO_MANY_RESULTS
 
 
 def test_crash_after_recovery_write_reconciles_without_second_post(tmp_path, monkeypatch) -> None:
