@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import hashlib
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -16,13 +16,14 @@ from signxml import XMLVerifier
 from signxml.algorithms import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 from signxml.verifier import SignatureConfiguration
 
-from cfdi_vault.sat_auth_constants import AUTH_OPERATION, AUTH_SOAP_ACTION
 from cfdi_vault.sat_auth_constants import (
     AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
     AUTH_ENVELOPE_VARIANT_SECURITY_ONLY,
+    AUTH_OPERATION,
+    AUTH_SOAP_ACTION,
     DEFAULT_AUTH_ENVELOPE_VARIANT,
 )
-from cfdi_vault.sat_v15_adapter import (
+from cfdi_vault.sat_v15_envelopes import (
     ADDR_NS,
     BASE64_ENCODING_TYPE,
     DS_NS,
