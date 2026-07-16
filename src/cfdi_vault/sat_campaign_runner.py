@@ -78,6 +78,7 @@ class CampaignSubmissionAction(StrEnum):
 
     RECOVERY_LINKED = "recovery_linked"
     SUBMISSION_ALLOWED = "submission_allowed"
+    SUBMISSION_DEFERRED = "submission_deferred"
     CLAIMED_REPLAY = "claimed_replay"
     ORPHAN_UNCERTAIN = "orphan_uncertain"
 
@@ -148,9 +149,15 @@ def prepare_reserved_metadata_submissions_once(
     profile_id: str,
     queries_by_work: Mapping[str, DownloadQuery],
     invocation_ref: str | None = None,
+    max_new_submissions: int = 2,
     now: datetime | None = None,
 ) -> CampaignSubmissionResult:
     """Bind and claim existing Metadata work without contacting SAT."""
+    if (
+        type(max_new_submissions) is not int
+        or not 1 <= max_new_submissions <= 2
+    ):
+        raise CampaignRunnerError("campaign-new-submission-limit-invalid")
     manifest = load_campaign_manifest(storage_root, campaign_ref, repo_root=repo_root)
     grant = load_campaign_grant(storage_root, grant_ref, repo_root, now=now)
     _validate_authority(manifest, grant, profile_id)
@@ -164,6 +171,8 @@ def prepare_reserved_metadata_submissions_once(
     )
     grant = load_campaign_grant(storage_root, grant_ref, repo_root, now=now)
     actions: list[CampaignSubmissionWork] = []
+    new_submission_count = 0
+    new_submissions_blocked = False
     for work in outstanding:
         query = queries[work.work_ref]
         recovery_ref = campaign_metadata_recovery_ref(profile_id, query.criteria_hash())
@@ -173,6 +182,8 @@ def prepare_reserved_metadata_submissions_once(
                 existing, storage_root, repo_root, grant_ref, query,
             )
             actions.append(CampaignSubmissionWork(action, work.work_ref))
+            if action is CampaignSubmissionAction.ORPHAN_UNCERTAIN:
+                new_submissions_blocked = True
             continue
         if work.recovery_ref is None:
             try:
@@ -190,6 +201,11 @@ def prepare_reserved_metadata_submissions_once(
             ))
         elif work.recovery_ref != recovery_ref:
             raise CampaignRunnerError("campaign-query-lineage-invalid", committed=True)
+        if new_submissions_blocked or new_submission_count >= max_new_submissions:
+            actions.append(CampaignSubmissionWork(
+                CampaignSubmissionAction.SUBMISSION_DEFERRED, work.work_ref,
+            ))
+            continue
         try:
             claim = claim_campaign_grant_submission(
                 storage_root, grant_ref, claimed_ref, manifest, work.work_ref,
@@ -204,6 +220,8 @@ def prepare_reserved_metadata_submissions_once(
                         reconciled, storage_root, repo_root, grant_ref, query,
                     )
                     actions.append(CampaignSubmissionWork(action, work.work_ref))
+                    if action is CampaignSubmissionAction.ORPHAN_UNCERTAIN:
+                        new_submissions_blocked = True
                     continue
             raise CampaignRunnerError(
                 "campaign-submission-claim-failed", committed=True,
@@ -211,6 +229,7 @@ def prepare_reserved_metadata_submissions_once(
             ) from error
         if claim.created:
             action = CampaignSubmissionAction.SUBMISSION_ALLOWED
+            new_submission_count += 1
         else:
             grant = load_campaign_grant(storage_root, grant_ref, repo_root, now=now)
             reconciled = _submission_for(grant, work, recovery_ref)
@@ -219,6 +238,8 @@ def prepare_reserved_metadata_submissions_once(
             action = _existing_claim_action(
                 reconciled, storage_root, repo_root, grant_ref, query,
             )
+            if action is CampaignSubmissionAction.ORPHAN_UNCERTAIN:
+                new_submissions_blocked = True
         actions.append(CampaignSubmissionWork(action, work.work_ref))
         grant = load_campaign_grant(storage_root, grant_ref, repo_root, now=now)
     return CampaignSubmissionResult(claimed_ref, tuple(actions))

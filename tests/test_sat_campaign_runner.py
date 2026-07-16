@@ -71,11 +71,13 @@ def _queries(manifest: SatCampaignManifest) -> dict[str, DownloadQuery]:
     }
 
 
-def _prepare(storage, manifest, grant, queries, invocation=None):
+def _prepare(
+    storage, manifest, grant, queries, invocation=None, *, max_new_submissions=2,
+):
     return subject.prepare_reserved_metadata_submissions_once(
         storage_root=storage, repo_root=REPO, campaign_ref=manifest.campaign_ref,
         grant_ref=grant.grant_ref, profile_id=PROFILE, queries_by_work=queries,
-        invocation_ref=invocation, now=NOW,
+        invocation_ref=invocation, max_new_submissions=max_new_submissions, now=NOW,
     )
 
 
@@ -267,7 +269,10 @@ def test_prepares_same_process_reserved_work_without_second_invocation(
     assert actions.count(subject.CampaignSubmissionAction.SUBMISSION_ALLOWED) == 2
     loaded = grants.load_campaign_grant(storage, grant.grant_ref, REPO, now=NOW)
     assert len(loaded.invocation_claims) == 1
-    replay = _prepare(storage, manifest, grant, queries, reserved.invocation_ref)
+    replay = _prepare(
+        storage, manifest, grant, queries, reserved.invocation_ref,
+        max_new_submissions=1,
+    )
     assert all(item.action is subject.CampaignSubmissionAction.ORPHAN_UNCERTAIN
                for item in replay.actions)
     recover = subject.campaign_metadata_recovery_ref
@@ -286,6 +291,113 @@ def test_prepares_same_process_reserved_work_without_second_invocation(
     accepted_replay = _prepare(storage, manifest, grant, queries, reserved.invocation_ref)
     assert all(item.action is subject.CampaignSubmissionAction.CLAIMED_REPLAY
                for item in accepted_replay.actions)
+
+
+def test_submission_limit_one_claims_only_first_chronological_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage, manifest, grant = _setup(tmp_path, monkeypatch)
+    _reserve(storage, manifest, grant)
+    current = manifests.load_campaign_manifest(storage, manifest.campaign_ref, repo_root=REPO)
+
+    result = _prepare(
+        storage, manifest, grant, _queries(current), max_new_submissions=1,
+    )
+
+    by_work = {
+        item.work_ref: [action.action for action in result.actions
+                        if action.work_ref == item.work_ref]
+        for item in current.items[:2]
+    }
+    assert by_work[current.items[0].work_ref] == [
+        subject.CampaignSubmissionAction.RECOVERY_LINKED,
+        subject.CampaignSubmissionAction.SUBMISSION_ALLOWED,
+    ]
+    assert by_work[current.items[1].work_ref] == [
+        subject.CampaignSubmissionAction.RECOVERY_LINKED,
+        subject.CampaignSubmissionAction.SUBMISSION_DEFERRED,
+    ]
+    stored = manifests.load_campaign_manifest(storage, manifest.campaign_ref, repo_root=REPO)
+    assert all(item.recovery_ref is not None for item in stored.items[:2])
+    claims = grants.load_campaign_grant(
+        storage, grant.grant_ref, REPO, now=NOW,
+    ).submission_claims
+    assert tuple(claim.work_ref for claim in claims) == (current.items[0].work_ref,)
+
+
+def test_submission_limit_advances_only_after_accepted_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage, manifest, grant = _setup(tmp_path, monkeypatch)
+    _reserve(storage, manifest, grant)
+    current = manifests.load_campaign_manifest(storage, manifest.campaign_ref, repo_root=REPO)
+    queries = _queries(current)
+    _prepare(storage, manifest, grant, queries, max_new_submissions=1)
+
+    blocked = _prepare(storage, manifest, grant, queries, max_new_submissions=1)
+    assert [item.action for item in blocked.actions] == [
+        subject.CampaignSubmissionAction.ORPHAN_UNCERTAIN,
+        subject.CampaignSubmissionAction.SUBMISSION_DEFERRED,
+    ]
+    assert len(grants.load_campaign_grant(
+        storage, grant.grant_ref, REPO, now=NOW,
+    ).submission_claims) == 1
+
+    first_query = queries[current.items[0].work_ref]
+    first_period = first_query.period
+    assert first_period is not None
+
+    def accepted(_root, recovery_ref, **_kwargs):
+        return SimpleNamespace(
+            recovery=SimpleNamespace(recovery_ref=recovery_ref), profile_id=PROFILE,
+            criteria_hash=first_query.criteria_hash(),
+            direction=first_query.direction.value, kind=first_query.request_type.value,
+            fecha_inicial=first_period.start.date().isoformat(),
+            fecha_final=first_period.end.date().isoformat(),
+            authorization_ref=grant.grant_ref,
+        )
+
+    monkeypatch.setattr(subject, "load_metadata_recovery_state", accepted)
+    advanced = _prepare(storage, manifest, grant, queries, max_new_submissions=1)
+    assert [item.action for item in advanced.actions] == [
+        subject.CampaignSubmissionAction.CLAIMED_REPLAY,
+        subject.CampaignSubmissionAction.SUBMISSION_ALLOWED,
+    ]
+    claims = grants.load_campaign_grant(
+        storage, grant.grant_ref, REPO, now=NOW,
+    ).submission_claims
+    assert tuple(claim.work_ref for claim in claims) == tuple(
+        item.work_ref for item in current.items[:2]
+    )
+
+
+@pytest.mark.parametrize("invalid_limit", [0, 3, True, 1.0, None])
+def test_submission_limit_rejects_invalid_value_before_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid_limit: object,
+) -> None:
+    storage, manifest, grant = _setup(tmp_path, monkeypatch)
+    _reserve(storage, manifest, grant)
+    before_manifest = manifests.load_campaign_manifest(
+        storage, manifest.campaign_ref, repo_root=REPO,
+    )
+    before_grant = grants.load_campaign_grant(storage, grant.grant_ref, REPO, now=NOW)
+
+    with pytest.raises(
+        subject.CampaignRunnerError,
+        match="^campaign-new-submission-limit-invalid$",
+    ):
+        _prepare(
+            storage, manifest, grant, _queries(before_manifest),
+            invocation="inv-" + "f" * 24,
+            max_new_submissions=invalid_limit,
+        )
+
+    assert manifests.load_campaign_manifest(
+        storage, manifest.campaign_ref, repo_root=REPO,
+    ) == before_manifest
+    assert grants.load_campaign_grant(
+        storage, grant.grant_ref, REPO, now=NOW,
+    ) == before_grant
 
 
 def test_restart_after_reserve_claims_new_invocation_without_more_capacity(
@@ -407,9 +519,12 @@ def test_concurrent_preparation_allows_each_submission_at_most_once(
         ))
     allowed = [item.work_ref for result in results for item in result.actions
                if item.action is subject.CampaignSubmissionAction.SUBMISSION_ALLOWED]
-    orphaned = [item.work_ref for result in results for item in result.actions
-                if item.action is subject.CampaignSubmissionAction.ORPHAN_UNCERTAIN]
+    withheld = [item.work_ref for result in results for item in result.actions
+                if item.action in {
+                    subject.CampaignSubmissionAction.ORPHAN_UNCERTAIN,
+                    subject.CampaignSubmissionAction.SUBMISSION_DEFERRED,
+                }]
     assert all(allowed.count(item.work_ref) == 1 for item in current.items[:2])
-    assert all(orphaned.count(item.work_ref) == 1 for item in current.items[:2])
+    assert all(withheld.count(item.work_ref) == 1 for item in current.items[:2])
     loaded = grants.load_campaign_grant(storage, grant.grant_ref, REPO, now=NOW)
     assert len(loaded.submission_claims) == 2
