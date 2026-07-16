@@ -103,6 +103,8 @@ def record_campaign_result(
     evidence: str | None = None,
 ) -> SatCampaignManifest:
     """Record one final request result only from its outstanding snapshot."""
+    if evidence is not None and type(evidence) is not str:
+        raise CampaignManifestError("result-evidence-invalid")
     _validate_manifest(manifest)
     item = _find(manifest, work_ref)
     if item.state is not CampaignWorkState.OUTSTANDING:
@@ -178,6 +180,13 @@ def _validate_manifest(manifest: SatCampaignManifest) -> None:
     by_ref = {item.work_ref: item for item in manifest.items}
     if len(by_ref) != len(manifest.items):
         raise CampaignManifestError("work-ref-duplicate")
+    recovery_refs = tuple(item.recovery_ref for item in manifest.items if item.recovery_ref is not None)
+    if len(set(recovery_refs)) != len(recovery_refs):
+        raise CampaignManifestError("recovery-ref-duplicate")
+    if tuple(item.work_ref for item in manifest.items) != tuple(
+        item.work_ref for item in sorted(manifest.items, key=_priority)
+    ):
+        raise CampaignManifestError("campaign-item-order-invalid")
     bases = tuple(item for item in manifest.items if item.depth == 0)
     if tuple((item.start, item.end, item.direction) for item in bases) != _base_specs():
         raise CampaignManifestError("campaign-base-invalid")
@@ -199,6 +208,8 @@ def _validate_manifest(manifest: SatCampaignManifest) -> None:
 def _validate_item(item: CampaignWorkItem) -> None:
     if type(item) is not CampaignWorkItem or type(item.work_ref) is not str or type(item.direction) is not DownloadDirection:
         raise CampaignManifestError("work-item-type-invalid")
+    if item.evidence is not None and type(item.evidence) is not str:
+        raise CampaignManifestError("work-evidence-invalid")
     if type(item.start) is not date or type(item.end) is not date or type(item.depth) is not int:
         raise CampaignManifestError("work-item-type-invalid")
     if type(item.state) is not CampaignWorkState or item.depth not in {0, 1}:
@@ -247,8 +258,8 @@ def _work_ref(campaign_ref: str, direction: DownloadDirection, start: date, end:
               depth: int, parent_ref: str | None) -> str:
     return _digest("work", campaign_ref, direction.value, start.isoformat(), end.isoformat(),
                    str(depth), parent_ref or "-")
-def _priority(item: CampaignWorkItem) -> tuple[date, int, int, date]:
-    return item.start, DIRECTIONS.index(item.direction), item.depth, item.end
+def _priority(item: CampaignWorkItem) -> tuple[date, int, int, date, str]:
+    return item.start, DIRECTIONS.index(item.direction), item.depth, item.end, item.work_ref
 def _find(manifest: SatCampaignManifest, work_ref: str) -> CampaignWorkItem:
     if type(work_ref) is not str or not _WORK_RE.fullmatch(work_ref):
         raise CampaignManifestError("work-ref-invalid")
