@@ -163,6 +163,7 @@ supported LIB-005B and LIB-005C rows are public library API.
 | `cfdi_vault.sat_verify_envelope_lint` | Research tool | Verification envelope inspection helper. |
 | `cfdi_vault.sat_verify_live_gate` | Live-only gate | Human-gated reference-system operation. |
 | `cfdi_vault.sat_verify_post_probe` | Probe | Research-only verification POST probe. |
+| `cfdi_vault.secure_state_file` | Internal persistence primitive | Canonical external filesystem locking and atomic opaque-byte replacement; never re-exported. |
 
 The CLI, recovery service, worker, Docker Compose, PostgreSQL models,
 RabbitMQ/Redis adapters, filesystem layout, and MinIO lab profile are
