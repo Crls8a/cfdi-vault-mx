@@ -160,6 +160,7 @@ supported LIB-005B and LIB-005C rows are public library API.
 | `cfdi_vault.sat_soap` | Internal implementation | SOAP shape/signing implementation, not consumer API. |
 | `cfdi_vault.sat_transport_probe` | Probe | Research-only transport diagnostic. |
 | `cfdi_vault.sat_transport` | Internal transport | Network boundary used by adapters; not selected implicitly. |
+| `cfdi_vault.sat_v15_contract` | Internal wire-contract implementation | Canonical v1.5 namespaces, actions, endpoints, and operation types; never re-exported. |
 | `cfdi_vault.sat_verify_envelope_lint` | Research tool | Verification envelope inspection helper. |
 | `cfdi_vault.sat_verify_live_gate` | Live-only gate | Human-gated reference-system operation. |
 | `cfdi_vault.sat_verify_post_probe` | Probe | Research-only verification POST probe. |
