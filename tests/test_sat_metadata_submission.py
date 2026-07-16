@@ -571,12 +571,127 @@ def test_invalid_or_ambiguous_legacy_state_fails_closed(tmp_path, legacy_documen
     assert captured.value.__cause__ is captured.value.__context__ is None
 
 
+def test_projection_absence_is_read_only(tmp_path) -> None:
+    query = _query()
+
+    projection = _load_projection(tmp_path, query)
+
+    assert projection is None
+    assert not subject.metadata_submission_claim_path(tmp_path).parent.exists()
+
+
+@pytest.mark.parametrize(
+    ("outcome", "status", "category"),
+    (
+        (SatRequestResult("", "5003", "private", SatOutcomeAction.PERMANENT_FAILURE),
+         subject.SubmissionStatus.SUBMIT_FAILED,
+         subject.SubmissionFailureCategory.SAT_TOO_MANY_RESULTS),
+        (RuntimeError("private"), subject.SubmissionStatus.SUBMIT_UNCERTAIN,
+         subject.SubmissionFailureCategory.SUBMIT_UNCERTAIN),
+    ),
+)
+def test_projection_returns_only_allowlisted_outcome_without_mutation(
+    tmp_path, outcome, status, category,
+) -> None:
+    query = _query()
+    expected = recovery_state.campaign_metadata_recovery_ref(
+        "profile-synthetic", query.criteria_hash(),
+    )
+    requester = Mock(submit_request=Mock(
+        side_effect=outcome if isinstance(outcome, Exception) else None,
+        return_value=None if isinstance(outcome, Exception) else outcome,
+    ))
+    _submit_campaign(tmp_path, requester, query, expected)
+    path = subject.metadata_submission_claim_path(tmp_path)
+    before = path.read_bytes()
+
+    projection = _load_projection(tmp_path, query)
+
+    assert projection == subject.MetadataSubmissionProjection(status, category)
+    assert set(projection.__dict__) == {"status", "failure_category"}
+    assert "private" not in repr(projection)
+    assert path.read_bytes() == before
+
+
+def test_projection_loads_legacy_failure_without_rewriting(tmp_path) -> None:
+    query = _query()
+    expected = recovery_state.campaign_metadata_recovery_ref(
+        "profile-synthetic", query.criteria_hash(),
+    )
+    _submit_campaign(tmp_path, Mock(submit_request=Mock(return_value=SatRequestResult(
+        "", "5004", "private", SatOutcomeAction.PERMANENT_FAILURE,
+    ))), query, expected)
+    path = subject.metadata_submission_claim_path(tmp_path)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["schemaVersion"] = 1
+    document["claims"][0].pop("failureCategory")
+    path.write_text(json.dumps(document), encoding="utf-8")
+    before = path.read_bytes()
+
+    projection = _load_projection(tmp_path, query)
+
+    assert projection.failure_category is subject.SubmissionFailureCategory.LEGACY_FAILURE
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("mismatch", ("profile", "criteria", "authorization", "recovery", "query"))
+def test_projection_rejects_exact_lineage_mismatch(tmp_path, mismatch: str) -> None:
+    query = _query()
+    expected = recovery_state.campaign_metadata_recovery_ref(
+        "profile-synthetic", query.criteria_hash(),
+    )
+    _submit_campaign(tmp_path, Mock(submit_request=Mock(side_effect=RuntimeError("private"))),
+                     query, expected)
+    values = {
+        "profile_id": "profile-synthetic", "criteria_hash": query.criteria_hash(),
+        "authorization_ref": "authorization-synthetic", "recovery_ref": expected,
+        "query": query,
+    }
+    if mismatch == "profile":
+        values["profile_id"] = "profile-other"
+    elif mismatch == "criteria":
+        values["criteria_hash"] = "b" * 64
+    elif mismatch == "authorization":
+        values["authorization_ref"] = "authorization-other"
+    elif mismatch == "recovery":
+        values["recovery_ref"] = "run-000000000000"
+    else:
+        values["query"] = replace(query, requester_rfc="RFC-OTHER")
+
+    with pytest.raises(subject.MetadataSubmissionError, match="submission-projection-"):
+        subject.load_metadata_submission_projection(tmp_path, **values)
+
+
+def test_projection_rejects_related_claim_collision(tmp_path, monkeypatch) -> None:
+    query = _query()
+    expected = recovery_state.campaign_metadata_recovery_ref(
+        "profile-synthetic", query.criteria_hash(),
+    )
+    _submit_campaign(tmp_path, Mock(submit_request=Mock(side_effect=RuntimeError("private"))),
+                     query, expected)
+    claim = subject._read_claims(subject.metadata_submission_claim_path(tmp_path))[0]
+    monkeypatch.setattr(subject, "_read_claims", lambda _path: (claim, claim))
+
+    with pytest.raises(subject.MetadataSubmissionError, match="submission-projection-collision"):
+        _load_projection(tmp_path, query)
+
+
 def _submit(tmp_path, requester, query: DownloadQuery, authorization: str = "authorization-synthetic"):
     return subject.submit_metadata_recovery_once(
         requester=requester, query=query, now=NOW, storage_root=tmp_path,
         profile_id="profile-synthetic", criteria_hash=query.criteria_hash(),
         authorization_ref=authorization,
         tested_commit=COMMIT, entry_point="metadata-recover-live",
+    )
+
+
+def _load_projection(tmp_path, query: DownloadQuery):
+    return subject.load_metadata_submission_projection(
+        tmp_path, query=query, profile_id="profile-synthetic",
+        criteria_hash=query.criteria_hash(), authorization_ref="authorization-synthetic",
+        recovery_ref=recovery_state.campaign_metadata_recovery_ref(
+            "profile-synthetic", query.criteria_hash(),
+        ),
     )
 
 

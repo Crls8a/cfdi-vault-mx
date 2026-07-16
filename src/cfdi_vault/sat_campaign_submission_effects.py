@@ -64,6 +64,8 @@ _PREPARATION_ACTIONS = {
         CampaignSubmissionEffectAction.SUBMISSION_DEFERRED,
     CampaignSubmissionAction.CLAIMED_REPLAY:
         CampaignSubmissionEffectAction.CLAIMED_REPLAY,
+    CampaignSubmissionAction.FAILED_REPLAY:
+        CampaignSubmissionEffectAction.SUBMISSION_FAILED,
     CampaignSubmissionAction.ORPHAN_UNCERTAIN:
         CampaignSubmissionEffectAction.ORPHAN_UNCERTAIN,
 }

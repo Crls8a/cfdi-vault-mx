@@ -110,12 +110,82 @@ class MetadataSubmissionClaim:
         }
 
 
+@dataclass(frozen=True, repr=False)
+class MetadataSubmissionProjection:
+    """Minimal persisted outcome safe for internal replay decisions."""
+
+    status: SubmissionStatus
+    failure_category: SubmissionFailureCategory | None
+
+
 def metadata_submission_claim_path(
     storage_root: str | Path, *, repo_root: str | Path | None = None,
 ) -> Path:
     """Return the opaque claim path beside recovery state."""
     recovery = state._resolved_state_path(storage_root, repo_root=repo_root, create_parent=False)
     return recovery.with_name("sat-metadata-submission-claims.json")
+
+
+def load_metadata_submission_projection(
+    storage_root: str | Path,
+    *,
+    query: DownloadQuery,
+    profile_id: str,
+    criteria_hash: str,
+    authorization_ref: str,
+    recovery_ref: str,
+    repo_root: str | Path | None = None,
+) -> MetadataSubmissionProjection | None:
+    """Load an exact campaign submission outcome without creating or rewriting state."""
+    try:
+        query_document = _query_document(query)
+        if (type(query) is not DownloadQuery
+                or _query_from_document(query_document) != query
+                or query.criteria_hash() != criteria_hash
+                or not _HASH.fullmatch(criteria_hash)
+                or not _valid_private_ref(profile_id)
+                or not _valid_private_ref(authorization_ref)
+                or not _RECOVERY_REF.fullmatch(recovery_ref)
+                or recovery_ref != state.campaign_metadata_recovery_ref(
+                    profile_id, criteria_hash,
+                )):
+            raise ValueError
+        path = metadata_submission_claim_path(
+            storage_root, repo_root=repo_root,
+        )
+        exists = path.exists()
+        if not exists and path.is_symlink():
+            raise ValueError
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError,
+            state.MetadataRecoveryStateError):
+        raise MetadataSubmissionError("submission-projection-input-invalid") from None
+    if not exists:
+        return None
+    try:
+        claims = _read_claims(path)
+    except (MetadataSubmissionError, state.MetadataRecoveryStateError):
+        raise MetadataSubmissionError("submission-projection-state-invalid") from None
+    expected_claim_ref = "claim-" + hashlib.sha256(
+        f"{profile_id}:{criteria_hash}".encode(),
+    ).hexdigest()[:12]
+    related = tuple(claim for claim in claims if (
+        claim.claim_ref == expected_claim_ref
+        or claim.criteria_hash == criteria_hash
+        or claim.recovery_ref == recovery_ref
+    ))
+    if not related:
+        return None
+    if len(related) != 1:
+        raise MetadataSubmissionError("submission-projection-collision")
+    claim = related[0]
+    if (claim.claim_ref != expected_claim_ref
+            or claim.profile_id != profile_id
+            or claim.criteria_hash != criteria_hash
+            or claim.authorization_ref != authorization_ref
+            or claim.recovery_ref != recovery_ref
+            or dict(claim.query) != query_document):
+        raise MetadataSubmissionError("submission-projection-lineage-invalid")
+    return MetadataSubmissionProjection(claim.status, claim.failure_category)
 
 
 def submit_metadata_recovery_once(

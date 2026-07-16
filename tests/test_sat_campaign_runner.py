@@ -8,12 +8,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Barrier, Event, Lock
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 import cfdi_vault.sat_campaign_grant as grants
 import cfdi_vault.sat_campaign_manifest_store as manifests
 import cfdi_vault.sat_campaign_runner as subject
+import cfdi_vault.sat_metadata_submission as submissions
 import cfdi_vault.secure_state_file as secure_state
 from cfdi_vault.domain import DateTimePeriod, DownloadQuery, RequestType
 from cfdi_vault.sat_campaign_manifest import (
@@ -21,6 +23,7 @@ from cfdi_vault.sat_campaign_manifest import (
     SatCampaignManifest,
     build_campaign_manifest,
 )
+from cfdi_vault.sat_contract import SatOutcomeAction, SatRequestResult
 
 NOW = datetime(2026, 7, 16, 12, tzinfo=timezone.utc)
 PROFILE, COMMIT = "profile-synthetic", "a" * 40
@@ -369,6 +372,45 @@ def test_submission_limit_advances_only_after_accepted_recovery(
     assert tuple(claim.work_ref for claim in claims) == tuple(
         item.work_ref for item in current.items[:2]
     )
+
+
+@pytest.mark.parametrize(
+    ("outcome", "replay_action", "next_action"),
+    (
+        (SatRequestResult("", "5003", "private", SatOutcomeAction.PERMANENT_FAILURE),
+         subject.CampaignSubmissionAction.FAILED_REPLAY,
+         subject.CampaignSubmissionAction.SUBMISSION_ALLOWED),
+        (RuntimeError("private"), subject.CampaignSubmissionAction.ORPHAN_UNCERTAIN,
+         subject.CampaignSubmissionAction.SUBMISSION_DEFERRED),
+        (SatRequestResult("synthetic-request", "5000", "private", SatOutcomeAction.ACCEPTED),
+         subject.CampaignSubmissionAction.CLAIMED_REPLAY,
+         subject.CampaignSubmissionAction.SUBMISSION_ALLOWED),
+    ),
+)
+def test_persisted_submission_outcome_controls_exact_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome, replay_action, next_action,
+) -> None:
+    storage, manifest, grant = _setup(tmp_path, monkeypatch)
+    _reserve(storage, manifest, grant)
+    current = manifests.load_campaign_manifest(storage, manifest.campaign_ref, repo_root=REPO)
+    queries = _queries(current)
+    first = _prepare(storage, manifest, grant, queries, max_new_submissions=1)
+    query = queries[first.actions[0].work_ref]
+    recovery_ref = subject.campaign_metadata_recovery_ref(PROFILE, query.criteria_hash())
+    requester = Mock(submit_request=Mock(
+        side_effect=outcome if isinstance(outcome, Exception) else None,
+        return_value=None if isinstance(outcome, Exception) else outcome,
+    ))
+    submissions.submit_metadata_recovery_once(
+        requester=requester, query=query, now=NOW, storage_root=storage,
+        profile_id=PROFILE, criteria_hash=query.criteria_hash(),
+        authorization_ref=grant.grant_ref, expected_recovery_ref=recovery_ref,
+        tested_commit=COMMIT, entry_point="sat-campaign", repo_root=REPO,
+    )
+
+    replay = _prepare(storage, manifest, grant, queries, max_new_submissions=1)
+
+    assert [item.action for item in replay.actions] == [replay_action, next_action]
 
 
 @pytest.mark.parametrize("invalid_limit", [0, 3, True, 1.0, None])

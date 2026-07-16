@@ -33,6 +33,11 @@ from cfdi_vault.sat_metadata_recovery_state import (
     campaign_metadata_recovery_ref,
     load_metadata_recovery_state,
 )
+from cfdi_vault.sat_metadata_submission import (
+    MetadataSubmissionError,
+    SubmissionStatus,
+    load_metadata_submission_projection,
+)
 
 
 class CampaignRunnerError(ValueError):
@@ -80,6 +85,7 @@ class CampaignSubmissionAction(StrEnum):
     SUBMISSION_ALLOWED = "submission_allowed"
     SUBMISSION_DEFERRED = "submission_deferred"
     CLAIMED_REPLAY = "claimed_replay"
+    FAILED_REPLAY = "failed_replay"
     ORPHAN_UNCERTAIN = "orphan_uncertain"
 
 
@@ -303,6 +309,19 @@ def _existing_claim_action(
         )
     except MetadataRecoveryStateError as error:
         if error.reason == "recovery-state-not-found":
+            try:
+                projection = load_metadata_submission_projection(
+                    storage_root, query=query, profile_id=claim.profile_id,
+                    criteria_hash=query.criteria_hash(), authorization_ref=grant_ref,
+                    recovery_ref=claim.recovery_ref, repo_root=repo_root,
+                )
+            except MetadataSubmissionError as submission_error:
+                raise CampaignRunnerError(
+                    "campaign-submission-state-invalid", committed=True,
+                ) from submission_error
+            if (projection is not None
+                    and projection.status is SubmissionStatus.SUBMIT_FAILED):
+                return CampaignSubmissionAction.FAILED_REPLAY
             return CampaignSubmissionAction.ORPHAN_UNCERTAIN
         raise CampaignRunnerError(
             "campaign-recovery-state-invalid", committed=True,

@@ -185,12 +185,13 @@ def test_replay_and_no_outstanding_never_construct_adapter(
     assert empty_factory.call_count == 0
 
 
-@pytest.mark.parametrize("action", [
-    subject.CampaignSubmissionAction.SUBMISSION_DEFERRED,
-    subject.CampaignSubmissionAction.ORPHAN_UNCERTAIN,
+@pytest.mark.parametrize(("action", "expected"), [
+    (subject.CampaignSubmissionAction.SUBMISSION_DEFERRED, "submission_deferred"),
+    (subject.CampaignSubmissionAction.ORPHAN_UNCERTAIN, "orphan_uncertain"),
+    (subject.CampaignSubmissionAction.FAILED_REPLAY, "submission_failed"),
 ])
 def test_non_permission_preparation_never_constructs_adapter(
-    monkeypatch: pytest.MonkeyPatch, action: subject.CampaignSubmissionAction,
+    monkeypatch: pytest.MonkeyPatch, action: subject.CampaignSubmissionAction, expected: str,
 ) -> None:
     monkeypatch.setattr(
         subject, "prepare_reserved_metadata_submissions_once",
@@ -206,7 +207,7 @@ def test_non_permission_preparation_never_constructs_adapter(
         adapter_factory=factory, now=NOW,
     )
     assert factory.call_count == result.submission_attempts == 0
-    assert result.events[0].action.value == action.value
+    assert result.events[0].action.value == expected
 
 
 def test_caller_cannot_supply_commit_before_factory_or_submission(
