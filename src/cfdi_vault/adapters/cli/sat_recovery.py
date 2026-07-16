@@ -74,6 +74,28 @@ def sat_metadata_recover_live(
             local_profile.storage_root, repo_root=repo_root,
         ) if item.profile_id == profile and item.criteria_hash == query.criteria_hash()), None)
         now = _recovery_now()
+        if existing is not None:
+            settled = settle_metadata_recovery_locally(
+                storage_root=local_profile.storage_root,
+                recovery_ref=existing.recovery.recovery_ref,
+                now=now, tested_commit=observation.tested_commit,
+                entry_point="metadata-recover-live", repo_root=repo_root,
+            )
+            if settled.recovery is None:
+                _print_runner_failure(settled)
+                raise typer.Exit(code=1)
+            if not settled.requires_live:
+                final = load_metadata_recovery_state(
+                    local_profile.storage_root, existing.recovery.recovery_ref,
+                    repo_root=repo_root,
+                )
+                observe_metadata_recovery(
+                    observation, before=existing, after=final, outcome=settled,
+                    observed_at=now, entry_point="metadata-recover-live",
+                    reconcile_submission=True,
+                )
+                _print_recovery_document(settled.recovery)
+                return
         permit = _authorize_metadata_recovery(authorization=authorization, profile=profile, query=query,
                                               now=now, repo_root=repo_root)
         package_storage = _new_recovery_storage(local_profile.storage_root)

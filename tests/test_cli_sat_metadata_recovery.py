@@ -91,6 +91,8 @@ def test_recover_live_orders_gates_and_prints_only_aggregates(monkeypatch, tmp_p
     record = SimpleNamespace(authorization_ref="permit-synthetic")
     monkeypatch.setattr(subject, "submit_metadata_recovery_once", lambda **kw:
                         events.append("submit") or claim if kw["tested_commit"] == COMMIT else None)
+    monkeypatch.setattr(subject, "settle_metadata_recovery_locally", lambda **_:
+                        (_ for _ in ()).throw(AssertionError("fresh submission must not settle")))
     monkeypatch.setattr(subject, "load_metadata_recovery_state", lambda *_a, **_k: events.append("load") or record)
     monkeypatch.setattr(
         subject,
@@ -103,6 +105,7 @@ def test_recover_live_orders_gates_and_prints_only_aggregates(monkeypatch, tmp_p
 
     assert result.exit_code == 0, result.output
     assert events == ["query", "guard", "path", "observation", "permit", "storage", "adapter", "submit", "load", "advance", "load", "observe"]
+    assert events.count("submit") == 1
     assert "stage=waiting_verify" in result.output
     assert "status=verify_scheduled" in result.output
     assert "operation_attempts=0" in result.output
@@ -118,6 +121,88 @@ def test_recover_live_orders_gates_and_prints_only_aggregates(monkeypatch, tmp_p
         "artifacts=",
     ):
         assert forbidden not in result.output
+
+
+def test_recover_live_stops_active_legacy_before_permit_or_live_dependencies(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    settle_calls: list[dict[str, object]] = []
+    profile = _patch_front(monkeypatch, tmp_path, events)
+    query = _query()
+    existing = SimpleNamespace(
+        profile_id=profile.profile_id, criteria_hash=query.criteria_hash(),
+        observation_provenance=None,
+        verify_claim=None,
+        recovery=SimpleNamespace(
+            recovery_ref="run-000000000000", status=RecoveryStatus.VERIFY_SCHEDULED,
+        ),
+    )
+    monkeypatch.setattr(subject, "prepare_metadata_observation_context", lambda *_a, **_k:
+                        events.append("observation") or SimpleNamespace(tested_commit=COMMIT))
+    monkeypatch.setattr(subject, "list_metadata_recovery_states", lambda *_a, **_k:
+                        events.append("list") or (existing,))
+    monkeypatch.setattr(subject, "settle_metadata_recovery_locally", lambda **kw:
+                        settle_calls.append(kw) or events.append("settle") or SimpleNamespace(
+                            recovery=None, error_kind="observation-provenance-missing",
+                            verify_count=0, download_attempts=0,
+                        ))
+    for name in ("submit_metadata_recovery_once", "advance_metadata_recovery_once"):
+        monkeypatch.setattr(subject, name, lambda *_a, _name=name, **_k:
+                            (_ for _ in ()).throw(AssertionError(f"{_name} must not run")))
+
+    result = CliRunner().invoke(_app(), RECOVER_ARGS)
+
+    assert result.exit_code == 1
+    assert events == ["query", "guard", "path", "observation", "list", "settle"]
+    assert (settle_calls[0]["tested_commit"], settle_calls[0]["entry_point"],
+            settle_calls[0]["now"]) == (COMMIT, "metadata-recover-live", NOW)
+    assert result.output == "stage=runner\nstatus=observation-provenance-missing\noperation_attempts=0\n"
+
+
+@pytest.mark.parametrize("terminal", ("pending_after_budget", "verify_failed"))
+def test_recover_live_allows_local_settlement_before_live_dependencies(
+    monkeypatch, tmp_path: Path, terminal: str,
+) -> None:
+    events: list[str] = []
+    settle_calls: list[dict[str, object]] = []
+    profile = _patch_front(monkeypatch, tmp_path, events)
+    query = _query()
+    existing = SimpleNamespace(
+        profile_id=profile.profile_id, criteria_hash=query.criteria_hash(),
+        observation_provenance=None if terminal == "pending_after_budget" else object(),
+        verify_claim=object() if terminal == "verify_failed" else None,
+        recovery=SimpleNamespace(
+            recovery_ref="run-000000000000", status=RecoveryStatus.VERIFY_SCHEDULED,
+        ),
+    )
+    final = SimpleNamespace()
+    document = _document(
+        status=terminal, nextCheckAt="", verifyAttempts=1 if terminal == "verify_failed" else 0,
+    )
+    monkeypatch.setattr(subject, "prepare_metadata_observation_context", lambda *_a, **_k:
+                        events.append("observation") or SimpleNamespace(tested_commit=COMMIT))
+    monkeypatch.setattr(subject, "list_metadata_recovery_states", lambda *_a, **_k:
+                        events.append("list") or (existing,))
+    monkeypatch.setattr(subject, "settle_metadata_recovery_locally", lambda **kw:
+                        settle_calls.append(kw) or events.append("settle") or SimpleNamespace(
+                            recovery=document, error_kind=None, requires_live=False,
+                            verify_count=0, download_attempts=0,
+                        ))
+    monkeypatch.setattr(subject, "load_metadata_recovery_state", lambda *_a, **_k:
+                        events.append("load") or final)
+    monkeypatch.setattr(subject, "observe_metadata_recovery", lambda *_a, **_k:
+                        events.append("observe"))
+    for name in ("submit_metadata_recovery_once", "advance_metadata_recovery_once"):
+        monkeypatch.setattr(subject, name, lambda *_a, _name=name, **_k:
+                            (_ for _ in ()).throw(AssertionError(f"{_name} must not run")))
+
+    result = CliRunner().invoke(_app(), RECOVER_ARGS)
+
+    assert result.exit_code == 0, result.output
+    assert events == ["query", "guard", "path", "observation", "list", "settle", "load", "observe"]
+    assert settle_calls[0]["recovery_ref"] == "run-000000000000"
+    assert f"status={terminal}" in result.output
 
 
 def test_recover_live_rejects_authorization_rebinding_before_advance(monkeypatch, tmp_path: Path) -> None:
