@@ -40,7 +40,7 @@ from cfdi_vault.sat_metadata_recovery_state import (
 )
 from cfdi_vault.sat_metadata_submission import MetadataSubmissionError, SubmissionStatus, submit_metadata_recovery_once
 from cfdi_vault.sat_transport import GuardedSoapHttpTransport, LiveSatGuardInput
-from cfdi_vault.sat_v15_adapter import SatLiveV15MetadataAdapter
+from cfdi_vault.sat_v15_adapter import SatV15Adapter
 from cfdi_vault.storage import LocalStorage
 
 from .common import (
@@ -266,7 +266,7 @@ def _authorize_metadata_recovery(*, authorization, profile, query, now, repo_roo
 def _new_recovery_storage(root: Path) -> LocalStorage:
     return LocalStorage(root)
 def _new_recovery_adapter(profile, _permit):  # type: ignore[no-untyped-def]
-    return SatLiveV15MetadataAdapter(profile=profile, provider=_setup_provider(profile.profile_id),
+    return SatV15Adapter(profile=profile, provider=_setup_provider(profile.profile_id),
                                     transport=_metadata_recovery_transport(),
                                     max_range_days=MAX_METADATA_RECOVERY_RANGE_DAYS)
 def _metadata_recovery_transport() -> GuardedSoapHttpTransport:

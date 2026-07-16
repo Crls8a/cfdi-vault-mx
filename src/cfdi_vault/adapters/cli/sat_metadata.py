@@ -137,7 +137,7 @@ def _print_live_diagnose_result(
     kind: str,
     direction: str,
     result: LiveSmokeCliResult | None,
-    failed: SatLiveSmokeError | None = None,
+    failed: SatV15AdapterError | None = None,
 ) -> None:
     typer.echo("mode=diagnose-live")
     typer.echo(f"profile={profile_id}")
@@ -208,7 +208,7 @@ def sat_metadata_request_smoke(
     except LiveSmokeAdapterUnavailable as exc:
         typer.echo("error=live_adapter_unavailable", err=True)
         raise typer.Exit(code=1) from exc
-    except SatLiveSmokeError as exc:
+    except SatV15AdapterError as exc:
         _print_live_adapter_error(exc)
         raise typer.Exit(code=1) from exc
     _print_live_smoke_result(profile_id=profile, kind=query.request_type.value, direction=query.direction.value, result=result)
@@ -257,7 +257,7 @@ def sat_diagnose_live(
     except LiveSmokeAdapterUnavailable as exc:
         typer.echo("error=live_adapter_unavailable", err=True)
         raise typer.Exit(code=1) from exc
-    except SatLiveSmokeError as exc:
+    except SatV15AdapterError as exc:
         _print_live_diagnose_result(profile_id=profile, kind=query.request_type.value, direction=query.direction.value, result=None, failed=exc)
         raise typer.Exit(code=1) from exc
     _print_live_diagnose_result(profile_id=profile, kind=query.request_type.value, direction=query.direction.value, result=result)

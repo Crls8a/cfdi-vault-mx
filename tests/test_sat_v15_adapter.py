@@ -24,17 +24,17 @@ from cfdi_vault.sat_auth_contract import AuthWsdlContract
 from cfdi_vault.sat_auth_envelope_lint import lint_auth_envelope
 from cfdi_vault.sat_auth_http import validate_auth_headers_for_contract
 from cfdi_vault.sat_contract import SatOperation, SatVerificationError
+from cfdi_vault.sat_transport import FakeSoapTransport, SoapReadTimeout, SoapTransportResponse
 from cfdi_vault.sat_v15_adapter import (
     DS_NS,
     VERIFY_EXCLUSIVE_C14N,
     SatEfirmMaterial,
     SatLiveMetadataSmokeAdapter,
-    SatLiveSmokeError,
-    SatLiveV15MetadataAdapter,
+    SatV15Adapter,
+    SatV15AdapterError,
     _build_request_envelope,
     resolve_v15_request_operation,
 )
-from cfdi_vault.sat_transport import FakeSoapTransport, SoapReadTimeout, SoapTransportResponse
 from cfdi_vault.sat_v15_contract import (
     AUTH_ACTION,
     DEFAULT_VERIFY_ENDPOINT,
@@ -46,6 +46,24 @@ from cfdi_vault.sat_v15_contract import (
 )
 from cfdi_vault.secrets import DummySecretProvider
 from cfdi_vault.setup_core import CredentialMode, LocalProfile, LocalProfileStatus
+
+
+def test_productive_v15_symbols_are_neutral_and_legacy_names_removed() -> None:
+    new_names = (
+        "SatV15Adapter",
+        "SatV15AdapterError",
+        "SatV15DiagnosticEntry",
+        "SatV15RequestAttempt",
+    )
+    old_names = (
+        "SatLiveV15MetadataAdapter",
+        "SatLiveSmokeError",
+        "SatLiveDiagnosticEntry",
+        "SatLiveRequestAttempt",
+    )
+
+    assert all(hasattr(live_smoke_module, name) for name in new_names)
+    assert all(not hasattr(live_smoke_module, name) for name in old_names)
 
 
 def test_metadata_smoke_uses_real_adapter_shape_without_package_download(tmp_path: Path) -> None:
@@ -176,7 +194,7 @@ def test_neutral_adapter_enforces_constructor_range_limit_before_transport(tmp_p
         DateTimePeriod(start, start + timedelta(days=2) - timedelta(seconds=1)),
     )
     blocked = FakeSoapTransport([])
-    with pytest.raises(SatLiveSmokeError) as exc:
+    with pytest.raises(SatV15AdapterError) as exc:
         _neutral_adapter(tmp_path, blocked, material=_material()).submit_request(query)
     assert (exc.value.failed_stage, exc.value.effect_unknown) == ("preflight", False)
     assert blocked.requests == []
@@ -256,24 +274,24 @@ def test_neutral_verify_accepts_identical_echo_and_rejects_foreign_echo_after_co
 def test_submit_ambiguous_transport_failure_marks_effect_unknown(
     tmp_path: Path, failure: BaseException
 ) -> None:
-    with pytest.raises(SatLiveSmokeError) as exc:
+    with pytest.raises(SatV15AdapterError) as exc:
         _neutral_adapter(tmp_path, _FailAfterAuthTransport(failure), material=_material()).submit_request(_query())
     assert (exc.value.failed_stage, exc.value.effect_unknown) == ("metadata_request_transport", True)
 
 
 def test_submit_effect_is_unknown_only_after_ambiguous_post(tmp_path: Path) -> None:
     invalid = FakeSoapTransport([_auth_response(), SoapTransportResponse(200, body=b"not-xml")])
-    with pytest.raises(SatLiveSmokeError) as parse_exc:
+    with pytest.raises(SatV15AdapterError) as parse_exc:
         _neutral_adapter(tmp_path, invalid, material=_material()).submit_request(_query())
     assert (parse_exc.value.failed_stage, parse_exc.value.effect_unknown) == ("metadata_request_parse", True)
 
     refused = _FailAfterAuthTransport(ConnectionRefusedError())
-    with pytest.raises(SatLiveSmokeError) as refused_exc:
+    with pytest.raises(SatV15AdapterError) as refused_exc:
         _neutral_adapter(tmp_path, refused, material=_material()).submit_request(_query())
     assert refused_exc.value.effect_unknown is False
 
     definitive = FakeSoapTransport([_auth_response(), SoapTransportResponse(503, body=b"")])
-    with pytest.raises(SatLiveSmokeError) as http_exc:
+    with pytest.raises(SatV15AdapterError) as http_exc:
         _neutral_adapter(tmp_path, definitive, material=_material()).submit_request(_query())
     assert http_exc.value.effect_unknown is False
 
@@ -304,7 +322,7 @@ def test_http_error_body_read_failure_is_sanitized_with_operation_effect_semanti
     transport = _FailAfterAuthTransport(failure) if operation != "auth" else _AlwaysFailTransport(failure)
     adapter = _neutral_adapter(tmp_path, transport, material=_material())
 
-    with pytest.raises(SatLiveSmokeError) as exc:
+    with pytest.raises(SatV15AdapterError) as exc:
         if operation == "auth":
             adapter._authenticate()
         elif operation == "request":
@@ -344,7 +362,7 @@ def test_recognizable_soap_fault_parse_failure_has_definitive_effect(
         material=_material(),
     )
 
-    with pytest.raises(SatLiveSmokeError) as exc:
+    with pytest.raises(SatV15AdapterError) as exc:
         if operation == "request":
             adapter.submit_request(_query())
         else:
@@ -375,7 +393,7 @@ def test_recognizable_sat_status_parse_failure_has_definitive_effect(
         material=_material(),
     )
 
-    with pytest.raises(SatLiveSmokeError) as exc:
+    with pytest.raises(SatV15AdapterError) as exc:
         if operation == "request":
             adapter.submit_request(_query())
         else:
@@ -390,17 +408,17 @@ def test_package_download_uses_precise_stages_and_effect_semantics(
 ) -> None:
     original = live_smoke_module._build_package_download_envelope
     monkeypatch.setattr(live_smoke_module, "_build_package_download_envelope", lambda *args: 1 / 0)
-    with pytest.raises(SatLiveSmokeError) as build_exc:
+    with pytest.raises(SatV15AdapterError) as build_exc:
         _neutral_adapter(tmp_path, FakeSoapTransport([_auth_response()]), material=_material()).download_package("SYN-PKG-BUILD")
     assert (build_exc.value.failed_stage, build_exc.value.effect_unknown) == ("package_download_build", False)
     monkeypatch.setattr(live_smoke_module, "_build_package_download_envelope", original)
 
-    with pytest.raises(SatLiveSmokeError) as transport_exc:
+    with pytest.raises(SatV15AdapterError) as transport_exc:
         _neutral_adapter(tmp_path, _FailAfterAuthTransport(TimeoutError()), material=_material()).download_package("SYN-PKG-TIMEOUT")
     assert (transport_exc.value.failed_stage, transport_exc.value.effect_unknown) == ("package_download_transport", True)
 
     invalid = FakeSoapTransport([_auth_response(), SoapTransportResponse(200, body=b"not-xml")])
-    with pytest.raises(SatLiveSmokeError) as parse_exc:
+    with pytest.raises(SatV15AdapterError) as parse_exc:
         _neutral_adapter(tmp_path, invalid, material=_material()).download_package("SYN-PKG-PARSE")
     assert (parse_exc.value.failed_stage, parse_exc.value.effect_unknown) == ("package_download_parse", True)
 
@@ -535,7 +553,7 @@ def test_metadata_verify_smoke_fails_before_verify_transport_when_endpoint_is_wr
     )
     endpoints = SatV15Endpoints("https://auth.example", "https://request.example", "https://request.example")
 
-    with pytest.raises(SatLiveSmokeError) as exc:
+    with pytest.raises(SatV15AdapterError) as exc:
         SatLiveMetadataSmokeAdapter(
             profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material(), endpoints=endpoints
         ).metadata_verify_smoke("648a0000-1111-2222-3333-444444447b27")
@@ -563,7 +581,7 @@ def test_metadata_verify_timeout_is_classified_with_redacted_readiness(tmp_path:
 
     transport = TimeoutOnVerifyTransport()
 
-    with pytest.raises(SatLiveSmokeError) as exc:
+    with pytest.raises(SatV15AdapterError) as exc:
         SatLiveMetadataSmokeAdapter(
             profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material()
         ).metadata_verify_smoke("648a0000-1111-2222-3333-444444447b27")
@@ -631,7 +649,7 @@ def test_v15_live_metadata_date_rules_fail_before_transport(
     transport = FakeSoapTransport([])
     adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
 
-    with pytest.raises(SatLiveSmokeError) as exc:
+    with pytest.raises(SatV15AdapterError) as exc:
         adapter.metadata_request_smoke(query)
 
     assert exc.value.failed_stage == "preflight"
@@ -730,7 +748,7 @@ def test_auth_smoke_fails_before_transport_when_request_body_is_empty(tmp_path: 
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr("cfdi_vault.sat_v15_adapter._build_auth_envelope", lambda *_args, **_kwargs: b"")
-        with pytest.raises(SatLiveSmokeError, match="SAT auth request failed local readiness checks") as exc:
+        with pytest.raises(SatV15AdapterError, match="SAT auth request failed local readiness checks") as exc:
             adapter.auth_smoke()
 
     diagnostic = exc.value.diagnostic
@@ -760,7 +778,7 @@ def test_auth_smoke_fails_before_transport_when_accept_header_is_missing(tmp_pat
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr("cfdi_vault.sat_v15_adapter.build_soap11_headers", headers_without_accept)
-        with pytest.raises(SatLiveSmokeError, match="SAT auth request failed local readiness checks") as exc:
+        with pytest.raises(SatV15AdapterError, match="SAT auth request failed local readiness checks") as exc:
             adapter.auth_smoke()
 
     diagnostic = exc.value.diagnostic
@@ -792,7 +810,7 @@ def test_auth_smoke_fails_before_transport_when_wcf_action_header_is_missing(tmp
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr(live_smoke_module, "_build_auth_envelope", envelope_without_action)
-        with pytest.raises(SatLiveSmokeError, match="SAT auth request failed local readiness checks") as exc:
+        with pytest.raises(SatV15AdapterError, match="SAT auth request failed local readiness checks") as exc:
             adapter.auth_smoke()
 
     diagnostic = exc.value.diagnostic
@@ -806,7 +824,7 @@ def test_auth_http_failure_reports_redacted_request_readiness(tmp_path: Path) ->
     transport = FakeSoapTransport([SoapTransportResponse(400, body=b"")])
     adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
 
-    with pytest.raises(SatLiveSmokeError, match="SAT transport returned a non-success status") as exc:
+    with pytest.raises(SatV15AdapterError, match="SAT transport returned a non-success status") as exc:
         adapter.auth_smoke()
 
     request = transport.requests[0]
@@ -841,7 +859,7 @@ def test_transport_failure_is_redacted(tmp_path: Path) -> None:
         def send(self, _request: object) -> object:
             raise RuntimeError("raw transport detail")
     adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=BrokenTransport(), material=_material())
-    with pytest.raises(SatLiveSmokeError, match="SAT transport failed") as exc:
+    with pytest.raises(SatV15AdapterError, match="SAT transport failed") as exc:
         adapter.auth_smoke()
     diagnostic = exc.value.diagnostic
     assert diagnostic.stage == "auth_transport"
@@ -854,7 +872,7 @@ def test_transport_failure_is_redacted(tmp_path: Path) -> None:
 def test_http_failure_reports_only_safe_diagnostic_fields(tmp_path: Path) -> None:
     transport = FakeSoapTransport([SoapTransportResponse(500, body=b"<synthetic>server unavailable</synthetic>")])
     adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
-    with pytest.raises(SatLiveSmokeError, match="SAT transport returned a non-success status") as exc:
+    with pytest.raises(SatV15AdapterError, match="SAT transport returned a non-success status") as exc:
         adapter.auth_smoke()
     diagnostic = exc.value.diagnostic
     assert diagnostic.stage == "auth_transport"
@@ -869,7 +887,7 @@ def test_http_fault_failure_is_not_classified_as_tls(tmp_path: Path) -> None:
     transport = FakeSoapTransport([SoapTransportResponse(500, body=_soap("<soap:Fault />"))])
     adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
 
-    with pytest.raises(SatLiveSmokeError, match="SAT transport returned a non-success status") as exc:
+    with pytest.raises(SatV15AdapterError, match="SAT transport returned a non-success status") as exc:
         adapter.auth_smoke()
 
     diagnostic = exc.value.diagnostic
@@ -902,7 +920,7 @@ def test_transport_exception_classification_is_specific_and_redacted(
 
     adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=BrokenTransport(), material=_material())
 
-    with pytest.raises(SatLiveSmokeError) as exc:
+    with pytest.raises(SatV15AdapterError) as exc:
         adapter.auth_smoke()
 
     diagnostic = exc.value.diagnostic
@@ -916,7 +934,7 @@ def test_transport_exception_classification_is_specific_and_redacted(
 def test_missing_auth_authorization_reports_token_extract_stage(tmp_path: Path) -> None:
     transport = FakeSoapTransport([SoapTransportResponse(200, body=_soap("<sat:AutenticaResult />"))])
     adapter = SatLiveMetadataSmokeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
-    with pytest.raises(SatLiveSmokeError, match="SAT authentication response could not be parsed") as exc:
+    with pytest.raises(SatV15AdapterError, match="SAT authentication response could not be parsed") as exc:
         adapter.auth_smoke()
     diagnostic = exc.value.diagnostic
     assert diagnostic.stage == "token_extract"
@@ -971,8 +989,8 @@ def _neutral_adapter(
     *,
     material: SatEfirmMaterial | None = None,
     max_range_days: int = 1,
-) -> SatLiveV15MetadataAdapter:
-    return SatLiveV15MetadataAdapter(
+) -> SatV15Adapter:
+    return SatV15Adapter(
         profile=_profile(tmp_path),
         provider=DummySecretProvider(),
         transport=transport,

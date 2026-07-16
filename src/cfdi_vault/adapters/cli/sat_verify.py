@@ -466,7 +466,7 @@ def sat_package_download_smoke(
         typer.echo("error=metadata_parse_failed", err=True)
         typer.echo(f"reason={_safe_error_reason(str(exc))}", err=True)
         raise typer.Exit(code=1) from exc
-    except SatLiveSmokeError as exc:
+    except SatV15AdapterError as exc:
         _print_live_adapter_error(exc)
         raise typer.Exit(code=1) from exc
     _print_package_download_result(profile_id=profile, result=result)
@@ -505,7 +505,7 @@ def sat_metadata_verify_smoke(
     except LiveSmokeAdapterUnavailable as exc:
         typer.echo("error=live_adapter_unavailable", err=True)
         raise typer.Exit(code=1) from exc
-    except SatLiveSmokeError as exc:
+    except SatV15AdapterError as exc:
         _print_live_adapter_error(exc)
         raise typer.Exit(code=1) from exc
     _print_live_smoke_result(profile_id=profile, kind=query.request_type.value, direction=query.direction.value, result=result)
@@ -561,7 +561,7 @@ def sat_verify_live_gate(
     if preflight.ready and local_profile is not None and record is not None and provider is not None:
         try:
             oracle = run_verify_oracle_parity(profile=local_profile, record=record, provider=provider)
-        except SatLiveSmokeError as exc:
+        except SatV15AdapterError as exc:
             oracle = VerifyOracleParityResult(status="failed", reason=exc.error_kind)
         if oracle.status == "passed":
             wsdl_check = check_verify_wsdl_endpoint(
@@ -589,7 +589,7 @@ def sat_verify_live_gate(
                     )
                     verify_elapsed_ms = result.duration_ms
                     live_executed = True
-                except SatLiveSmokeError as exc:
+                except SatV15AdapterError as exc:
                     live_executed = _failure_stage_has_live_io(exc.failed_stage)
                     error_kind = exc.error_kind
                     verify_elapsed_ms = exc.diagnostic.duration_ms if exc.failed_stage == "verify_transport" else None
@@ -721,7 +721,7 @@ def sat_download_live_gate(
                         package_id = None
                     elif package_id is None:
                         error_kind = "package-ref-not-in-live-verify"
-                except SatLiveSmokeError as exc:
+                except SatV15AdapterError as exc:
                     live_executed = _failure_stage_has_live_io(exc.failed_stage)
                     error_kind = exc.error_kind
             elif package_id is not None:
@@ -739,7 +739,7 @@ def sat_download_live_gate(
             if package_id:
                 try:
                     oracle = run_download_oracle_parity(profile=local_profile, package_id=package_id, provider=provider)
-                except SatLiveSmokeError as exc:
+                except SatV15AdapterError as exc:
                     oracle = DownloadOracleParityResult(status="failed", reason=exc.error_kind)
                 if oracle.status == "passed":
                     try:
@@ -766,7 +766,7 @@ def sat_download_live_gate(
                             error_kind = download.action.value
                         elif not inspection.zip_valid:
                             error_kind = "zip-invalid"
-                    except SatLiveSmokeError as exc:
+                    except SatV15AdapterError as exc:
                         live_executed = _failure_stage_has_live_io(exc.failed_stage)
                         error_kind = exc.error_kind
                 else:

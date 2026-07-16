@@ -162,7 +162,7 @@ def test_productive_adapter_uses_fourteen_day_metadata_limit(monkeypatch) -> Non
     seen: dict[str, object] = {}
     monkeypatch.setattr(subject, "_setup_provider", lambda profile: f"provider:{profile}")
     monkeypatch.setattr(subject, "_metadata_recovery_transport", lambda: "transport")
-    monkeypatch.setattr(subject, "SatLiveV15MetadataAdapter", lambda **kwargs: seen.update(kwargs) or object())
+    monkeypatch.setattr(subject, "SatV15Adapter", lambda **kwargs: seen.update(kwargs) or object())
 
     subject._new_recovery_adapter(SimpleNamespace(profile_id="profile-synthetic"), object())
 

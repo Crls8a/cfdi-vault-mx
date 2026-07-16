@@ -185,7 +185,7 @@ def sat_backfill_submit(
     except LiveSmokeAdapterUnavailable as exc:
         typer.echo("error=live_adapter_unavailable", err=True)
         raise typer.Exit(code=1) from exc
-    except SatLiveSmokeError as exc:
+    except SatV15AdapterError as exc:
         _print_live_adapter_error(exc)
         raise typer.Exit(code=1) from exc
     _print_backfill_submit_result(plan=plan, selected=selected, result=result)

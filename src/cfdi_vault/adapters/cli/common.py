@@ -41,7 +41,7 @@ from cfdi_vault.sat_simulator import FakeSatScenario, FakeSatScenarioClient
 from cfdi_vault.sat_v15_adapter import (
     DIAGNOSTIC_STAGES,
     SatLiveMetadataSmokeAdapter,
-    SatLiveSmokeError,
+    SatV15AdapterError,
     _build_auth_envelope,
     load_sat_efirma_material,
 )
@@ -451,7 +451,7 @@ def _print_live_smoke_result(
     typer.echo("package_downloaded=no")
     typer.echo("recurrent_automation=no")
 
-def _print_live_adapter_error(exc: SatLiveSmokeError) -> None:
+def _print_live_adapter_error(exc: SatV15AdapterError) -> None:
     diagnostic = exc.diagnostic
     typer.echo("error=live_adapter_failed", err=True)
     typer.echo(f"failed_stage={diagnostic.stage}", err=True)

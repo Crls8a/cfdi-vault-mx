@@ -86,7 +86,7 @@ READINESS_HINT = "check auth SOAPAction, content-type, namespace, WS-Security, s
 DIAGNOSTIC_STAGES = ("preflight", "profile_load", "secret_resolve", "credential_load", "certificate_parse", "private_key_load", "xmlsig_sign", "auth_envelope_build", "auth_request_readiness", "auth_transport", "auth_response_parse", "token_extract", "metadata_request_build", "metadata_request_transport", "metadata_request_parse", "verify_request_build", "verify_request_readiness", "verify_transport", "verify_response_parse", "package_download", "package_process")
 LIVE_ERROR_KINDS = ("guard_failed", "profile_not_ready", "secret_unavailable", "credential_load_failed", "certificate_parse_failed", "private_key_load_failed", "xmlsig_failed", "envelope_build_failed", "transport_tls_failed", "tls_handshake_failed", "certificate_verify_failed", "client_cert_rejected", "connect_timeout", "proxy_connect_failed", "connection_reset", "connection_reset_during_post", "remote_closed_connection", "timeout", "verify_read_timeout", "transport_timeout", "transport_http_error", "http_status_error", "soap_fault", "token_missing", "token_parse_failed", "sat_status_error", "sat_duplicate_request", "sat_unauthorized", "sat_no_data", "sat_retryable", "sat_permanent", "unexpected_response", "unexpected_http_response", "client_configuration_error", "redaction_failure", "unknown_live_adapter_failure")
 @dataclass(frozen=True)
-class SatLiveDiagnosticEntry:
+class SatV15DiagnosticEntry:
     """One redacted live diagnostic stage result."""
     stage: str
     status: str
@@ -128,7 +128,7 @@ class SatLiveDiagnosticEntry:
     has_rfc_solicitante: bool | None = None
     has_signature: bool | None = None
     endpoint_url_ok: bool | None = None
-class SatLiveSmokeError(RuntimeError):
+class SatV15AdapterError(RuntimeError):
     """Safe live smoke failure without credential, token, SOAP, RFC, path, or id detail."""
     def __init__(
         self,
@@ -175,7 +175,7 @@ class SatLiveSmokeError(RuntimeError):
         endpoint_url_ok: bool | None = None,
     ) -> None:
         self.effect_unknown = effect_unknown
-        self.diagnostic = SatLiveDiagnosticEntry(
+        self.diagnostic = SatV15DiagnosticEntry(
             stage=stage,
             status="failed",
             error_kind=error_kind,
@@ -234,7 +234,7 @@ class SatEfirmMaterial:
 
 
 @dataclass(frozen=True)
-class SatLiveRequestAttempt:
+class SatV15RequestAttempt:
     """Redacted metadata request attempt details safe for CLI output."""
 
     result: SatRequestResult
@@ -334,10 +334,10 @@ class SatLiveSmokeSummary:
     request_body_bytes_len: int | None = None
     envelope_sha256: str | None = None
     signed_reference_count: int | None = None
-    diagnostics: tuple[SatLiveDiagnosticEntry, ...] = ()
+    diagnostics: tuple[SatV15DiagnosticEntry, ...] = ()
 
 
-def _request_summary(result: str, attempt: SatLiveRequestAttempt) -> SatLiveSmokeSummary:
+def _request_summary(result: str, attempt: SatV15RequestAttempt) -> SatLiveSmokeSummary:
     return SatLiveSmokeSummary(
         result=result,
         auth="authenticated",
@@ -359,7 +359,7 @@ def _redact_identifier(value: str) -> str:
     if len(value) <= 8:
         return "<redacted>"
     return f"{value[:4]}...{value[-4:]}"
-class SatLiveV15MetadataAdapter:
+class SatV15Adapter:
     """Internal real SAT v1.5 metadata adapter for request, verify, and download ports."""
 
     def __init__(
@@ -408,7 +408,7 @@ class SatLiveV15MetadataAdapter:
 
         normalized_request_id = request_id.strip()
         if not normalized_request_id:
-            raise SatLiveSmokeError(
+            raise SatV15AdapterError(
                 "live verify requires a stored request id",
                 stage="preflight",
                 error_kind="guard_failed",
@@ -422,7 +422,7 @@ class SatLiveV15MetadataAdapter:
 
         normalized_package_id = package_id.strip()
         if not normalized_package_id:
-            raise SatLiveSmokeError(
+            raise SatV15AdapterError(
                 "live package download requires a stored package id",
                 stage="preflight",
                 error_kind="guard_failed",
@@ -447,7 +447,7 @@ class SatLiveV15MetadataAdapter:
             return parse_authentication_response(response).authorization
         except (SatSoapParseError, ValueError) as exc:
             stage, kind = _auth_parse_failure(exc)
-            raise SatLiveSmokeError(
+            raise SatV15AdapterError(
                 "SAT authentication response could not be parsed",
                 stage=stage,
                 error_kind=kind,
@@ -456,7 +456,7 @@ class SatLiveV15MetadataAdapter:
                 payload_size=len(response),
                 duration_ms=_elapsed_ms(started),
             ) from None
-    def _send_request(self, authorization: str, query: DownloadQuery) -> SatLiveRequestAttempt:
+    def _send_request(self, authorization: str, query: DownloadQuery) -> SatV15RequestAttempt:
         operation = resolve_v15_request_operation(query)
         body = _build_stage("metadata_request_build", lambda: _build_request_envelope(query, self._load_material(), operation=operation))
         envelope_sha256 = _digest(body)
@@ -472,7 +472,7 @@ class SatLiveV15MetadataAdapter:
         )
         started = time.perf_counter()
         try:
-            return SatLiveRequestAttempt(
+            return SatV15RequestAttempt(
                 result=parse_download_request_response(response),
                 operation=operation,
                 request_body_bytes_len=len(body),
@@ -480,7 +480,7 @@ class SatLiveV15MetadataAdapter:
                 signed_reference_count=signed_reference_count,
             )
         except (SatSoapParseError, ValueError):
-            raise SatLiveSmokeError(
+            raise SatV15AdapterError(
                 "SAT request response could not be parsed",
                 stage="metadata_request_parse",
                 error_kind=_response_error_kind(response),
@@ -505,7 +505,7 @@ class SatLiveV15MetadataAdapter:
         try:
             result = parse_verification_response(response)
         except (SatSoapParseError, ValueError):
-            raise SatLiveSmokeError(
+            raise SatV15AdapterError(
                 "SAT verification response could not be parsed",
                 stage="verify_response_parse",
                 error_kind=_response_error_kind(response),
@@ -542,7 +542,7 @@ class SatLiveV15MetadataAdapter:
         try:
             return parse_package_download_response(response, package_id=package_id)
         except (SatSoapParseError, ValueError):
-            raise SatLiveSmokeError(
+            raise SatV15AdapterError(
                 "SAT package download response could not be parsed",
                 stage="package_download_parse",
                 error_kind=_response_error_kind(response),
@@ -600,7 +600,7 @@ class SatLiveV15MetadataAdapter:
                     if stage == "verify_transport" and failure.error_kind == "timeout"
                     else failure.error_kind
                 )
-                raise SatLiveSmokeError(
+                raise SatV15AdapterError(
                     "SAT transport failed while reading an error response",
                     stage=stage,
                     error_kind=error_kind,
@@ -617,7 +617,7 @@ class SatLiveV15MetadataAdapter:
                     operation=operation,
                     **_readiness_error_fields(readiness),
                 ) from None
-            raise SatLiveSmokeError(
+            raise SatV15AdapterError(
                 "SAT transport returned a non-success status",
                 stage=stage,
                 error_kind=_http_response_error_kind(response_body),
@@ -633,7 +633,7 @@ class SatLiveV15MetadataAdapter:
         except Exception as exc:
             failure = _classify_transport_failure(exc)
             error_kind = "verify_read_timeout" if stage == "verify_transport" and failure.error_kind == "timeout" else failure.error_kind
-            raise SatLiveSmokeError(
+            raise SatV15AdapterError(
                 "SAT transport failed",
                 stage=stage,
                 error_kind=error_kind,
@@ -650,7 +650,7 @@ class SatLiveV15MetadataAdapter:
                 **_readiness_error_fields(readiness),
             ) from None
         if not 200 <= response.status_code < 300:
-            raise SatLiveSmokeError(
+            raise SatV15AdapterError(
                 "SAT transport returned a non-success status",
                 stage=stage,
                 error_kind=_http_response_error_kind(response.body),
@@ -675,7 +675,7 @@ class SatLiveV15MetadataAdapter:
 
     def _require_metadata_only(self, query: DownloadQuery, *, max_range_days: int | None = None) -> None:
         if query.request_type.value != "metadata":
-            raise SatLiveSmokeError(
+            raise SatV15AdapterError(
                 "live SAT adapter requires metadata-only query",
                 stage="preflight",
                 error_kind="guard_failed",
@@ -687,7 +687,7 @@ class SatLiveV15MetadataAdapter:
         )
 
 
-class SatLiveMetadataSmokeAdapter(SatLiveV15MetadataAdapter):
+class SatLiveMetadataSmokeAdapter(SatV15Adapter):
     """Backward-compatible experimental smoke wrapper over the neutral v1.5 adapter."""
 
     def __init__(
@@ -783,7 +783,7 @@ def load_sat_efirma_material(
         cert_bytes = profile.certificate_path.read_bytes()
         key_bytes = profile.private_key_path.read_bytes()
     except OSError:
-        raise SatLiveSmokeError(
+        raise SatV15AdapterError(
             "local e.firma material could not be loaded",
             stage="credential_load",
             error_kind="credential_load_failed",
@@ -797,7 +797,7 @@ def load_sat_efirma_material(
             purpose=purpose,
         ).reveal()
     except CredentialProviderError:
-        raise SatLiveSmokeError(
+        raise SatV15AdapterError(
             "local e.firma material could not be loaded",
             stage="secret_resolve",
             error_kind="secret_unavailable",
@@ -808,7 +808,7 @@ def load_sat_efirma_material(
     try:
         cert = _load_certificate(cert_bytes)
     except (TypeError, ValueError):
-        raise SatLiveSmokeError(
+        raise SatV15AdapterError(
             "local e.firma certificate could not be parsed",
             stage="certificate_parse",
             error_kind="certificate_parse_failed",
@@ -819,7 +819,7 @@ def load_sat_efirma_material(
     try:
         private_key = _load_private_key(key_bytes, phrase.encode())
     except (TypeError, ValueError):
-        raise SatLiveSmokeError(
+        raise SatV15AdapterError(
             "local e.firma private key could not be loaded",
             stage="private_key_load",
             error_kind="private_key_load_failed",
@@ -905,7 +905,7 @@ def resolve_v15_request_operation(query: DownloadQuery) -> SatV15RequestOperatio
         return SatV15RequestOperation.RECEIVED
     if query.direction == DownloadDirection.ISSUED:
         return SatV15RequestOperation.ISSUED
-    raise SatLiveSmokeError(
+    raise SatV15AdapterError(
         "unsupported SAT v1.5 request operation",
         stage="preflight",
         error_kind="guard_failed",
@@ -932,8 +932,8 @@ def _validate_v15_live_metadata_query(query: DownloadQuery, *, max_range_days: i
         raise _v15_guard_error(f"live metadata smoke range must be at most {max_range_days} day(s)", "range-too-wide")
 
 
-def _v15_guard_error(message: str, hint: str) -> SatLiveSmokeError:
-    return SatLiveSmokeError(
+def _v15_guard_error(message: str, hint: str) -> SatV15AdapterError:
+    return SatV15AdapterError(
         message,
         stage="preflight",
         error_kind="guard_failed",
@@ -1125,7 +1125,7 @@ def _assert_auth_request_ready(
         except ValueError:
             failures.append(True)
     if any(failures):
-        raise SatLiveSmokeError(
+        raise SatV15AdapterError(
             "SAT auth request failed local readiness checks",
             stage="auth_request_readiness",
             error_kind="client_configuration_error",
@@ -1156,7 +1156,7 @@ def _assert_verify_request_ready(endpoint: str, body: bytes | None, headers: dic
     if any(failures):
         fields = readiness.error_fields()
         fields.pop("envelope_sha256", None)
-        raise SatLiveSmokeError(
+        raise SatV15AdapterError(
             "SAT verify request failed local readiness checks",
             stage="verify_request_readiness",
             error_kind="client_configuration_error",
@@ -1366,11 +1366,11 @@ def _build_stage(stage: str, build: object) -> bytes:
     started = time.perf_counter()
     try:
         return build()  # type: ignore[operator]
-    except SatLiveSmokeError:
+    except SatV15AdapterError:
         raise
     except Exception as exc:
         kind = "xmlsig_failed" if _looks_like_signing_exception(exc) else "envelope_build_failed"
-        raise SatLiveSmokeError(
+        raise SatV15AdapterError(
             "SAT SOAP envelope could not be built",
             stage=stage,
             error_kind=kind,

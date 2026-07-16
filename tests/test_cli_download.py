@@ -1394,7 +1394,7 @@ def test_download_live_smoke_adapter_failure_prints_redacted_diagnostic(
     _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=True, doctor_ok=True)
 
     def fail_live_smoke(_profile_id: str, _query: object) -> None:
-        raise common_cli.SatLiveSmokeError(
+        raise common_cli.SatV15AdapterError(
             "raw adapter detail must stay hidden",
             stage="auth_transport",
             error_kind="http_status_error",
@@ -1511,7 +1511,7 @@ def test_sat_diagnose_live_adapter_failure_prints_stage_summary(
     _patch_live_smoke_dependencies(monkeypatch, checkout=(True, True), interactive=True, doctor_ok=True)
 
     def fail_diagnose(_profile_id: str, _query: object) -> None:
-        raise common_cli.SatLiveSmokeError(
+        raise common_cli.SatV15AdapterError(
             "raw diagnostic detail must stay hidden",
             stage="metadata_request_transport",
             error_kind="transport_timeout",

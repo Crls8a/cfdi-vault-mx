@@ -222,7 +222,7 @@ def sat_auth_smoke(
     except LiveSmokeAdapterUnavailable as exc:
         typer.echo("error=live_adapter_unavailable", err=True)
         raise typer.Exit(code=1) from exc
-    except SatLiveSmokeError as exc:
+    except SatV15AdapterError as exc:
         _print_live_adapter_error(exc)
         raise typer.Exit(code=1) from exc
     _print_live_smoke_result(profile_id=profile, kind="auth", direction="n/a", result=result)
@@ -257,7 +257,7 @@ def sat_lint_auth_envelope(
             raise typer.Exit(code=1)
         try:
             envelope = _build_profile_auth_envelope(profile, auth_envelope_variant=auth_envelope_variant)
-        except SatLiveSmokeError as exc:
+        except SatV15AdapterError as exc:
             _print_live_adapter_error(exc)
             raise typer.Exit(code=1) from exc
         _print_auth_envelope_lint("profile-redacted", lint_auth_envelope(envelope, expected_header_action_order=auth_envelope_variant))

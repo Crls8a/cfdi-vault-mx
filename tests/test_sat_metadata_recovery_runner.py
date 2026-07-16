@@ -23,7 +23,7 @@ from cfdi_vault.sat_contract import (
     SatVerificationError,
     SatVerificationResult,
 )
-from cfdi_vault.sat_v15_adapter import SatLiveSmokeError
+from cfdi_vault.sat_v15_adapter import SatV15AdapterError
 from cfdi_vault.sat_metadata_recovery_runner import (
     MetadataRecoveryAdvanceOutcome,
     advance_metadata_recovery_once,
@@ -233,7 +233,7 @@ def test_runner_rejects_foreign_verify_identity_without_persisting_or_downloadin
 )
 def test_live_verify_errors_use_exact_transient_allowlist(tmp_path, error_kind, expected) -> None:  # type: ignore[no-untyped-def]
     _saved(tmp_path)
-    failure = SatLiveSmokeError(
+    failure = SatV15AdapterError(
         "synthetic safe failure", stage="verify_transport", error_kind=error_kind,
     )
 
@@ -246,22 +246,22 @@ def test_live_verify_errors_use_exact_transient_allowlist(tmp_path, error_kind, 
 @pytest.mark.parametrize(
     ("failure", "contacted"),
     [
-        (SatLiveSmokeError(stage="preflight"), False),
-        (SatLiveSmokeError(stage="secret_resolve"), False),
-        (SatLiveSmokeError(stage="credential_load"), False),
-        (SatLiveSmokeError(stage="certificate_parse"), False),
-        (SatLiveSmokeError(stage="private_key_load"), False),
-        (SatLiveSmokeError(stage="xmlsig_sign"), False),
-        (SatLiveSmokeError(stage="auth_envelope_build"), False),
-        (SatLiveSmokeError(stage="auth_request_readiness"), False),
-        (SatLiveSmokeError(stage="auth_transport"), True),
-        (SatLiveSmokeError(stage="auth_response_parse"), True),
-        (SatLiveSmokeError(stage="token_extract"), True),
-        (SatLiveSmokeError(stage="verify_request_build"), True),
-        (SatLiveSmokeError(stage="verify_request_readiness"), True),
-        (SatLiveSmokeError(stage="verify_transport"), True),
-        (SatLiveSmokeError(stage="verify_response_parse"), True),
-        (SatLiveSmokeError(stage="unknown"), False),
+        (SatV15AdapterError(stage="preflight"), False),
+        (SatV15AdapterError(stage="secret_resolve"), False),
+        (SatV15AdapterError(stage="credential_load"), False),
+        (SatV15AdapterError(stage="certificate_parse"), False),
+        (SatV15AdapterError(stage="private_key_load"), False),
+        (SatV15AdapterError(stage="xmlsig_sign"), False),
+        (SatV15AdapterError(stage="auth_envelope_build"), False),
+        (SatV15AdapterError(stage="auth_request_readiness"), False),
+        (SatV15AdapterError(stage="auth_transport"), True),
+        (SatV15AdapterError(stage="auth_response_parse"), True),
+        (SatV15AdapterError(stage="token_extract"), True),
+        (SatV15AdapterError(stage="verify_request_build"), True),
+        (SatV15AdapterError(stage="verify_request_readiness"), True),
+        (SatV15AdapterError(stage="verify_transport"), True),
+        (SatV15AdapterError(stage="verify_response_parse"), True),
+        (SatV15AdapterError(stage="unknown"), False),
         (TimeoutError(), True),
         (ConnectionError(), True),
         (SatPackageDownloadError(
@@ -359,11 +359,11 @@ def test_download_failures_are_terminal_and_redacted(tmp_path, result, expected,
 @pytest.mark.parametrize(
     ("failure", "contacted"),
     [
-        (SatLiveSmokeError(stage="private_key_load", effect_unknown=False), False),
-        (SatLiveSmokeError(stage="auth_transport", effect_unknown=True), True),
-        (SatLiveSmokeError(stage="package_download_build", effect_unknown=False), True),
-        (SatLiveSmokeError(stage="package_download_transport", effect_unknown=True), True),
-        (SatLiveSmokeError(stage="package_download_parse", effect_unknown=True), True),
+        (SatV15AdapterError(stage="private_key_load", effect_unknown=False), False),
+        (SatV15AdapterError(stage="auth_transport", effect_unknown=True), True),
+        (SatV15AdapterError(stage="package_download_build", effect_unknown=False), True),
+        (SatV15AdapterError(stage="package_download_transport", effect_unknown=True), True),
+        (SatV15AdapterError(stage="package_download_parse", effect_unknown=True), True),
         (ConnectionError(), True),
         (SatPackageDownloadError(
             operation=SatOperation.DOWNLOAD, code="synthetic", message="safe",
