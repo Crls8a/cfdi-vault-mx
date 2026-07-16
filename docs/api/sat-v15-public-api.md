@@ -134,6 +134,7 @@ supported LIB-005B and LIB-005C rows are public library API.
 | `cfdi_vault.sat_campaign_grant` | Internal reference-system authorization | Manifest- and commit-bound campaign grants and claims; never re-exported. |
 | `cfdi_vault.sat_campaign_manifest` | Internal reference-system model | Pure immutable campaign planning and transition policy; not a supported import. |
 | `cfdi_vault.sat_campaign_manifest_store` | Internal reference-system persistence | Private atomic campaign-manifest codec and transitions; not a supported import. |
+| `cfdi_vault.sat_campaign_query` | Internal reference-system planning | Pure profile-bound Metadata query derivation for outstanding campaign work; not a supported import. |
 | `cfdi_vault.sat_campaign_runner` | Internal reference-system orchestration | One-shot campaign reservation, recovery binding, and claim planning; no stable consumer surface. |
 | `cfdi_vault.sat_campaign_submission_effects` | Internal live orchestration | Sequential grant-authorized Metadata submission effects; never selected implicitly. |
 | `cfdi_vault.sat_contract` | LIB-005B public contract | Supported typed results, errors, and outcome policy remain side-effect free. |
