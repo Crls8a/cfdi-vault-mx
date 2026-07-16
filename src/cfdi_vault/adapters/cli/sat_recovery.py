@@ -22,7 +22,6 @@ from cfdi_vault.live_permit import (
     validate_consumed_metadata_recovery_permit,
     validate_consumed_metadata_recovery_permit_id,
 )
-from cfdi_vault.sat_v15_adapter import SatLiveV15MetadataAdapter
 from cfdi_vault.sat_metadata_observation import MetadataObservationError
 from cfdi_vault.sat_metadata_observation_integration import (
     observe_metadata_recovery,
@@ -41,6 +40,7 @@ from cfdi_vault.sat_metadata_recovery_state import (
 )
 from cfdi_vault.sat_metadata_submission import MetadataSubmissionError, SubmissionStatus, submit_metadata_recovery_once
 from cfdi_vault.sat_transport import GuardedSoapHttpTransport, LiveSatGuardInput
+from cfdi_vault.sat_v15_adapter import SatLiveV15MetadataAdapter
 from cfdi_vault.storage import LocalStorage
 
 from .common import (
