@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 
@@ -24,10 +25,23 @@ def test_locked_roundtrip_is_atomic_and_retains_stable_root_lock(tmp_path) -> No
     path = subject.secure_state_path(storage, NAME, repo_root=repository)
     with subject.secure_state_transaction(storage, NAME, repo_root=repository) as transaction:
         assert transaction.read() is None
-        transaction.replace(b"first")
+        outcome = transaction.replace(b"first")
+        assert outcome == subject.SecureStateWriteOutcome(
+            committed=True, uncertain=False, sha256=hashlib.sha256(b"first").hexdigest(),
+        )
     with subject.secure_state_transaction(storage, NAME, repo_root=repository) as transaction:
         transaction.replace(b"second")
     assert path.read_bytes() == b"second" and (storage / ".secure-state-file.lock").exists()
+
+
+def test_replace_is_a_single_transition_and_cannot_be_retried_in_transaction(tmp_path) -> None:
+    repository, storage = _roots(tmp_path)
+    with subject.secure_state_transaction(storage, NAME, repo_root=repository) as transaction:
+        transaction.replace(b"first")
+        with pytest.raises(subject.SecureStateFileError, match="state-file-transition-already-committed") as raised:
+            transaction.replace(b"second")
+    assert raised.value.committed and not raised.value.uncertain and not raised.value.retry_safe
+    assert subject.secure_state_path(storage, NAME, repo_root=repository).read_bytes() == b"first"
 
 
 def test_root_and_filename_are_canonical_absolute_and_external(tmp_path) -> None:
@@ -36,7 +50,11 @@ def test_root_and_filename_are_canonical_absolute_and_external(tmp_path) -> None
         subject.secure_state_path(Path("relative"), NAME, repo_root=repository)
     with pytest.raises(subject.SecureStateFileError, match="storage-root-inside-repository"):
         subject.secure_state_path(repository / "private", NAME, repo_root=repository)
-    for unsafe in ("../escape", "state/file", ".hidden", "x" * 129, True):
+    for unsafe in (
+        "../escape", "state/file", "state\\file", "name:", ".hidden", "name.", "name ",
+        "name..json", "con", "con.json", "aux.txt", "com1.log", "lpt9", "Name.json",
+        "méxico.json", "x" * 129, True,
+    ):
         with pytest.raises(subject.SecureStateFileError, match="state-file-name-invalid"):
             subject.secure_state_path(tmp_path / "external", unsafe, repo_root=repository)  # type: ignore[arg-type]
     target, configured = tmp_path / "target", tmp_path / "configured"
@@ -95,10 +113,10 @@ def test_contention_is_busy_for_the_complete_transaction(tmp_path, monkeypatch) 
     repository, storage = _roots(tmp_path)
     entered, release, original = Event(), Event(), subject._atomic_write
 
-    def blocked(path, payload):  # type: ignore[no-untyped-def]
+    def blocked(path, payload, verify_namespace):  # type: ignore[no-untyped-def]
         entered.set()
         release.wait()
-        original(path, payload)
+        original(path, payload, verify_namespace)
 
     monkeypatch.setattr(subject, "_atomic_write", blocked)
     with ThreadPoolExecutor(max_workers=1) as pool:
@@ -123,12 +141,95 @@ def test_failed_replace_preserves_state_cleans_temp_and_success_fsyncs_parent(tm
     _write(storage, repository)
     path, original_replace = subject.secure_state_path(storage, NAME, repo_root=repository), subject.os.replace
     monkeypatch.setattr(subject.os, "replace", Mock(side_effect=OSError("synthetic")))
-    with pytest.raises(subject.SecureStateFileError, match="state-file-write-failed"):
+    with pytest.raises(subject.SecureStateFileError, match="state-file-write-failed") as raised:
         with subject.secure_state_transaction(storage, NAME, repo_root=repository) as transaction:
             transaction.replace(b"changed")
+    assert not raised.value.committed and not raised.value.uncertain and raised.value.retry_safe
     assert path.read_bytes() == b"payload" and not tuple(path.parent.glob(f".{NAME}.tmp-*"))
     fsync_directory = Mock()
     monkeypatch.setattr(subject.os, "replace", original_replace)
     monkeypatch.setattr(subject, "_fsync_directory", fsync_directory)
     _write(storage, repository)
     fsync_directory.assert_called_once_with(path.parent)
+
+
+def test_state_directory_swap_is_caught_before_any_outside_write(tmp_path) -> None:
+    repository, storage = _roots(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    with subject.secure_state_transaction(storage, NAME, repo_root=repository) as transaction:
+        (storage / "state").rename(storage / "original-state")
+        (storage / "state").symlink_to(outside, target_is_directory=True)
+        with pytest.raises(subject.SecureStateFileError, match="state-file-path-invalid") as raised:
+            transaction.replace(b"must-not-escape")
+    assert not raised.value.committed and raised.value.retry_safe and not tuple(outside.iterdir())
+
+
+def test_named_temp_substitution_before_replace_preserves_previous_state(tmp_path, monkeypatch) -> None:
+    repository, storage = _roots(tmp_path)
+    _write(storage, repository)
+    path = subject.secure_state_path(storage, NAME, repo_root=repository)
+    original_verify = subject._verify_named_temp
+
+    def substitute(temporary, parent, expected, digest):  # type: ignore[no-untyped-def]
+        temporary.unlink()
+        temporary.write_bytes(b"foreign")
+        original_verify(temporary, parent, expected, digest)
+
+    monkeypatch.setattr(subject, "_verify_named_temp", substitute)
+    with pytest.raises(subject.SecureStateFileError, match="state-file-path-invalid") as raised:
+        with subject.secure_state_transaction(storage, NAME, repo_root=repository) as transaction:
+            transaction.replace(b"replacement")
+    assert path.read_bytes() == b"payload" and not raised.value.committed and raised.value.retry_safe
+
+
+def test_substitution_during_replace_is_commit_uncertain_never_success(tmp_path, monkeypatch) -> None:
+    repository, storage = _roots(tmp_path)
+    _write(storage, repository)
+    original_replace = subject.os.replace
+
+    def substitute(source, target):  # type: ignore[no-untyped-def]
+        Path(source).unlink()
+        Path(source).write_bytes(b"foreign")
+        original_replace(source, target)
+
+    monkeypatch.setattr(subject.os, "replace", substitute)
+    with pytest.raises(subject.SecureStateFileError, match="state-file-commit-uncertain") as raised:
+        with subject.secure_state_transaction(storage, NAME, repo_root=repository) as transaction:
+            transaction.replace(b"replacement")
+    assert raised.value.committed and raised.value.uncertain and not raised.value.retry_safe
+
+
+def test_state_creation_and_commit_fsync_their_parent_directories(tmp_path, monkeypatch) -> None:
+    repository, storage = _roots(tmp_path)
+    fsync_directory = Mock()
+    monkeypatch.setattr(subject, "_fsync_directory", fsync_directory)
+    _write(storage, repository)
+    assert fsync_directory.call_args_list == [call(storage.resolve()), call((storage / "state").resolve())]
+
+
+def test_post_visibility_fsync_and_lock_release_failures_are_terminal(tmp_path, monkeypatch) -> None:
+    repository, storage = _roots(tmp_path)
+    _write(storage, repository)
+    state = (storage / "state").resolve()
+
+    def fail_state_fsync(path):  # type: ignore[no-untyped-def]
+        if path == state:
+            raise OSError("synthetic fsync failure")
+
+    monkeypatch.setattr(subject, "_fsync_directory", fail_state_fsync)
+    with pytest.raises(subject.SecureStateFileError, match="state-file-commit-uncertain") as raised:
+        _write(storage, repository)
+    assert raised.value.committed and raised.value.uncertain and not raised.value.retry_safe
+    monkeypatch.undo()
+    original_lock = subject._operate_lock
+
+    def fail_release(descriptor, *, acquire):  # type: ignore[no-untyped-def]
+        if not acquire:
+            raise OSError("synthetic release failure")
+        original_lock(descriptor, acquire=acquire)
+
+    monkeypatch.setattr(subject, "_operate_lock", fail_release)
+    with pytest.raises(subject.SecureStateFileError, match="state-file-commit-uncertain") as raised:
+        _write(storage, repository)
+    assert raised.value.committed and raised.value.uncertain and not raised.value.retry_safe

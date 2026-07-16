@@ -1,41 +1,96 @@
-"""Internal canonical, locked, atomic storage for opaque local state bytes."""
+"""Internal canonical, locked, atomic storage for opaque local state bytes.
+
+The canonical storage root is an explicit ACL trust boundary. Same-user hostile
+replacement of that root itself cannot be pinned portably without a dependency
+and is out of scope; every detectable named-path identity change fails closed.
+"""
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import stat
 import sys
 import tempfile
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_NAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}")
 _LOCK_NAME = ".secure-state-file.lock"
+_RESERVED = {"con", "prn", "aux", "nul"} | {f"{prefix}{number}" for prefix in ("com", "lpt") for number in range(1, 10)}
+_Identity = tuple[int, int]
 
 
 class SecureStateFileError(ValueError):
     """Report filesystem failures with a sanitized reason only."""
 
-    def __init__(self, reason: str) -> None:
-        self.reason = reason
+    def __init__(self, reason: str, *, committed: bool = False, uncertain: bool = False) -> None:
+        self.reason, self.committed, self.uncertain = reason, committed, uncertain
         super().__init__(reason)
 
+    @property
+    def retry_safe(self) -> bool:
+        """Return whether a caller may safely retry without reconciliation."""
+        return not self.committed and not self.uncertain
 
-@dataclass(frozen=True, repr=False)
+
+@dataclass(frozen=True)
+class SecureStateWriteOutcome:
+    """Confirm one visible, hash-verified atomic replacement."""
+
+    committed: bool
+    uncertain: bool
+    sha256: str
+
+
+@dataclass
+class _CommitState:
+    committed: bool = False
+
+
+@dataclass(frozen=True)
+class _NamespacePin:
+    root: Path
+    state: Path
+    root_identity: _Identity
+    state_identity: _Identity
+
+    def validate(self) -> None:
+        _validate_directory_identity(self.root, self.root.parent, self.root_identity)
+        _validate_directory_identity(self.state, self.root, self.state_identity)
+
+
+@dataclass(repr=False)
 class _SecureStateTransaction:
     path: Path
+    namespace: _NamespacePin
+    commit_state: _CommitState
 
     def read(self) -> bytes | None:
-        return _read(self.path)
+        self.namespace.validate()
+        payload = _read(self.path)
+        self.namespace.validate()
+        return payload
 
-    def replace(self, payload: bytes) -> None:
+    def replace(self, payload: bytes) -> SecureStateWriteOutcome:
         if type(payload) is not bytes:
             raise SecureStateFileError("state-file-payload-invalid")
-        _atomic_write(self.path, payload)
+        if self.commit_state.committed:
+            raise SecureStateFileError(
+                "state-file-transition-already-committed", committed=True,
+            )
+        try:
+            outcome = _atomic_write(self.path, payload, self.namespace.validate)
+        except SecureStateFileError as exc:
+            self.commit_state.committed |= exc.committed
+            raise
+        self.commit_state.committed = True
+        return outcome
 
 
 def secure_state_path(
@@ -54,8 +109,12 @@ def secure_state_transaction(
     """Hold the stable root lock across an opaque read-transition-replace cycle."""
     _validate_name(filename)
     root = _canonical_root(storage_root, repo_root, create=True)
-    with _exclusive_lock(root):
-        yield _SecureStateTransaction(_state_path(root, filename, create=True))
+    root_identity, commit_state = _directory_identity(root, root.parent), _CommitState()
+    with _exclusive_lock(root, root_identity, commit_state):
+        path = _state_path(root, filename, create=True)
+        namespace = _NamespacePin(root, path.parent, root_identity, _directory_identity(path.parent, root))
+        namespace.validate()
+        yield _SecureStateTransaction(path, namespace, commit_state)
 
 
 def _canonical_root(
@@ -87,7 +146,12 @@ def _state_path(root: Path, filename: str, *, create: bool) -> Path:
     state = root / "state"
     try:
         if create:
-            state.mkdir(exist_ok=True)
+            try:
+                state.mkdir()
+            except FileExistsError:
+                pass
+            else:
+                _fsync_directory(root)
         elif not (state.exists() or state.is_symlink()):
             return state / filename
         _validate_directory(state, root)
@@ -99,7 +163,9 @@ def _state_path(root: Path, filename: str, *, create: bool) -> Path:
 
 
 def _validate_name(value: object) -> None:
-    if type(value) is not str or not _NAME_RE.fullmatch(value):
+    base = value.split(".", 1)[0] if type(value) is str else ""
+    if (type(value) is not str or not _NAME_RE.fullmatch(value) or value.endswith(".")
+            or ".." in value or base in _RESERVED):
         raise SecureStateFileError("state-file-name-invalid")
 
 
@@ -107,6 +173,17 @@ def _validate_directory(path: Path, parent: Path) -> None:
     info = os.lstat(path)
     if (not stat.S_ISDIR(info.st_mode) or _linked(info)
             or path.resolve(strict=True).parent != parent.resolve(strict=True)):
+        raise SecureStateFileError("state-file-path-invalid")
+
+
+def _directory_identity(path: Path, parent: Path) -> _Identity:
+    _validate_directory(path, parent)
+    info = os.lstat(path)
+    return info.st_dev, info.st_ino
+
+
+def _validate_directory_identity(path: Path, parent: Path, expected: _Identity) -> None:
+    if _directory_identity(path, parent) != expected:
         raise SecureStateFileError("state-file-path-invalid")
 
 
@@ -139,9 +216,12 @@ def _validate_open_file(path: Path, parent: Path, descriptor: int) -> os.stat_re
 
 
 @contextmanager
-def _exclusive_lock(root: Path) -> Iterator[None]:
+def _exclusive_lock(
+    root: Path, root_identity: _Identity, commit_state: _CommitState,
+) -> Iterator[None]:
     path, descriptor = root / _LOCK_NAME, None
     try:
+        _validate_directory_identity(root, root.parent, root_identity)
         _validate_file(path, root, missing=True)
         descriptor = os.open(
             path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600,
@@ -155,6 +235,7 @@ def _exclusive_lock(root: Path) -> Iterator[None]:
         except (BlockingIOError, PermissionError):
             raise SecureStateFileError("state-file-busy") from None
         _validate_open_file(path, root, descriptor)
+        _validate_directory_identity(root, root.parent, root_identity)
     except SecureStateFileError:
         if descriptor is not None:
             os.close(descriptor)
@@ -176,7 +257,10 @@ def _exclusive_lock(root: Path) -> Iterator[None]:
         except OSError:
             release_failed = True
         if release_failed and not failed:
-            raise SecureStateFileError("state-file-lock-release-failed") from None
+            reason = "state-file-commit-uncertain" if commit_state.committed else "state-file-lock-release-failed"
+            raise SecureStateFileError(
+                reason, committed=commit_state.committed, uncertain=commit_state.committed,
+            ) from None
 
 
 def _operate_lock(descriptor: int, *, acquire: bool) -> None:
@@ -211,39 +295,104 @@ def _read(path: Path) -> bytes | None:
             os.close(descriptor)
 
 
-def _atomic_write(path: Path, payload: bytes) -> None:
+def _atomic_write(
+    path: Path, payload: bytes, verify_namespace: Callable[[], None],
+) -> SecureStateWriteOutcome:
     """Write and fsync a verified same-directory temp before atomic replacement."""
     descriptor: int | None = None
     temporary: Path | None = None
     created: os.stat_result | None = None
+    visible = False
+    digest = hashlib.sha256(payload).hexdigest()
     try:
+        verify_namespace()
         descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
         temporary = Path(name)
         created = os.fstat(descriptor)
         _validate_open_file(temporary, path.parent, descriptor)
-        stream = os.fdopen(descriptor, "wb")
-        descriptor = None
+        stream = os.fdopen(os.dup(descriptor), "wb")
         with stream:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        _validate_file(temporary, path.parent, missing=False)
-        current = os.lstat(temporary)
-        if (current.st_dev, current.st_ino) != (created.st_dev, created.st_ino):
+        _validate_open_file(temporary, path.parent, descriptor)
+        if _hash_descriptor(descriptor) != digest:
             raise SecureStateFileError("state-file-path-invalid")
-        _validate_file(path, path.parent, missing=True)
-        os.replace(temporary, path)
+        verify_namespace()
+        os.close(descriptor)
+        descriptor = None
+        _verify_named_temp(temporary, path.parent, created, digest)
+        verify_namespace()
+        previous = _file_snapshot(path)
+        verify_namespace()
+        try:
+            os.replace(temporary, path)
+        except OSError:
+            try:
+                visible = _file_snapshot(path) != previous
+            except (OSError, SecureStateFileError):
+                visible = True
+            raise
+        visible = True
         temporary = None
+        verify_namespace()
+        _verify_named_file(path, path.parent, created, digest)
         _fsync_directory(path.parent)
+        return SecureStateWriteOutcome(True, False, digest)
     except SecureStateFileError:
+        if visible:
+            raise SecureStateFileError(
+                "state-file-commit-uncertain", committed=True, uncertain=True,
+            ) from None
         raise
     except OSError:
+        if visible:
+            raise SecureStateFileError(
+                "state-file-commit-uncertain", committed=True, uncertain=True,
+            ) from None
         raise SecureStateFileError("state-file-write-failed") from None
     finally:
         if descriptor is not None:
             os.close(descriptor)
         if temporary is not None and created is not None:
             _safe_unlink(temporary, created)
+
+
+def _hash_descriptor(descriptor: int) -> str:
+    digest = hashlib.sha256()
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    while chunk := os.read(descriptor, 65_536):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _file_snapshot(path: Path) -> tuple[_Identity, str] | None:
+    descriptor: int | None = None
+    try:
+        _validate_file(path, path.parent, missing=False)
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        opened = _validate_open_file(path, path.parent, descriptor)
+        return (opened.st_dev, opened.st_ino), _hash_descriptor(descriptor)
+    except FileNotFoundError:
+        return None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _verify_named_file(
+    path: Path, parent: Path, expected: os.stat_result, digest: str,
+) -> None:
+    if _file_snapshot(path) != ((expected.st_dev, expected.st_ino), digest):
+        raise SecureStateFileError("state-file-path-invalid")
+
+
+def _verify_named_temp(
+    path: Path, parent: Path, expected: os.stat_result, digest: str,
+) -> None:
+    _verify_named_file(path, parent, expected, digest)
+
+
 def _safe_unlink(path: Path, expected: os.stat_result) -> None:
     """Remove only the exact temp inode created by this transaction."""
     try:
