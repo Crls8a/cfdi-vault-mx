@@ -17,8 +17,18 @@ NOW = datetime(2026, 6, 30, tzinfo=timezone.utc)
 COMMIT = "c" * 40
 RECOVER_ARGS = ["metadata-recover-live", "--profile", "profile-synthetic", "--direction", "received",
                 "--from", "2026-06-30", "--to", "2026-06-30", "--authorization", "permit-synthetic"]
+PRODUCTIVE_COMMANDS = (RECOVER_ARGS, ["metadata-recovery-runner", "--profile", "profile-synthetic"])
+ENDPOINT_OVERRIDES = (
+    "CFDI_VAULT_SAT_AUTH_ENDPOINT",
+    "CFDI_VAULT_SAT_REQUEST_ENDPOINT",
+    "CFDI_VAULT_SAT_VERIFY_ENDPOINT",
+    "CFDI_VAULT_SAT_DOWNLOAD_ENDPOINT",
+)
 @pytest.fixture(autouse=True)
 def _observation_hooks(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.delenv("CI", raising=False)
+    for name in ENDPOINT_OVERRIDES:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(subject, "prepare_metadata_observation_context",
                         lambda *_a, **_k: SimpleNamespace(tested_commit=COMMIT))
     monkeypatch.setattr(subject, "observe_metadata_recovery", lambda *_a, **_k: 0)
@@ -66,6 +76,72 @@ def _patch_front(monkeypatch, tmp_path: Path, events: list[str]) -> SimpleNamesp
     monkeypatch.setattr(subject, "_recovery_now", lambda: NOW)
     monkeypatch.setattr(subject, "list_metadata_recovery_states", lambda *_a, **_k: ())
     return profile
+def _forbid_productive_side_effects(monkeypatch, events: list[str]) -> None:  # type: ignore[no-untyped-def]
+    names = (
+        "_safe_recovery_query", "_safe_recovery_profile", "_checked_recovery_repo_root",
+        "_validate_recovery_state_path", "prepare_metadata_observation_context",
+        "observe_metadata_recovery", "list_metadata_recovery_states",
+        "select_due_metadata_recovery", "settle_metadata_recovery_locally",
+        "_authorize_metadata_recovery", "load_live_execution_permit",
+        "validate_and_consume_live_permit", "validate_consumed_metadata_recovery_permit",
+        "validate_consumed_metadata_recovery_permit_id", "_new_recovery_storage",
+        "_new_recovery_adapter", "submit_metadata_recovery_once",
+        "advance_metadata_recovery_once", "load_metadata_recovery_state", "_recovery_now",
+    )
+    for name in names:
+        monkeypatch.setattr(subject, name, lambda *_a, _name=name, **_k: events.append(_name))
+
+
+@pytest.mark.parametrize("args", PRODUCTIVE_COMMANDS)
+@pytest.mark.parametrize("ci_value", ("1", "true", " YES ", "on", "unexpected"))
+def test_productive_recovery_rejects_active_ci_before_every_side_effect(
+    monkeypatch, args: list[str], ci_value: str,
+) -> None:
+    events: list[str] = []
+    _forbid_productive_side_effects(monkeypatch, events)
+
+    result = CliRunner().invoke(_app(), args, env={"CI": ci_value})
+
+    assert result.exit_code == 1
+    assert events == []
+    assert result.output == "error=live-ci-forbidden\n"
+    assert ci_value not in result.output and "CI" not in result.output
+
+
+@pytest.mark.parametrize("args", PRODUCTIVE_COMMANDS)
+@pytest.mark.parametrize("name", ENDPOINT_OVERRIDES)
+@pytest.mark.parametrize("value", ("", "https://secret.invalid/path?token=synthetic"))
+def test_productive_recovery_rejects_endpoint_override_presence_without_leak(
+    monkeypatch, args: list[str], name: str, value: str,
+) -> None:
+    events: list[str] = []
+    _forbid_productive_side_effects(monkeypatch, events)
+
+    result = CliRunner().invoke(_app(), args, env={name: value})
+
+    assert result.exit_code == 1
+    assert events == []
+    assert result.output == "error=canonical-endpoints-required\n"
+    assert name not in result.output
+    if value:
+        assert value not in result.output
+
+
+@pytest.mark.parametrize("args", PRODUCTIVE_COMMANDS)
+@pytest.mark.parametrize("ci_value", ("", "0", "false", " FALSE ", "no", "off"))
+def test_productive_recovery_false_ci_values_reach_normal_command_preflight(
+    monkeypatch, args: list[str], ci_value: str,
+) -> None:
+    events: list[str] = []
+    first = "_safe_recovery_query" if args[0] == "metadata-recover-live" else "_safe_recovery_profile"
+    monkeypatch.setattr(subject, first, lambda *_a, **_k: events.append("normal") or (_ for _ in ()).throw(
+        subject._RecoveryCliError("normal-preflight-reached")
+    ))
+
+    result = CliRunner().invoke(_app(), args, env={"CI": ci_value})
+
+    assert events == ["normal"]
+    assert result.output == "error=normal-preflight-reached\n"
 @pytest.mark.parametrize(("consumed", "expected"), [(False, "consume"), (True, "continue")])
 def test_authorization_consumes_once_then_validates_read_only(monkeypatch, consumed: bool, expected: str) -> None:
     permit, calls = SimpleNamespace(consumed=consumed, permit_id="permit-synthetic"), []
@@ -80,6 +156,17 @@ def test_authorization_consumes_once_then_validates_read_only(monkeypatch, consu
 
     assert result is permit and calls[0][0] == expected
     assert calls[0][1]["date_from"] == calls[0][1]["date_to"] == "2026-06-30"
+
+
+def test_productive_adapter_uses_fourteen_day_metadata_limit(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(subject, "_setup_provider", lambda profile: f"provider:{profile}")
+    monkeypatch.setattr(subject, "_metadata_recovery_transport", lambda: "transport")
+    monkeypatch.setattr(subject, "SatLiveV15MetadataAdapter", lambda **kwargs: seen.update(kwargs) or object())
+
+    subject._new_recovery_adapter(SimpleNamespace(profile_id="profile-synthetic"), object())
+
+    assert seen["max_range_days"] == 14
 
 
 def test_recover_live_orders_gates_and_prints_only_aggregates(monkeypatch, tmp_path: Path) -> None:

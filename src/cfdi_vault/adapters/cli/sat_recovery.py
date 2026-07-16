@@ -13,6 +13,7 @@ import typer
 
 import cfdi_vault.sat_metadata_recovery_state as recovery_state
 from cfdi_vault.live_permit import (
+    MAX_METADATA_RECOVERY_RANGE_DAYS,
     METADATA_RECOVERY_LIVE_SCOPE,
     LivePermitError,
     load_live_execution_permit,
@@ -49,6 +50,7 @@ from .common import (
     _load_download_profile,
     _setup_provider,
 )
+from .sat_live_environment import canonical_live_recovery_preflight
 
 _RECOVERY_REF_RE = re.compile(r"run-[0-9a-f]{12}")
 
@@ -66,9 +68,12 @@ def sat_metadata_recover_live(
     to_date: str = typer.Option(..., "--to", help="Inclusive end date: YYYY-MM-DD."),
     authorization: str = typer.Option(..., "--authorization", help="Exact local recovery permit id."),
 ) -> None:
-    """Submit or advance one permitted Metadata recovery using local state, sanitized aggregate output, and its opaque local recovery reference."""
+    """Submit or advance one permitted Metadata recovery using local state, sanitized aggregate output, and its opaque local recovery reference. Requires canonical SAT endpoints and a non-CI environment."""
 
     try:
+        rejection = canonical_live_recovery_preflight()
+        if rejection is not None:
+            raise _RecoveryCliError(rejection)
         query, local_profile = _safe_recovery_query(profile, direction, from_date, to_date)
         repo_root = _checked_recovery_repo_root()
         _validate_recovery_state_path(local_profile, repo_root)
@@ -157,9 +162,12 @@ def sat_metadata_recovery_status(
 def sat_metadata_recovery_runner(
     profile: str = typer.Option(..., "--profile", help="Local setup profile id."),
 ) -> None:
-    """Print the opaque local recovery reference and sanitized totals after advancing one due recovery."""
+    """Print the opaque local recovery reference and sanitized totals after advancing one due recovery. Requires canonical SAT endpoints and a non-CI environment."""
 
     try:
+        rejection = canonical_live_recovery_preflight()
+        if rejection is not None:
+            raise _RecoveryCliError(rejection)
         local_profile = _safe_recovery_profile(profile)
         repo_root = _checked_recovery_repo_root()
         _validate_recovery_state_path(local_profile, repo_root)
@@ -259,7 +267,8 @@ def _new_recovery_storage(root: Path) -> LocalStorage:
     return LocalStorage(root)
 def _new_recovery_adapter(profile, _permit):  # type: ignore[no-untyped-def]
     return SatLiveV15MetadataAdapter(profile=profile, provider=_setup_provider(profile.profile_id),
-                                    transport=_metadata_recovery_transport(), max_range_days=7)
+                                    transport=_metadata_recovery_transport(),
+                                    max_range_days=MAX_METADATA_RECOVERY_RANGE_DAYS)
 def _metadata_recovery_transport() -> GuardedSoapHttpTransport:
     """Build the live transport only after exact permit and repository gates pass."""
 

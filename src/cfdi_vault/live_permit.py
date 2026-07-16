@@ -50,6 +50,7 @@ PERMIT_INDENT = 2
 MAX_EXPIRES_MINUTES = 15
 MAX_RANGE_DAYS = 1
 MAX_BACKFILL_RANGE_DAYS = 7
+MAX_METADATA_RECOVERY_RANGE_DAYS = 14
 MAX_ATTEMPTS = 1
 METADATA_RECOVERY_CONTINUATION_DAYS = 7
 PERMIT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
@@ -565,10 +566,11 @@ def _write_permit_document(path: Path, permit: LiveExecutionPermit) -> None:
 
 
 def _max_range_days(scope: str) -> int:
+    if scope == METADATA_RECOVERY_LIVE_SCOPE:
+        return MAX_METADATA_RECOVERY_RANGE_DAYS
     wide_scopes = {
         BACKFILL_SUBMIT_SCOPE,
         METADATA_LIVE_SMOKE_SCOPE,
-        METADATA_RECOVERY_LIVE_SCOPE,
         PACKAGE_DOWNLOAD_SCOPE,
     }
     return MAX_BACKFILL_RANGE_DAYS if scope in wide_scopes else MAX_RANGE_DAYS

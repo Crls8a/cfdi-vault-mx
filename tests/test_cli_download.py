@@ -704,8 +704,13 @@ def test_live_metadata_request_smoke_persists_accepted_id_without_printing_full_
     assert full_request_id not in repr(result)
 
 
-@pytest.mark.parametrize("scope", ["metadata_backfill_submit", "metadata_recovery_live"])
-def test_live_permit_create_prints_week_scope_max_range(tmp_path: Path, scope: str) -> None:
+@pytest.mark.parametrize(
+    ("scope", "expected_days"),
+    [("metadata_backfill_submit", "7"), ("metadata_recovery_live", "14")],
+)
+def test_live_permit_create_prints_scoped_max_range(
+    tmp_path: Path, scope: str, expected_days: str,
+) -> None:
     appdata_root = tmp_path / "appdata"
 
     result = CliRunner().invoke(
@@ -737,7 +742,7 @@ def test_live_permit_create_prints_week_scope_max_range(tmp_path: Path, scope: s
     assert result.exit_code == 0, result.output
     lines = _key_value_lines(result.output)
     assert lines["scope"] == scope
-    assert lines["max_range_days"] == "7"
+    assert lines["max_range_days"] == expected_days
 
 
 def test_sat_metadata_request_state_lists_pending_refs_redacted(

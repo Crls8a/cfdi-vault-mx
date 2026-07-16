@@ -87,6 +87,7 @@ def test_metadata_recovery_help_documents_required_options_and_safe_output() -> 
     assert "local state" in recover.output
     assert "sanitized aggregate output" in recover.output
     assert "opaque local recovery reference" in recover.output
+    assert "canonical SAT" in recover.output and "non-CI" in recover.output
 
     assert status.exit_code == 0, status.output
     for option in ("--profile", "--recovery-ref"):
@@ -99,5 +100,6 @@ def test_metadata_recovery_help_documents_required_options_and_safe_output() -> 
     assert runner_help.exit_code == 0, runner_help.output
     assert "--profile" in runner_help.output
     assert "opaque local recovery reference" in runner_help.output
+    assert "canonical SAT" in runner_help.output and "non-CI" in runner_help.output
     for forbidden in ("--authorization", "--recovery-ref", "--direction", "--from", "--to"):
         assert forbidden not in runner_help.output

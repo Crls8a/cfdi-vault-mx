@@ -90,10 +90,11 @@ def test_metadata_recovery_permit_is_exact_credentialed_and_reusable_through_day
 ) -> None:
     permit, env, repo_root = _create(tmp_path)
 
-    assert permit.max_range_days == 7
+    assert permit.max_range_days == 14
     assert permit.max_attempts == 1
     assert permit.allow_real_sat is True
     assert permit.allow_real_credentials is True
+    assert permit.expires_at - permit.created_at == timedelta(minutes=15)
     assert load_live_execution_permit(permit.permit_id, env=env).permit_id == permit.permit_id
 
     consumed = _consume(permit.permit_id, env, repo_root)
@@ -114,6 +115,45 @@ def test_metadata_recovery_permit_is_exact_credentialed_and_reusable_through_day
     assert at_consumption.permit_id == permit.permit_id
     assert at_boundary.permit_id == permit.permit_id
     assert consumed.path.read_bytes() == original
+
+
+@pytest.mark.parametrize("direction", ("received", "issued"))
+def test_metadata_recovery_permit_accepts_exact_fourteen_day_identity(
+    tmp_path: Path, direction: str,
+) -> None:
+    env = {"LOCALAPPDATA": str(tmp_path / "appdata")}
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    dates = {"date_from": "2026-01-01", "date_to": "2026-01-14"}
+    permit = create_live_execution_permit(
+        _request(direction=direction, **dates), env=env, now=NOW, repo_root=repo_root,
+    )
+
+    consumed = validate_and_consume_live_permit(
+        permit.permit_id, scope=METADATA_RECOVERY_LIVE_SCOPE,
+        profile_id="dummy-profile", kind="metadata", direction=direction,
+        env=env, now=NOW + timedelta(minutes=1), repo_root=repo_root, **dates,
+    )
+    assert consumed.consumed_at is not None
+    continued = validate_consumed_metadata_recovery_permit(
+        permit.permit_id, profile_id="dummy-profile", direction=direction,
+        env=env, now=consumed.consumed_at, repo_root=repo_root, **dates,
+    )
+
+    assert permit.max_range_days == 14
+    assert continued.permit_id == permit.permit_id
+
+
+def test_metadata_recovery_permit_rejects_fifteen_calendar_days(tmp_path: Path) -> None:
+    env = {"LOCALAPPDATA": str(tmp_path / "appdata")}
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    with pytest.raises(LivePermitError, match="range-too-wide"):
+        create_live_execution_permit(
+            _request(date_from="2026-01-01", date_to="2026-01-15"),
+            env=env, now=NOW, repo_root=repo_root,
+        )
 
 
 def test_metadata_recovery_continuation_rejects_after_day_seven(tmp_path: Path) -> None:
