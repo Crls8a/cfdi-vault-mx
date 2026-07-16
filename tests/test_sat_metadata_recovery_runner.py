@@ -23,7 +23,7 @@ from cfdi_vault.sat_contract import (
     SatVerificationError,
     SatVerificationResult,
 )
-from cfdi_vault.sat_live_smoke import SatLiveSmokeError
+from cfdi_vault.sat_v15_adapter import SatLiveSmokeError
 from cfdi_vault.sat_metadata_recovery_runner import (
     MetadataRecoveryAdvanceOutcome,
     advance_metadata_recovery_once,

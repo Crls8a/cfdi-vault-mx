@@ -38,7 +38,7 @@ from cfdi_vault.sat_async_verify import VerifyBackoffPolicy, VerifyDueReport, ru
 from cfdi_vault.sat_backfill import BackfillPlan, build_backfill_plan
 from cfdi_vault.sat_orchestration import DownloadRequestOrchestrator
 from cfdi_vault.sat_simulator import FakeSatScenario, FakeSatScenarioClient
-from cfdi_vault.sat_live_smoke import (
+from cfdi_vault.sat_v15_adapter import (
     DIAGNOSTIC_STAGES,
     SatLiveMetadataSmokeAdapter,
     SatLiveSmokeError,

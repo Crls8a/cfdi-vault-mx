@@ -14,7 +14,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from lxml import etree
 
-from cfdi_vault import sat_live_smoke as live_smoke_module
+from cfdi_vault import sat_v15_adapter as live_smoke_module
 from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType
 from cfdi_vault.sat_auth_constants import (
     AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
@@ -24,7 +24,7 @@ from cfdi_vault.sat_auth_contract import AuthWsdlContract
 from cfdi_vault.sat_auth_envelope_lint import lint_auth_envelope
 from cfdi_vault.sat_auth_http import validate_auth_headers_for_contract
 from cfdi_vault.sat_contract import SatOperation, SatVerificationError
-from cfdi_vault.sat_live_smoke import (
+from cfdi_vault.sat_v15_adapter import (
     DS_NS,
     VERIFY_EXCLUSIVE_C14N,
     SatEfirmMaterial,
@@ -729,7 +729,7 @@ def test_auth_smoke_fails_before_transport_when_request_body_is_empty(tmp_path: 
     adapter = EmptyAuthEnvelopeAdapter(profile=_profile(tmp_path), provider=DummySecretProvider(), transport=transport, material=_material())
 
     with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr("cfdi_vault.sat_live_smoke._build_auth_envelope", lambda *_args, **_kwargs: b"")
+        monkeypatch.setattr("cfdi_vault.sat_v15_adapter._build_auth_envelope", lambda *_args, **_kwargs: b"")
         with pytest.raises(SatLiveSmokeError, match="SAT auth request failed local readiness checks") as exc:
             adapter.auth_smoke()
 
@@ -759,7 +759,7 @@ def test_auth_smoke_fails_before_transport_when_accept_header_is_missing(tmp_pat
         return {"Content-Type": "text/xml; charset=utf-8", "SOAPAction": f'"{action}"'}
 
     with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr("cfdi_vault.sat_live_smoke.build_soap11_headers", headers_without_accept)
+        monkeypatch.setattr("cfdi_vault.sat_v15_adapter.build_soap11_headers", headers_without_accept)
         with pytest.raises(SatLiveSmokeError, match="SAT auth request failed local readiness checks") as exc:
             adapter.auth_smoke()
 
@@ -779,7 +779,7 @@ def test_auth_smoke_fails_before_transport_when_wcf_action_header_is_missing(tmp
         material=_material(),
         auth_envelope_variant=AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
     )
-    from cfdi_vault import sat_live_smoke as live_smoke_module
+    from cfdi_vault import sat_v15_adapter as live_smoke_module
     original_build_auth_envelope = live_smoke_module._build_auth_envelope
 
     def envelope_without_action(*args: object, **kwargs: object) -> bytes:

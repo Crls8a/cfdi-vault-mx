@@ -4,7 +4,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from cfdi_vault.sat_live_smoke import DS_NS, _build_verify_envelope
+from cfdi_vault.sat_v15_adapter import DS_NS, _build_verify_envelope
 from cfdi_vault.sat_v15_contract import SAT_REQUEST_NS
 from cfdi_vault.sat_verify_envelope_lint import (
     EXPECTED_VERIFY_C14N_METHOD,
@@ -15,7 +15,7 @@ from cfdi_vault.sat_verify_envelope_lint import (
     fingerprint_phpcfdi_verify_oracle,
     lint_verify_envelope,
 )
-from tests.test_sat_live_smoke import _material
+from tests.test_sat_v15_adapter import _material
 
 
 def test_lint_verify_envelope_reports_redacted_structural_profile() -> None:
@@ -97,7 +97,7 @@ def test_phpcfdi_verify_oracle_reads_only_structural_markers(tmp_path: Path) -> 
 
 
 def _previous_solicitud_signed_verify_envelope(request_id: str, requester_rfc: str) -> bytes:
-    from cfdi_vault.sat_live_smoke import _operation_envelope, _signed_payload
+    from cfdi_vault.sat_v15_adapter import _operation_envelope, _signed_payload
 
     payload = _signed_payload("solicitud", {"IdSolicitud": request_id, "RfcSolicitante": requester_rfc.upper()}, _material())
     return _operation_envelope("VerificaSolicitudDescarga", payload)

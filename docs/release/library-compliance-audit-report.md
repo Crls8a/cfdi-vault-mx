@@ -46,7 +46,7 @@ Commands used:
 | Public root | 1 | `cfdi_vault` |
 | Public candidates | 9 | `cfdi_vault.domain`, `cfdi_vault.ports`, `cfdi_vault.fake_sat`, `cfdi_vault.sat_simulator`, `cfdi_vault.parser`, `cfdi_vault.cfdi_parser`, `cfdi_vault.metadata_parser`, `cfdi_vault.package_processor`, `cfdi_vault.reconciliation` |
 | Reference-system / CLI | 16 | `cfdi_vault.cli`, `cfdi_vault.db`, `cfdi_vault.recovery_db`, `cfdi_vault.recovery_service`, `cfdi_vault.service`, `cfdi_vault.storage`, `cfdi_vault.onboarding`, `cfdi_vault.setup*`, `cfdi_vault.queueing`, `cfdi_vault.cache`, `cfdi_vault.worker` |
-| Experimental / live-gate | 10 | `cfdi_vault.live_permit`, `cfdi_vault.sat_live_smoke`, `cfdi_vault.sat_live_request_state`, `cfdi_vault.sat_verify_live_gate`, `cfdi_vault.sat_*_probe`, `cfdi_vault.sat_*_lint` |
+| Experimental / live-gate | 10 | `cfdi_vault.live_permit`, `cfdi_vault.sat_v15_adapter`, `cfdi_vault.sat_live_request_state`, `cfdi_vault.sat_verify_live_gate`, `cfdi_vault.sat_*_probe`, `cfdi_vault.sat_*_lint` |
 | Internal SAT candidates | 13 | `cfdi_vault.sat_auth*`, `cfdi_vault.sat_contract`, `cfdi_vault.sat_orchestration`, `cfdi_vault.sat_transport`, `cfdi_vault.sat_soap*`, `cfdi_vault.sat_backfill`, `cfdi_vault.sat_async_verify` |
 | Other internal support | 4 | `cfdi_vault.config`, `cfdi_vault.secrets`, `cfdi_vault.windows_secrets`, `cfdi_vault.xmlsig` |
 

@@ -48,7 +48,7 @@ diagnostic representations remain redacted.
 | Surface | Boundary |
 |---|---|
 | `sat_*_probe.py`, `sat_*_oracle.py`, WSDL probes, envelope linters | Research and verification helpers; not semver-stable API. |
-| `sat_live_smoke.py`, live gates, one-time permits | Human-gated reference-system tools; not default library behavior. |
+| `sat_v15_adapter.py`, live gates, one-time permits | Human-gated reference-system tools; not default library behavior. |
 | `cli.py` and `cfdi_vault.adapters.cli` | Reference-system operator interface. Package smoke can call it, but library consumers should not build against CLI internals. |
 | PostgreSQL/RabbitMQ/Redis adapters and Docker runtime | Reference-system implementation choices behind ports. |
 | Recovery workers/services | System orchestration until a narrower facade is intentionally promoted. |

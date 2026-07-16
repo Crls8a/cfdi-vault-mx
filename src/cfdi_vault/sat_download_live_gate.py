@@ -16,7 +16,7 @@ from cfdi_vault.sat_auth_endpoints import auth_wsdl_endpoint
 from cfdi_vault.sat_auth_http import build_soap11_headers
 from cfdi_vault.sat_download_envelope_lint import lint_package_download_envelope
 from cfdi_vault.sat_live_request_state import PACKAGE_READY, LiveMetadataRequestRecord, redact_package_ref
-from cfdi_vault.sat_live_smoke import (
+from cfdi_vault.sat_v15_adapter import (
     _build_package_download_envelope,
     load_sat_efirma_material,
 )

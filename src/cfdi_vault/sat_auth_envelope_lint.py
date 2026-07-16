@@ -22,7 +22,7 @@ from cfdi_vault.sat_auth_constants import (
     AUTH_ENVELOPE_VARIANT_SECURITY_ONLY,
     DEFAULT_AUTH_ENVELOPE_VARIANT,
 )
-from cfdi_vault.sat_live_smoke import (
+from cfdi_vault.sat_v15_adapter import (
     ADDR_NS,
     BASE64_ENCODING_TYPE,
     DS_NS,

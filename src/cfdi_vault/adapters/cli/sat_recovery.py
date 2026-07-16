@@ -22,7 +22,7 @@ from cfdi_vault.live_permit import (
     validate_consumed_metadata_recovery_permit,
     validate_consumed_metadata_recovery_permit_id,
 )
-from cfdi_vault.sat_live_smoke import SatLiveV15MetadataAdapter
+from cfdi_vault.sat_v15_adapter import SatLiveV15MetadataAdapter
 from cfdi_vault.sat_metadata_observation import MetadataObservationError
 from cfdi_vault.sat_metadata_observation_integration import (
     observe_metadata_recovery,

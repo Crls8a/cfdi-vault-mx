@@ -14,7 +14,7 @@ from urllib.error import HTTPError, URLError
 
 from cfdi_vault.sat_auth_http import build_soap11_headers
 from cfdi_vault.sat_live_request_state import LiveMetadataRequestRecord
-from cfdi_vault.sat_live_smoke import (
+from cfdi_vault.sat_v15_adapter import (
     _build_verify_envelope,
     load_sat_efirma_material,
 )

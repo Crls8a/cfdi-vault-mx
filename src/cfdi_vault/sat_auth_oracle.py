@@ -11,7 +11,7 @@ import shutil
 
 from lxml import etree
 
-from cfdi_vault.sat_live_smoke import ADDR_NS, DS_NS, SAT_AUTH_NS, SOAP11_NS, WSSE_NS, WSU_NS
+from cfdi_vault.sat_v15_adapter import ADDR_NS, DS_NS, SAT_AUTH_NS, SOAP11_NS, WSSE_NS, WSU_NS
 
 _PREFIXES = {
     SOAP11_NS: "s",

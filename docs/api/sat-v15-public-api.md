@@ -137,7 +137,7 @@ supported LIB-005B and LIB-005C rows are public library API.
 | `cfdi_vault.sat_download_envelope_lint` | Research tool | Download envelope inspection helper. |
 | `cfdi_vault.sat_download_live_gate` | Live-only gate | Human-gated reference-system operation. |
 | `cfdi_vault.sat_live_request_state` | Live-only state helper | Permit-gated live diagnostic state. |
-| `cfdi_vault.sat_live_smoke` | Live-only tool | Manual smoke runner; never public or imported by default. |
+| `cfdi_vault.sat_v15_adapter` | Live-only tool | SAT v1.5 adapter; never public or imported by default. |
 | `cfdi_vault.sat_metadata_artifact_state` | Internal reference-system state | Private redacted artifact bindings for external ZIP/TXT evidence; not a supported import. |
 | `cfdi_vault.sat_metadata_observation` | Internal reference-system evidence | Sanitized append-only observation ledger; not public API or proof of live SAT behavior. |
 | `cfdi_vault.sat_metadata_observation_integration` | Internal reference-system orchestration | Bridges durable recovery state to sanitized evidence after side effects; not public API. |

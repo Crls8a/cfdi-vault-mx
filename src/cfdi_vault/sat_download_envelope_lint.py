@@ -9,7 +9,7 @@ from lxml import etree
 from signxml.algorithms import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 
 from cfdi_vault.sat_auth_constants import AUTH_ACCEPT, AUTH_CONTENT_TYPE
-from cfdi_vault.sat_live_smoke import (
+from cfdi_vault.sat_v15_adapter import (
     DS_NS,
     SOAP11_NS,
 )

@@ -11,7 +11,7 @@ from pathlib import Path
 from lxml import etree
 from signxml.algorithms import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 
-from cfdi_vault.sat_live_smoke import DS_NS, SOAP11_NS
+from cfdi_vault.sat_v15_adapter import DS_NS, SOAP11_NS
 from cfdi_vault.sat_v15_contract import SAT_REQUEST_NS
 
 EXPECTED_VERIFY_OPERATION = "VerificaSolicitudDescarga"

@@ -60,7 +60,7 @@ blocked_packages = {{"boto3", "docker", "minio", "pika", "psycopg", "psycopg2", 
 prohibited_modules = {{
     "cfdi_vault.sat_auth_http",
     "cfdi_vault.sat_download_live_gate",
-    "cfdi_vault.sat_live_smoke",
+    "cfdi_vault.sat_v15_adapter",
     "cfdi_vault.sat_orchestration",
     "cfdi_vault.sat_transport",
     "cfdi_vault.sat_verify_live_gate",
