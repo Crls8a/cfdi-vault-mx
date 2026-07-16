@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,14 @@ class CampaignManifestStoreError(ValueError):
         return not self.committed and not self.uncertain
 
 
+@dataclass(frozen=True)
+class CampaignCapacityReservation:
+    """Return one atomic manifest snapshot and only refs reserved by it."""
+
+    manifest: SatCampaignManifest
+    new_work_refs: tuple[str, ...]
+
+
 def campaign_manifest_state_path(
     storage_root: str | Path, campaign_ref: str, *, repo_root: str | Path | None = None,
 ) -> Path:
@@ -89,6 +98,20 @@ def reserve_campaign_manifest(
     _validate_ref(campaign_ref)
     return _protect(lambda: _transaction(
         storage_root, campaign_ref, reserve_campaign_work, repo_root,
+    ))
+
+
+def reserve_campaign_manifest_capacity(
+    storage_root: str | Path,
+    campaign_ref: str,
+    max_outstanding: int,
+    *,
+    repo_root: str | Path | None = None,
+) -> CampaignCapacityReservation:
+    """Atomically count and reserve chronological work under one store lock."""
+    _validate_ref(campaign_ref)
+    return _protect(lambda: _reserve_capacity(
+        storage_root, campaign_ref, max_outstanding, repo_root,
     ))
 
 
@@ -169,6 +192,33 @@ def _transaction(
         if after != before:
             _replace(transaction, after)
         return after
+
+
+def _reserve_capacity(
+    root: str | Path,
+    campaign_ref: str,
+    max_outstanding: int,
+    repo: str | Path | None,
+) -> CampaignCapacityReservation:
+    with secure_state_transaction(root, _filename(campaign_ref), repo_root=repo) as transaction:
+        payload = transaction.read(max_bytes=_MAX_BYTES)
+        if payload is None:
+            raise CampaignManifestStoreError("campaign-state-not-found")
+        before = _decode(payload, campaign_ref)
+        if type(max_outstanding) is not int or max_outstanding != before.max_outstanding:
+            raise CampaignManifestStoreError("campaign-capacity-mismatch")
+        existing = {
+            item.work_ref for item in before.items
+            if item.state is CampaignWorkState.OUTSTANDING
+        }
+        after = reserve_campaign_work(before)
+        new_refs = tuple(
+            item.work_ref for item in after.items
+            if item.state is CampaignWorkState.OUTSTANDING and item.work_ref not in existing
+        )
+        if after != before:
+            _replace(transaction, after)
+        return CampaignCapacityReservation(after, new_refs)
 
 
 def _replace(transaction: Any, manifest: SatCampaignManifest) -> None:
