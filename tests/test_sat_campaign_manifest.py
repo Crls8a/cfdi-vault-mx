@@ -12,6 +12,7 @@ from cfdi_vault.sat_campaign_manifest import (
     CampaignManifestError,
     CampaignWorkState,
     SatCampaignManifest,
+    bind_campaign_recovery,
     build_campaign_manifest,
     campaign_redacted_summary,
     record_campaign_result,
@@ -44,6 +45,12 @@ class _CampaignRefAlias(str):
 
 def _work(manifest, ref):  # type: ignore[no-untyped-def]
     return next(item for item in manifest.items if item.work_ref == ref)
+
+
+def _bind(manifest, work_ref, recovery_ref=RUN_REF):  # type: ignore[no-untyped-def]
+    return bind_campaign_recovery(manifest, work_ref, recovery_ref=recovery_ref)
+
+
 def test_fixed_campaign_builds_exact_deterministic_base_manifest() -> None:
     manifest = build_campaign_manifest(PROFILE)
     same = build_campaign_manifest(PROFILE)
@@ -69,18 +76,78 @@ def test_reservation_and_results_are_pure_bounded_and_recovery_ref_is_immutable(
     assert all(item.start == date(2026, 1, 1) for item in outstanding)
     assert reserve_campaign_work(reserved) == reserved
     assert all(item.state is CampaignWorkState.PLANNED for item in original.items)
-    completed = record_campaign_result(reserved, outstanding[0].work_ref, CampaignWorkState.COMPLETED, recovery_ref=RUN_REF)
+    bound = _bind(reserved, outstanding[0].work_ref)
+    completed = record_campaign_result(
+        bound, outstanding[0].work_ref, CampaignWorkState.COMPLETED, recovery_ref=RUN_REF,
+    )
     assert _work(completed, outstanding[0].work_ref).recovery_ref == RUN_REF
     assert _work(reserved, outstanding[0].work_ref).recovery_ref is None
     refilled = reserve_campaign_work(completed)
     assert sum(item.state is CampaignWorkState.OUTSTANDING for item in refilled.items) == 2
     with pytest.raises(CampaignManifestError, match="work-not-outstanding"):
         record_campaign_result(completed, outstanding[0].work_ref, CampaignWorkState.NO_DATA, recovery_ref="run-111111111111")
+
+
+def test_recovery_binding_is_explicit_idempotent_unique_and_immutable() -> None:
+    reserved = reserve_campaign_work(build_campaign_manifest(PROFILE))
+    first, second = (item for item in reserved.items if item.state is CampaignWorkState.OUTSTANDING)
+    bound = bind_campaign_recovery(reserved, first.work_ref, recovery_ref=RUN_REF)
+    assert _work(bound, first.work_ref).recovery_ref == RUN_REF
+    assert _work(reserved, first.work_ref).recovery_ref is None
+    assert bind_campaign_recovery(bound, first.work_ref, recovery_ref=RUN_REF) is bound
+    with pytest.raises(CampaignManifestError, match="recovery-ref-conflict"):
+        bind_campaign_recovery(bound, first.work_ref, recovery_ref=SECOND_RUN_REF)
+    with pytest.raises(CampaignManifestError, match="recovery-ref-duplicate"):
+        bind_campaign_recovery(bound, second.work_ref, recovery_ref=RUN_REF)
+    with pytest.raises(CampaignManifestError, match="work-not-outstanding"):
+        bind_campaign_recovery(bound, reserved.items[2].work_ref, recovery_ref=SECOND_RUN_REF)
+
+
+def test_results_require_the_existing_matching_recovery_binding() -> None:
+    reserved = reserve_campaign_work(build_campaign_manifest(PROFILE))
+    first = reserved.items[0]
+    with pytest.raises(CampaignManifestError, match="recovery-ref-unbound"):
+        record_campaign_result(
+            reserved, first.work_ref, CampaignWorkState.COMPLETED, recovery_ref=RUN_REF,
+        )
+    bound = _bind(reserved, first.work_ref)
+    with pytest.raises(CampaignManifestError, match="recovery-ref-mismatch"):
+        record_campaign_result(
+            bound, first.work_ref, CampaignWorkState.COMPLETED, recovery_ref=SECOND_RUN_REF,
+        )
+    completed = record_campaign_result(
+        bound, first.work_ref, CampaignWorkState.COMPLETED, recovery_ref=RUN_REF,
+    )
+    assert _work(completed, first.work_ref).recovery_ref == RUN_REF
+
+
+def test_reconstruction_enforces_recovery_refs_by_state_and_global_uniqueness() -> None:
+    manifest = build_campaign_manifest(PROFILE)
+    with pytest.raises(CampaignManifestError, match="work-result-invalid"):
+        replace(manifest.items[0], recovery_ref=RUN_REF)
+    reserved = reserve_campaign_work(manifest)
+    first, second = (item for item in reserved.items if item.state is CampaignWorkState.OUTSTANDING)
+    with pytest.raises(CampaignManifestError, match="work-result-invalid"):
+        replace(first, evidence="sat_too_many_results")
+    with pytest.raises(CampaignManifestError, match="work-result-invalid"):
+        replace(first, recovery_ref="run-invalid")
+    bound = _bind(reserved, first.work_ref)
+    duplicate_items = tuple(
+        replace(item, recovery_ref=RUN_REF) if item.work_ref == second.work_ref else item
+        for item in bound.items
+    )
+    with pytest.raises(CampaignManifestError, match="recovery-ref-duplicate"):
+        replace(bound, items=duplicate_items)
+    completed = record_campaign_result(
+        bound, first.work_ref, CampaignWorkState.COMPLETED, recovery_ref=RUN_REF,
+    )
+    with pytest.raises(CampaignManifestError, match="work-result-invalid"):
+        replace(_work(completed, first.work_ref), recovery_ref=None)
 def test_threshold_split_creates_exact_children_and_children_cannot_split() -> None:
     reserved = reserve_campaign_work(build_campaign_manifest(PROFILE))
     parent = next(item for item in reserved.items if item.direction.value == "received")
     blocked = record_campaign_result(
-        reserved, parent.work_ref, CampaignWorkState.THRESHOLD_BLOCKED,
+        _bind(reserved, parent.work_ref), parent.work_ref, CampaignWorkState.THRESHOLD_BLOCKED,
         recovery_ref=RUN_REF, evidence="sat_too_many_results",
     )
     split = split_campaign_work(blocked, parent.work_ref)
@@ -92,8 +159,9 @@ def test_threshold_split_creates_exact_children_and_children_cannot_split() -> N
     assert len(split.items) == 30
     child_outstanding = next(item for item in reserve_campaign_work(split).items
                              if item.parent_ref == parent.work_ref and item.state is CampaignWorkState.OUTSTANDING)
+    child_reserved = reserve_campaign_work(split)
     child_blocked = record_campaign_result(
-        reserve_campaign_work(split), child_outstanding.work_ref,
+        _bind(child_reserved, child_outstanding.work_ref, "run-111111111111"), child_outstanding.work_ref,
         CampaignWorkState.THRESHOLD_BLOCKED, recovery_ref="run-111111111111",
         evidence="sat_too_many_results",
     )
@@ -106,8 +174,10 @@ def test_all_approved_splits_stop_at_eighty_four_requests_and_fifty_six_leaves()
         manifest = reserve_campaign_work(manifest)
         for item in tuple(i for i in manifest.items if i.state is CampaignWorkState.OUTSTANDING):
             state = CampaignWorkState.THRESHOLD_BLOCKED if item.depth == 0 else CampaignWorkState.NO_DATA
+            recovery_ref = f"run-{run_number:012x}"
+            manifest = _bind(manifest, item.work_ref, recovery_ref)
             manifest = record_campaign_result(
-                manifest, item.work_ref, state, recovery_ref=f"run-{run_number:012x}",
+                manifest, item.work_ref, state, recovery_ref=recovery_ref,
                 evidence="sat_too_many_results" if item.depth == 0 else None,
             )
             run_number += 1
@@ -116,9 +186,11 @@ def test_all_approved_splits_stop_at_eighty_four_requests_and_fifty_six_leaves()
     while any(item.state is CampaignWorkState.PLANNED for item in manifest.items):
         manifest = reserve_campaign_work(manifest)
         for item in tuple(i for i in manifest.items if i.state is CampaignWorkState.OUTSTANDING):
+            recovery_ref = f"run-{run_number:012x}"
+            manifest = _bind(manifest, item.work_ref, recovery_ref)
             manifest = record_campaign_result(
                 manifest, item.work_ref, CampaignWorkState.NO_DATA,
-                recovery_ref=f"run-{run_number:012x}",
+                recovery_ref=recovery_ref,
             )
             run_number += 1
     summary = campaign_redacted_summary(manifest)
@@ -141,14 +213,15 @@ def test_invalid_transitions_and_redacted_summary_exclude_all_private_dimensions
         record_campaign_result(manifest, first.work_ref, CampaignWorkState.COMPLETED, recovery_ref=RUN_REF)
     reserved = reserve_campaign_work(manifest)
     with pytest.raises(CampaignManifestError, match="recovery-ref-invalid"):
-        record_campaign_result(reserved, first.work_ref, CampaignWorkState.COMPLETED, recovery_ref="hostile")
+        bind_campaign_recovery(reserved, first.work_ref, recovery_ref="hostile")
+    bound = _bind(reserved, first.work_ref)
     with pytest.raises(CampaignManifestError, match="result-state-invalid"):
-        record_campaign_result(reserved, first.work_ref, CampaignWorkState.PLANNED, recovery_ref=RUN_REF)
+        record_campaign_result(bound, first.work_ref, CampaignWorkState.PLANNED, recovery_ref=RUN_REF)
     with pytest.raises(CampaignManifestError, match="threshold-evidence-invalid"):
-        record_campaign_result(reserved, first.work_ref, CampaignWorkState.THRESHOLD_BLOCKED,
+        record_campaign_result(bound, first.work_ref, CampaignWorkState.THRESHOLD_BLOCKED,
                                recovery_ref=RUN_REF, evidence="hostile-evidence")
     completed = record_campaign_result(
-        reserved, first.work_ref, CampaignWorkState.COMPLETED, recovery_ref=RUN_REF,
+        bound, first.work_ref, CampaignWorkState.COMPLETED, recovery_ref=RUN_REF,
     )
     summary = campaign_redacted_summary(completed)
     assert set(summary) == {"campaignRef", "stateCounts", "baseCount", "splitCount", "leafCount",
@@ -164,7 +237,7 @@ def test_result_evidence_requires_exact_immutable_builtin_type(evidence: object)
     first = reserved.items[0]
     with pytest.raises(CampaignManifestError, match="result-evidence-invalid"):
         record_campaign_result(
-            reserved, first.work_ref, CampaignWorkState.THRESHOLD_BLOCKED,
+            _bind(reserved, first.work_ref), first.work_ref, CampaignWorkState.THRESHOLD_BLOCKED,
             recovery_ref=RUN_REF, evidence=evidence,  # type: ignore[arg-type]
         )
 
@@ -173,7 +246,7 @@ def test_hostile_snapshot_evidence_comparison_is_sanitized() -> None:
     reserved = reserve_campaign_work(build_campaign_manifest(PROFILE))
     first = reserved.items[0]
     blocked = record_campaign_result(
-        reserved, first.work_ref, CampaignWorkState.THRESHOLD_BLOCKED,
+        _bind(reserved, first.work_ref), first.work_ref, CampaignWorkState.THRESHOLD_BLOCKED,
         recovery_ref=RUN_REF, evidence="sat_too_many_results",
     )
     object.__setattr__(_work(blocked, first.work_ref), "evidence", _EvidenceImpostor())
@@ -184,15 +257,15 @@ def test_hostile_snapshot_evidence_comparison_is_sanitized() -> None:
 def test_recovery_refs_are_unique_across_transitions_and_reconstructed_snapshots() -> None:
     reserved = reserve_campaign_work(build_campaign_manifest(PROFILE))
     first, second = (item for item in reserved.items if item.state is CampaignWorkState.OUTSTANDING)
+    first_bound = _bind(reserved, first.work_ref)
     once = record_campaign_result(
-        reserved, first.work_ref, CampaignWorkState.COMPLETED, recovery_ref=RUN_REF,
+        first_bound, first.work_ref, CampaignWorkState.COMPLETED, recovery_ref=RUN_REF,
     )
     with pytest.raises(CampaignManifestError, match="recovery-ref-duplicate"):
-        record_campaign_result(
-            once, second.work_ref, CampaignWorkState.NO_DATA, recovery_ref=RUN_REF,
-        )
+        _bind(once, second.work_ref)
+    second_bound = _bind(once, second.work_ref, SECOND_RUN_REF)
     complete = record_campaign_result(
-        once, second.work_ref, CampaignWorkState.NO_DATA, recovery_ref=SECOND_RUN_REF,
+        second_bound, second.work_ref, CampaignWorkState.NO_DATA, recovery_ref=SECOND_RUN_REF,
     )
     hostile_items = tuple(
         replace(item, recovery_ref=RUN_REF) if item.work_ref == second.work_ref else item
@@ -206,6 +279,7 @@ def test_splits_preserve_and_enforce_global_canonical_item_order() -> None:
     manifest = reserve_campaign_work(build_campaign_manifest(PROFILE))
     outstanding = tuple(item for item in manifest.items if item.state is CampaignWorkState.OUTSTANDING)
     for item, recovery_ref in zip(outstanding, (RUN_REF, SECOND_RUN_REF), strict=True):
+        manifest = _bind(manifest, item.work_ref, recovery_ref)
         manifest = record_campaign_result(
             manifest, item.work_ref, CampaignWorkState.THRESHOLD_BLOCKED,
             recovery_ref=recovery_ref, evidence="sat_too_many_results",
@@ -252,6 +326,7 @@ def test_reconstructed_split_children_must_keep_parent_direction() -> None:
     manifest = reserve_campaign_work(build_campaign_manifest(PROFILE))
     outstanding = tuple(item for item in manifest.items if item.state is CampaignWorkState.OUTSTANDING)
     for item, recovery_ref in zip(outstanding, (RUN_REF, SECOND_RUN_REF), strict=True):
+        manifest = _bind(manifest, item.work_ref, recovery_ref)
         manifest = record_campaign_result(
             manifest, item.work_ref, CampaignWorkState.THRESHOLD_BLOCKED,
             recovery_ref=recovery_ref, evidence="sat_too_many_results",

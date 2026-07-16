@@ -94,6 +94,29 @@ def reserve_campaign_work(manifest: SatCampaignManifest) -> SatCampaignManifest:
         replace(item, state=CampaignWorkState.OUTSTANDING) if item.work_ref in selected else item
         for item in manifest.items
     ))
+
+
+def bind_campaign_recovery(
+    manifest: SatCampaignManifest,
+    work_ref: str,
+    *,
+    recovery_ref: str,
+) -> SatCampaignManifest:
+    """Bind one outstanding work item to its recovery before SAT contact."""
+    _validate_manifest(manifest)
+    item = _find(manifest, work_ref)
+    if item.state is not CampaignWorkState.OUTSTANDING:
+        raise CampaignManifestError("work-not-outstanding")
+    _validate_recovery_ref(recovery_ref)
+    if item.recovery_ref is not None:
+        if item.recovery_ref == recovery_ref:
+            return manifest
+        raise CampaignManifestError("recovery-ref-conflict")
+    if any(other.recovery_ref == recovery_ref for other in manifest.items):
+        raise CampaignManifestError("recovery-ref-duplicate")
+    return _replace_item(manifest, replace(item, recovery_ref=recovery_ref))
+
+
 def record_campaign_result(
     manifest: SatCampaignManifest,
     work_ref: str,
@@ -111,16 +134,17 @@ def record_campaign_result(
         raise CampaignManifestError("work-not-outstanding")
     if type(state) is not CampaignWorkState or state not in _RESULT_STATES:
         raise CampaignManifestError("result-state-invalid")
-    if type(recovery_ref) is not str or not _RECOVERY_RE.fullmatch(recovery_ref):
-        raise CampaignManifestError("recovery-ref-invalid")
+    _validate_recovery_ref(recovery_ref)
+    if item.recovery_ref is None:
+        raise CampaignManifestError("recovery-ref-unbound")
+    if item.recovery_ref != recovery_ref:
+        raise CampaignManifestError("recovery-ref-mismatch")
     if state is CampaignWorkState.THRESHOLD_BLOCKED:
         if evidence != THRESHOLD_EVIDENCE:
             raise CampaignManifestError("threshold-evidence-invalid")
     elif evidence is not None:
         raise CampaignManifestError("result-evidence-invalid")
-    return _replace_item(manifest, replace(
-        item, state=state, recovery_ref=recovery_ref, evidence=evidence,
-    ))
+    return _replace_item(manifest, replace(item, state=state, evidence=evidence))
 def split_campaign_work(manifest: SatCampaignManifest, work_ref: str) -> SatCampaignManifest:
     """Replace one approved blocked 14-day base leaf with two 7-day children."""
     _validate_manifest(manifest)
@@ -224,11 +248,23 @@ def _validate_item(item: CampaignWorkItem) -> None:
         item.depth == 1 and (type(item.parent_ref) is not str or not _WORK_RE.fullmatch(item.parent_ref))
     ):
         raise CampaignManifestError("work-parent-invalid")
-    waiting = item.state in {CampaignWorkState.PLANNED, CampaignWorkState.OUTSTANDING}
-    if waiting and (item.recovery_ref is not None or item.evidence is not None):
+    if item.state is CampaignWorkState.PLANNED and (
+        item.recovery_ref is not None or item.evidence is not None
+    ):
         raise CampaignManifestError("work-result-invalid")
-    if not waiting and (type(item.recovery_ref) is not str or not _RECOVERY_RE.fullmatch(item.recovery_ref)):
-        raise CampaignManifestError("work-result-invalid")
+    if item.state is CampaignWorkState.OUTSTANDING:
+        if item.evidence is not None:
+            raise CampaignManifestError("work-result-invalid")
+        if item.recovery_ref is not None:
+            try:
+                _validate_recovery_ref(item.recovery_ref)
+            except CampaignManifestError as error:
+                raise CampaignManifestError("work-result-invalid") from error
+    elif item.state is not CampaignWorkState.PLANNED:
+        try:
+            _validate_recovery_ref(item.recovery_ref)
+        except CampaignManifestError as error:
+            raise CampaignManifestError("work-result-invalid") from error
     if item.state in {CampaignWorkState.THRESHOLD_BLOCKED, CampaignWorkState.SPLIT}:
         if item.evidence != THRESHOLD_EVIDENCE:
             raise CampaignManifestError("threshold-evidence-invalid")
@@ -254,6 +290,11 @@ def _base_specs() -> tuple[tuple[date, date, DownloadDirection], ...]:
 def _validate_profile(profile_id: object) -> None:
     if type(profile_id) is not str or not _PROFILE_RE.fullmatch(profile_id):
         raise CampaignManifestError("profile-id-invalid")
+
+
+def _validate_recovery_ref(recovery_ref: object) -> None:
+    if type(recovery_ref) is not str or not _RECOVERY_RE.fullmatch(recovery_ref):
+        raise CampaignManifestError("recovery-ref-invalid")
 def _digest(prefix: str, *parts: str) -> str:
     return f"{prefix}-{hashlib.sha256(chr(31).join(parts).encode()).hexdigest()[:12]}"
 def _campaign_ref(profile_id: str) -> str:
