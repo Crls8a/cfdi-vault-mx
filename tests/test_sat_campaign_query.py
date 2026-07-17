@@ -14,7 +14,11 @@ from cfdi_vault.sat_campaign_manifest import (
     record_campaign_result,
     reserve_campaign_work,
 )
-from cfdi_vault.sat_campaign_query import CampaignQueryError, build_outstanding_metadata_queries
+from cfdi_vault.sat_campaign_query import (
+    CampaignQueryError,
+    build_metadata_query_for_work,
+    build_outstanding_metadata_queries,
+)
 from cfdi_vault.setup_core import CredentialMode, LocalProfile, LocalProfileStatus
 
 PROFILE_ID = "profile-synthetic"
@@ -76,6 +80,7 @@ def test_returns_only_outstanding_work_and_never_reserves_planned_work() -> None
     assert build_outstanding_metadata_queries(planned, _profile()) == {}
     reserved = reserve_campaign_work(planned)
     first = next(item for item in reserved.items if item.state is CampaignWorkState.OUTSTANDING)
+    expected = build_metadata_query_for_work(reserved, _profile(), first.work_ref)
     bound = bind_campaign_recovery(reserved, first.work_ref, recovery_ref="run-000000000000")
     completed = record_campaign_result(
         bound,
@@ -90,6 +95,10 @@ def test_returns_only_outstanding_work_and_never_reserves_planned_work() -> None
     assert tuple(queries) == tuple(
         item.work_ref for item in completed.items if item.state is CampaignWorkState.OUTSTANDING
     )
+    historical = build_metadata_query_for_work(completed, _profile(), first.work_ref)
+    assert historical == expected
+    with pytest.raises(CampaignQueryError, match="work-ref-invalid"):
+        build_metadata_query_for_work(completed, _profile(), object())  # type: ignore[arg-type]
 
 
 def test_rejects_profile_manifest_mismatch_without_private_output() -> None:

@@ -33,22 +33,38 @@ def build_outstanding_metadata_queries(
     for item in manifest.items:
         if item.state is not CampaignWorkState.OUTSTANDING:
             continue
-        if item.direction not in {DownloadDirection.RECEIVED, DownloadDirection.ISSUED}:
-            raise CampaignQueryError("work-direction-unsupported")
-        query = DownloadQuery(
-            tenant_id=manifest.profile_id,
-            requester_rfc=profile.rfc,
-            direction=item.direction,
-            request_type=RequestType.METADATA,
-            period=DateTimePeriod(
-                datetime.combine(item.start, time.min, tzinfo=timezone.utc),
-                datetime.combine(item.end, time.max, tzinfo=timezone.utc),
-            ),
-        )
-        if query.validate():
-            raise CampaignQueryError("metadata-query-invalid")
-        queries[item.work_ref] = query
+        queries[item.work_ref] = build_metadata_query_for_work(
+            manifest, profile, item.work_ref)
     return queries
+
+
+def build_metadata_query_for_work(
+    manifest: SatCampaignManifest, profile: LocalProfile, work_ref: str,
+) -> DownloadQuery:
+    """Derive one canonical historical Metadata query independent of work state."""
+    campaign_redacted_summary(manifest)
+    _validate_profile_binding(manifest, profile)
+    if type(work_ref) is not str:
+        raise CampaignQueryError("work-ref-invalid")
+    matches = tuple(item for item in manifest.items if item.work_ref == work_ref)
+    if len(matches) != 1:
+        raise CampaignQueryError("work-ref-invalid")
+    item = matches[0]
+    if item.direction not in {DownloadDirection.RECEIVED, DownloadDirection.ISSUED}:
+        raise CampaignQueryError("work-direction-unsupported")
+    query = DownloadQuery(
+        tenant_id=manifest.profile_id,
+        requester_rfc=profile.rfc,
+        direction=item.direction,
+        request_type=RequestType.METADATA,
+        period=DateTimePeriod(
+            datetime.combine(item.start, time.min, tzinfo=timezone.utc),
+            datetime.combine(item.end, time.max, tzinfo=timezone.utc),
+        ),
+    )
+    if query.validate():
+        raise CampaignQueryError("metadata-query-invalid")
+    return query
 
 
 def _validate_profile_binding(manifest: SatCampaignManifest, profile: LocalProfile) -> None:

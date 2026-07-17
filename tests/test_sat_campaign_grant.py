@@ -377,6 +377,33 @@ def test_load_rejects_expired_grant(
         )
 
 
+def test_local_reconciliation_evidence_allows_expiry_but_rejects_future_or_changed_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _head(monkeypatch)
+    grant = subject.create_campaign_grant(
+        tmp_path / "private", campaign.build_campaign_manifest(PROFILE), PROFILE,
+        COMMIT, REPO_ROOT, "metadata proof", timedelta(days=1), now=NOW)
+    path = next((tmp_path / "private").rglob(subject._filename(grant.grant_ref)))  # noqa: SLF001
+    before = path.read_bytes()
+    evidence = subject.load_campaign_local_reconciliation_evidence(
+        tmp_path / "private", grant.grant_ref, REPO_ROOT, now=NOW + timedelta(days=2))
+    assert evidence.grant == grant and path.read_bytes() == before
+    assert evidence.authorizes_sat_contact is False
+    assert "metadata proof" not in repr(evidence)
+    with pytest.raises(TypeError, match="construction-denied"):
+        subject.CampaignLocalReconciliationEvidence()
+    with pytest.raises(AttributeError, match="immutable"):
+        evidence.grant = grant  # type: ignore[misc]
+    with pytest.raises(subject.CampaignGrantError, match="campaign-grant-not-yet-valid"):
+        subject.load_campaign_local_reconciliation_evidence(
+            tmp_path / "private", grant.grant_ref, REPO_ROOT, now=NOW - timedelta(seconds=1))
+    _head(monkeypatch, "b" * 40)
+    with pytest.raises(subject.CampaignGrantError, match="campaign-grant-state-invalid"):
+        subject.load_campaign_local_reconciliation_evidence(
+            tmp_path / "private", grant.grant_ref, REPO_ROOT, now=NOW)
+
+
 @pytest.mark.parametrize(
     ("payload", "reason"),
     [(b"{", "campaign-grant-state-invalid"),

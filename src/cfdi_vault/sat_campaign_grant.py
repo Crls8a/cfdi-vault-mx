@@ -121,6 +121,26 @@ class CampaignGrantClaimOutcome:
     created: bool
 
 
+class CampaignLocalReconciliationEvidence:
+    """Read-only historical grant evidence that never authorizes SAT contact."""
+    __slots__ = ("__grant",)
+    authorizes_sat_contact = False
+
+    def __init__(self) -> None:
+        raise TypeError("campaign-local-reconciliation-evidence-construction-denied")
+
+    def __setattr__(self, _name: str, _value: object) -> None:
+        raise AttributeError("campaign-local-reconciliation-evidence-immutable")
+
+    @property
+    def grant(self) -> CampaignGrant:
+        """Return the validated historical record; it is not live authority."""
+        return self.__grant
+
+    def __repr__(self) -> str:
+        return "CampaignLocalReconciliationEvidence(<validated>)"
+
+
 def new_campaign_invocation_ref() -> str:
     """Return a pre-generatable opaque reference for an invocation claim."""
     return f"inv-{secrets.token_hex(12)}"
@@ -198,6 +218,32 @@ def load_campaign_grant(
         if grant.expires_at <= current_time:
             raise CampaignGrantError("campaign-grant-expired")
         return grant
+
+    return _protect(load)
+
+
+def load_campaign_local_reconciliation_evidence(
+    storage_root: str | Path, grant_ref: str, repo_root: str | Path,
+    now: datetime | None = None,
+) -> CampaignLocalReconciliationEvidence:
+    """Load current-commit, not-before evidence after expiry; grants no SAT authority."""
+    _validate_grant_ref(grant_ref)
+    repository, current = _repository_context(repo_root)
+    current_time = _utc_datetime(datetime.now(timezone.utc) if now is None else now)
+
+    def load() -> CampaignLocalReconciliationEvidence:
+        with secure_state_transaction(
+            storage_root, _filename(grant_ref), repo_root=repository,
+        ) as transaction:
+            payload = transaction.read(max_bytes=_MAX_BYTES)
+        if payload is None:
+            raise CampaignGrantError("campaign-grant-state-not-found")
+        grant = _decode_campaign_grant(payload, grant_ref, current)
+        if current_time < grant.created_at:
+            raise CampaignGrantError("campaign-grant-not-yet-valid")
+        evidence = object.__new__(CampaignLocalReconciliationEvidence)
+        object.__setattr__(evidence, "_CampaignLocalReconciliationEvidence__grant", grant)
+        return evidence
 
     return _protect(load)
 
