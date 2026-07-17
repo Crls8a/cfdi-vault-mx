@@ -145,3 +145,24 @@ def test_final_state_save_failure_fails_closed_without_recontact(tmp_path, monke
     assert first.status == "uncertain"
     assert second.status != "in-progress" and contacts == [1]
     assert loaded.recovery.status is lifecycle.RecoveryStatus.DOWNLOAD_UNCERTAIN
+
+
+def test_terminal_save_failure_fails_closed_without_recontact(tmp_path, monkeypatch):
+    root, repo, _, recovery_ref, _ = _setup(tmp_path, monkeypatch)
+    original = subject.save_metadata_recovery_state
+    saves, contacts = [], []
+
+    def flaky_save(*args, **kwargs):
+        saves.append(1)
+        if len(saves) == 2:
+            raise RuntimeError("synthetic-terminal-save-failure")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(subject, "save_metadata_recovery_state", flaky_save)
+    first = _run(root, repo, lambda: contacts.append(1) or SimpleNamespace(
+        download_package=lambda _: _result(content=b"invalid")))
+    second = _run(root, repo, lambda: contacts.append(2))
+    loaded = state.load_metadata_recovery_state(root, recovery_ref, repo_root=repo)
+    assert first.status == "failed"
+    assert second.status != "in-progress" and contacts == [1]
+    assert loaded.recovery.status is lifecycle.RecoveryStatus.DOWNLOAD_FAILED

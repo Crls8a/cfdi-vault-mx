@@ -244,7 +244,20 @@ def _finish(root, repo, recovery_ref, package_ref_value, *, uncertain, error):  
             return _from_record(updated, False, False,
                                 "uncertain" if uncertain else "failed", error)
     except Exception:
-        return _empty("uncertain", "state-save-uncertain")
+        try:
+            with metadata_recovery_operation_lock(root, repo_root=repo):
+                record = load_metadata_recovery_state(root, recovery_ref, repo_root=repo)
+                if not _claimed(record, package_ref_value):
+                    return _empty("uncertain", "state-save-uncertain")
+                fallback = replace(record, recovery=record_package_download(
+                    record.recovery, package_ref_value, uncertain=uncertain,
+                    zip_valid=False if not uncertain else None,
+                ))
+                save_metadata_recovery_state(root, fallback, repo_root=repo)
+                return _from_record(fallback, False, False,
+                                    "uncertain" if uncertain else "failed", error)
+        except Exception:
+            return _empty("uncertain", "state-save-uncertain")
 
 
 def _finish_terminal(root, repo, recovery_ref, package_ref_value, *, error):  # type: ignore[no-untyped-def]
