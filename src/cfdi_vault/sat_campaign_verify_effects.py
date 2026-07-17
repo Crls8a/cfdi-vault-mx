@@ -55,6 +55,7 @@ _TERMINAL = {CampaignWorkState.NO_DATA: CampaignVerifyEffectAction.NO_DATA, Camp
 _VALID_OUTCOMES = frozenset({
     ("verify_scheduled", 0, False, None, False), ("verify_scheduled", 1, True, None, False),
     ("verify_scheduled", 1, True, "verify_retryable", False), ("verify_failed", 1, False, "verify_failed", False),
+    ("verify_scheduled", 1, False, "verify_retryable", False),
     ("packages_ready", 0, False, None, False), ("packages_ready", 1, True, None, True),
     ("no_data", 1, True, None, True), ("pending_after_budget", 0, False, None, False),
     ("verify_failed", 0, False, "verify_uncertain", False), ("verify_failed", 1, True, "sat_too_many_results", False),
@@ -156,8 +157,11 @@ def _validate_outcome(outcome: object) -> None:
             or type(outcome.verify_count) is not int or type(outcome.terminal_status_received) is not bool
             or type(outcome.download_attempts) is not int or outcome.download_attempts != 0
             or outcome.requires_live is not False
+            or (outcome.error_kind is not None and type(outcome.error_kind) is not str)
             or any(type(value) is not int or value < 0 for value in counters)
-            or sum(counters) != int(outcome.sat_contacted)
+            or outcome.verify_contacts_not_before_due != int(outcome.sat_contacted)
+            or outcome.verify_contacts_before_due != 0
+            or outcome.verify_contacts_due_unknown != 0
             or (outcome.recovery["status"], outcome.verify_count, outcome.sat_contacted,
                 outcome.error_kind, outcome.terminal_status_received) not in _VALID_OUTCOMES):
         raise CampaignVerifyEffectsError("campaign-verify-outcome-invalid")

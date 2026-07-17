@@ -12,7 +12,10 @@ import cfdi_vault.sat_campaign_manifest as policy
 import cfdi_vault.sat_campaign_verify_effects as subject
 from cfdi_vault.sat_campaign_recovery_projection import CampaignRecoveryProjectionError
 from cfdi_vault.sat_metadata_recovery_runner import MetadataRecoveryAdvanceOutcome
-from cfdi_vault.sat_metadata_recovery_state import MetadataRecoveryStateError
+from cfdi_vault.sat_metadata_recovery_state import (
+    MetadataRecoveryStateError,
+    MetadataVerifyErrorKind,
+)
 from cfdi_vault.setup_core import CredentialMode, LocalProfile, LocalProfileStatus
 
 NOW = datetime(2026, 7, 16, 12, tzinfo=timezone.utc)
@@ -165,6 +168,16 @@ def test_adapter_local_failure_stops_before_second(monkeypatch, tmp_path) -> Non
     assert len(calls.verify) == 1
 
 
+def test_zero_contact_retryable_factory_failure_stops_before_second(monkeypatch, tmp_path) -> None:
+    manifest = _manifest(2)
+    result, calls = _run(monkeypatch, tmp_path, manifest, (
+        _out("verify_scheduled", 1, False, error="verify_retryable", terminal=False),
+        _out("verify_scheduled", 1, True),
+    ))
+    assert (result.verify_attempts, _actions(result)) == (1, ("adapter_failed",))
+    assert len(calls.verify) == 1
+
+
 def test_confirmed_retryable_contact_can_use_second_slot_once(monkeypatch, tmp_path) -> None:
     manifest = _manifest(2)
     result, calls = _run(monkeypatch, tmp_path, manifest, (
@@ -175,6 +188,31 @@ def test_confirmed_retryable_contact_can_use_second_slot_once(monkeypatch, tmp_p
         2, ("verify_pending", "verify_pending"),
     )
     assert len(calls.verify) == 2 and len(set(calls.verify)) == 2
+
+
+@pytest.mark.parametrize(
+    "counter",
+    ("verify_contacts_before_due", "verify_contacts_due_unknown"),
+)
+def test_contact_evidence_must_be_not_before_due(monkeypatch, tmp_path, counter) -> None:
+    outcome = replace(
+        _out("verify_scheduled", 1, True),
+        verify_contacts_not_before_due=0,
+        **{counter: 1},
+    )
+    with pytest.raises(subject.CampaignVerifyEffectsError) as captured:
+        _run(monkeypatch, tmp_path, _manifest(1), (outcome,))
+    assert captured.value.reason == "campaign-verify-outcome-invalid"
+
+
+def test_error_kind_requires_exact_builtin_string(monkeypatch, tmp_path) -> None:
+    outcome = replace(
+        _out("verify_scheduled", 1, True),
+        error_kind=MetadataVerifyErrorKind.VERIFY_RETRYABLE,
+    )
+    with pytest.raises(subject.CampaignVerifyEffectsError) as captured:
+        _run(monkeypatch, tmp_path, _manifest(1), (outcome,))
+    assert captured.value.reason == "campaign-verify-outcome-invalid"
 
 
 @pytest.mark.parametrize(
