@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
+from enum import Enum
 from pathlib import Path
 
 import cfdi_vault.sat_metadata_recovery as lifecycle
@@ -27,16 +28,18 @@ from cfdi_vault.sat_metadata_recovery import (
     RecoveryStatus,
 )
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 _LEGACY_SCHEMA_VERSION = 3
 _PROVENANCE_SCHEMA_VERSION = 4
+_VERIFY_CLAIM_SCHEMA_VERSION = 5
 _STATE_KEYS = {"schemaVersion", "recoveries"}
 _LEGACY_RECORD_KEYS = {
     "recovery", "idSolicitud", "profileId", "direction", "kind", "fechaInicial",
     "fechaFinal", "criteriaHash", "authorizationRef", "packages", "artifacts",
 }
 _PROVENANCE_RECORD_KEYS = _LEGACY_RECORD_KEYS | {"observationProvenance"}
-_RECORD_KEYS = _PROVENANCE_RECORD_KEYS | {"verifyClaim"}
+_VERIFY_CLAIM_RECORD_KEYS = _PROVENANCE_RECORD_KEYS | {"verifyClaim"}
+_RECORD_KEYS = _VERIFY_CLAIM_RECORD_KEYS | {"lastVerifyErrorKind"}
 _VERIFY_CLAIM_KEYS = {"attempt", "dueAt", "claimedAt"}
 _PROVENANCE_KEYS = {
     "projectionVersion", "testedCommit", "observedAt", "entryPoint",
@@ -60,6 +63,15 @@ class MetadataRecoveryStateError(ValueError):
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(reason)
+
+
+class MetadataVerifyErrorKind(str, Enum):
+    """Classify the last completed VERIFY outcome without retaining raw errors."""
+
+    VERIFY_RETRYABLE = "verify_retryable"
+    SAT_TOO_MANY_RESULTS = "sat_too_many_results"
+    VERIFY_FAILED = "verify_failed"
+    VERIFY_UNCERTAIN = "verify_uncertain"
 
 
 @dataclass(frozen=True, repr=False)
@@ -119,6 +131,7 @@ class MetadataRecoveryStateRecord:
     artifact_bindings: tuple[MetadataPackageArtifactState, ...] = ()
     observation_provenance: MetadataObservationProvenance | None = None
     verify_claim: MetadataVerifyClaim | None = None
+    last_verify_error_kind: MetadataVerifyErrorKind | None = None
 
     def __post_init__(self) -> None:
         _validate_record(self)
@@ -127,6 +140,9 @@ class MetadataRecoveryStateRecord:
         """Return status only; exclude every private resume value."""
         document = self.recovery.to_redacted_document()
         document["artifacts"] = [item.to_redacted_document() for item in self.artifact_bindings]
+        document["lastVerifyErrorKind"] = (
+            self.last_verify_error_kind.value if self.last_verify_error_kind is not None else None
+        )
         return document
 
     def to_private_document(self) -> dict[str, object]:
@@ -142,6 +158,9 @@ class MetadataRecoveryStateRecord:
         document["artifacts"] = [item.to_private_document() for item in self.artifact_bindings]
         document["observationProvenance"] = _provenance_document(self.observation_provenance)
         document["verifyClaim"] = _verify_claim_document(self.verify_claim)
+        document["lastVerifyErrorKind"] = (
+            self.last_verify_error_kind.value if self.last_verify_error_kind is not None else None
+        )
         return document
 
 
@@ -280,6 +299,7 @@ def _validate_record(record: MetadataRecoveryStateRecord) -> None:
     _validate_recovery(record.recovery, record.verify_claim)
     _validate_observation_provenance(record)
     _validate_verify_claim(record)
+    _validate_verify_error_kind(record)
     values = (record.id_solicitud, record.profile_id, record.authorization_ref)
     if any(not isinstance(value, str) or not value.strip() for value in values):
         raise MetadataRecoveryStateError("recovery-state-invalid")
@@ -318,6 +338,18 @@ def _validate_record(record: MetadataRecoveryStateRecord) -> None:
     ):
         raise MetadataRecoveryStateError("package-binding-invalid")
     _validate_artifact_bindings(record)
+
+
+def _validate_verify_error_kind(record: MetadataRecoveryStateRecord) -> None:
+    kind = record.last_verify_error_kind
+    completed_attempts = record.recovery.verify_attempts - (
+        1 if record.verify_claim is not None else 0
+    )
+    if (
+        kind is not None
+        and (type(kind) is not MetadataVerifyErrorKind or completed_attempts < 1)
+    ):
+        raise MetadataRecoveryStateError("verify-error-kind-invalid")
 
 
 def _validate_observation_provenance(record: MetadataRecoveryStateRecord) -> None:
@@ -538,6 +570,7 @@ def _validate_replacement(
         return
     _validate_provenance_replacement(current, candidate)
     claim_transition = _validate_verify_claim_replacement(current, candidate)
+    _validate_verify_error_kind_replacement(current, candidate, claim_transition)
     if current.package_bindings and current.package_bindings != candidate.package_bindings:
         raise MetadataRecoveryStateError("package-binding-immutable")
     previous_artifacts = current.artifact_bindings
@@ -575,6 +608,24 @@ def _validate_replacement(
         added_artifacts[0].package_ref,
     ):
         raise MetadataRecoveryStateError("artifact-binding-transition-invalid")
+
+
+def _validate_verify_error_kind_replacement(
+    current: MetadataRecoveryStateRecord,
+    candidate: MetadataRecoveryStateRecord,
+    claim_transition: str | None,
+) -> None:
+    before, after = current.last_verify_error_kind, candidate.last_verify_error_kind
+    if claim_transition != "resolved":
+        if before is not after:
+            raise MetadataRecoveryStateError("verify-error-kind-transition-invalid")
+        return
+    successful = candidate.recovery.status in {
+        RecoveryStatus.PACKAGES_READY,
+        RecoveryStatus.NO_DATA,
+    }
+    if (successful and after is not None) or (not successful and after is None):
+        raise MetadataRecoveryStateError("verify-error-kind-transition-invalid")
 
 
 def _validate_provenance_replacement(
@@ -704,6 +755,7 @@ def _record_from_document(
     keys = {
         _LEGACY_SCHEMA_VERSION: _LEGACY_RECORD_KEYS,
         _PROVENANCE_SCHEMA_VERSION: _PROVENANCE_RECORD_KEYS,
+        _VERIFY_CLAIM_SCHEMA_VERSION: _VERIFY_CLAIM_RECORD_KEYS,
         _SCHEMA_VERSION: _RECORD_KEYS,
     }[schema_version]
     document = _mapping(value, keys)
@@ -738,9 +790,24 @@ def _record_from_document(
         ),
         verify_claim=(
             _verify_claim_from_document(document["verifyClaim"])
+            if schema_version in {_VERIFY_CLAIM_SCHEMA_VERSION, _SCHEMA_VERSION} else None
+        ),
+        last_verify_error_kind=(
+            _verify_error_kind_from_document(document["lastVerifyErrorKind"])
             if schema_version == _SCHEMA_VERSION else None
         ),
     )
+
+
+def _verify_error_kind_from_document(value: object) -> MetadataVerifyErrorKind | None:
+    if value is None:
+        return None
+    if type(value) is not str:
+        raise MetadataRecoveryStateError("verify-error-kind-invalid")
+    try:
+        return MetadataVerifyErrorKind(value)
+    except ValueError:
+        raise MetadataRecoveryStateError("verify-error-kind-invalid") from None
 
 
 def _verify_claim_from_document(value: object) -> MetadataVerifyClaim | None:
@@ -981,7 +1048,10 @@ def _read_state(path: Path) -> dict[str, object]:
     if (
         type(mapped["schemaVersion"]) is not int
         or mapped["schemaVersion"] not in {
-            _LEGACY_SCHEMA_VERSION, _PROVENANCE_SCHEMA_VERSION, _SCHEMA_VERSION,
+            _LEGACY_SCHEMA_VERSION,
+            _PROVENANCE_SCHEMA_VERSION,
+            _VERIFY_CLAIM_SCHEMA_VERSION,
+            _SCHEMA_VERSION,
         }
         or type(mapped["recoveries"]) is not list
     ):

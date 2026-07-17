@@ -4,6 +4,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from pathlib import Path
 from threading import Event
 from unittest.mock import Mock
@@ -79,7 +80,7 @@ def test_observation_provenance_v4_round_trips_privately_only(tmp_path) -> None:
 
     assert subject.load_metadata_recovery_state(tmp_path, record.recovery.recovery_ref) == record
     private = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
-    assert private["schemaVersion"] == 5
+    assert private["schemaVersion"] == 6
     assert private["recoveries"][0]["observationProvenance"] == {
         "projectionVersion": 1,
         "testedCommit": "f" * 40,
@@ -96,13 +97,14 @@ def test_observation_provenance_v4_round_trips_privately_only(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("schema_version", (3, 4))
-def test_legacy_state_reads_without_claim_and_rewrites_v5(tmp_path, schema_version: int) -> None:
+def test_legacy_state_reads_without_claim_and_rewrites_v6(tmp_path, schema_version: int) -> None:
     record = _pending_record()
     if schema_version == 4:
         record = replace(record, observation_provenance=_provenance())
     document = _state_document(record)
     document["schemaVersion"] = schema_version
     del document["recoveries"][0]["verifyClaim"]
+    del document["recoveries"][0]["lastVerifyErrorKind"]
     if schema_version == 3:
         del document["recoveries"][0]["observationProvenance"]
     _write_document(tmp_path, document)
@@ -113,11 +115,181 @@ def test_legacy_state_reads_without_claim_and_rewrites_v5(tmp_path, schema_versi
     assert (loaded.observation_provenance is None) is (schema_version == 3)
     subject.save_metadata_recovery_state(tmp_path, loaded)
     rewritten = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
-    assert rewritten["schemaVersion"] == 5
+    assert rewritten["schemaVersion"] == 6
     assert rewritten["recoveries"][0]["verifyClaim"] is None
+    assert rewritten["recoveries"][0]["lastVerifyErrorKind"] is None
     if schema_version == 3:
         with pytest.raises(subject.MetadataRecoveryStateError, match="observation-provenance-required"):
             subject.require_metadata_observation_provenance(loaded)
+
+
+@pytest.mark.parametrize("kind", tuple(subject.MetadataVerifyErrorKind))
+def test_verify_error_kind_v6_round_trips_privately(
+    tmp_path, kind: subject.MetadataVerifyErrorKind,
+) -> None:
+    record = _failed_record(last_verify_error_kind=kind)
+
+    subject.save_metadata_recovery_state(tmp_path, record)
+
+    loaded = subject.load_metadata_recovery_state(tmp_path, record.recovery.recovery_ref)
+    private = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
+    assert loaded.last_verify_error_kind is kind
+    assert private["schemaVersion"] == 6
+    assert private["recoveries"][0]["lastVerifyErrorKind"] == kind.value
+
+
+def test_verify_error_kind_is_safe_in_redacted_projection() -> None:
+    record = _failed_record(
+        last_verify_error_kind=subject.MetadataVerifyErrorKind.SAT_TOO_MANY_RESULTS,
+    )
+
+    redacted = record.to_redacted_document()
+
+    assert redacted["lastVerifyErrorKind"] == "sat_too_many_results"
+    serialized = repr(redacted)
+    assert REQUEST_ID not in serialized
+    assert record.profile_id not in serialized
+    assert record.authorization_ref not in serialized
+
+
+def test_schema_v5_decodes_without_error_kind_and_upgrades_on_save(tmp_path) -> None:
+    record = _claimed_record(
+        replace(_pending_record(), observation_provenance=_provenance()),
+    )
+    document = _state_document(record)
+    document["schemaVersion"] = 5
+    del document["recoveries"][0]["lastVerifyErrorKind"]
+    _write_document(tmp_path, document)
+
+    loaded = subject.load_metadata_recovery_state(tmp_path, record.recovery.recovery_ref)
+
+    assert loaded.verify_claim == record.verify_claim
+    assert loaded.last_verify_error_kind is None
+    subject.save_metadata_recovery_state(tmp_path, loaded)
+    rewritten = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
+    assert rewritten["schemaVersion"] == 6
+    assert rewritten["recoveries"][0]["lastVerifyErrorKind"] is None
+
+
+def test_verify_error_kind_rejects_string_and_enum_impostor() -> None:
+    class Impostor(str, Enum):
+        VERIFY_FAILED = "verify_failed"
+
+    for value in ("verify_failed", Impostor.VERIFY_FAILED):
+        with pytest.raises(subject.MetadataRecoveryStateError, match="verify-error-kind-invalid"):
+            replace(_failed_record(), last_verify_error_kind=value)
+
+
+@pytest.mark.parametrize("value", ("verification_failed", True))
+def test_verify_error_kind_loader_rejects_unknown_or_non_string_value(
+    tmp_path, value: object,
+) -> None:
+    record = _failed_record()
+    document = _state_document(record)
+    document["recoveries"][0]["lastVerifyErrorKind"] = value
+    _write_document(tmp_path, document)
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="verify-error-kind-invalid"):
+        subject.list_metadata_recovery_states(tmp_path)
+
+
+def test_verify_error_kind_rejects_value_before_completed_attempt() -> None:
+    pending = _pending_record()
+    claimed = _claimed_record(replace(pending, observation_provenance=_provenance()))
+
+    for record in (pending, claimed):
+        with pytest.raises(subject.MetadataRecoveryStateError, match="verify-error-kind-invalid"):
+            replace(
+                record,
+                last_verify_error_kind=subject.MetadataVerifyErrorKind.VERIFY_RETRYABLE,
+            )
+
+
+def test_verify_error_kind_cannot_mutate_without_exact_claim_resolution(tmp_path) -> None:
+    current = _failed_record(
+        last_verify_error_kind=subject.MetadataVerifyErrorKind.VERIFY_FAILED,
+    )
+    subject.save_metadata_recovery_state(tmp_path, current)
+
+    for value in (None, subject.MetadataVerifyErrorKind.VERIFY_UNCERTAIN):
+        with pytest.raises(
+            subject.MetadataRecoveryStateError,
+            match="verify-error-kind-transition-invalid",
+        ):
+            subject.save_metadata_recovery_state(
+                tmp_path,
+                replace(current, last_verify_error_kind=value),
+            )
+
+
+def test_verify_claim_creation_preserves_prior_error_kind(tmp_path) -> None:
+    current = _pending_after_one_attempt(
+        last_verify_error_kind=subject.MetadataVerifyErrorKind.VERIFY_RETRYABLE,
+    )
+    claimed = _claimed_record(current)
+    subject.save_metadata_recovery_state(tmp_path, current)
+
+    with pytest.raises(
+        subject.MetadataRecoveryStateError,
+        match="verify-error-kind-transition-invalid",
+    ):
+        subject.save_metadata_recovery_state(
+            tmp_path,
+            replace(
+                claimed,
+                last_verify_error_kind=subject.MetadataVerifyErrorKind.VERIFY_FAILED,
+            ),
+        )
+    subject.save_metadata_recovery_state(tmp_path, claimed)
+
+    loaded = subject.load_metadata_recovery_state(tmp_path, current.recovery.recovery_ref)
+    assert loaded.last_verify_error_kind is subject.MetadataVerifyErrorKind.VERIFY_RETRYABLE
+
+
+def test_exact_claim_resolution_sets_error_kind_and_clears_it_on_success(tmp_path) -> None:
+    initial = replace(_pending_record(), observation_provenance=_provenance())
+    claimed = _claimed_record(initial)
+    due = claimed.verify_claim.due_at
+    failed = replace(
+        claimed,
+        recovery=lifecycle.record_verification_failure(initial.recovery, checked_at=due),
+        verify_claim=None,
+        last_verify_error_kind=subject.MetadataVerifyErrorKind.VERIFY_FAILED,
+    )
+    subject.save_metadata_recovery_state(tmp_path, initial)
+    subject.save_metadata_recovery_state(tmp_path, claimed)
+    subject.save_metadata_recovery_state(tmp_path, failed)
+    assert subject.load_metadata_recovery_state(
+        tmp_path, initial.recovery.recovery_ref,
+    ).last_verify_error_kind is subject.MetadataVerifyErrorKind.VERIFY_FAILED
+
+    retry = _pending_after_one_attempt(
+        last_verify_error_kind=subject.MetadataVerifyErrorKind.VERIFY_RETRYABLE,
+    )
+    retry_claimed = _claimed_record(retry)
+    retry_due = retry_claimed.verify_claim.due_at
+    successful = replace(
+        retry_claimed,
+        recovery=lifecycle.record_finished_verification(
+            retry.recovery,
+            checked_at=retry_due,
+            package_refs=(),
+            record_count=0,
+        ),
+        observation_provenance=replace(
+            retry_claimed.observation_provenance,
+            verify_contacts_not_before_due=1,
+        ),
+        verify_claim=None,
+        last_verify_error_kind=None,
+    )
+    second_root = tmp_path / "second"
+    subject.save_metadata_recovery_state(second_root, retry)
+    subject.save_metadata_recovery_state(second_root, retry_claimed)
+    subject.save_metadata_recovery_state(second_root, successful)
+    assert subject.load_metadata_recovery_state(
+        second_root, retry.recovery.recovery_ref,
+    ).last_verify_error_kind is None
 
 
 def test_verify_claim_requires_exact_attempt_and_contact_bucket_on_success(tmp_path) -> None:
@@ -291,8 +463,8 @@ def test_redacted_state_excludes_all_private_resume_values() -> None:
         json.dumps({"schemaVersion": 2, "recoveries": []}),
         json.dumps({"schemaVersion": 3.0, "recoveries": []}),
         json.dumps({"schemaVersion": 4.0, "recoveries": []}),
-        json.dumps({"schemaVersion": 6, "recoveries": []}),
-        json.dumps({"schemaVersion": 5, "recoveries": [], "unexpected": True}),
+        json.dumps({"schemaVersion": 7, "recoveries": []}),
+        json.dumps({"schemaVersion": 6, "recoveries": [], "unexpected": True}),
     ),
 )
 def test_loader_fails_closed_for_invalid_or_unknown_state(tmp_path, document: str) -> None:
@@ -433,7 +605,7 @@ def test_artifacts_round_trip_privately_and_advance_sequentially(tmp_path) -> No
     with pytest.raises(subject.MetadataRecoveryStateError, match="artifact-binding-invalid"):
         replace(completed, artifact_bindings=tuple(reversed(completed.artifact_bindings)))
     private = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
-    assert private["schemaVersion"] == 5
+    assert private["schemaVersion"] == 6
     assert private["recoveries"][0]["artifacts"] == [
         item.to_private_document() for item in completed.artifact_bindings
     ]
@@ -1006,6 +1178,54 @@ def _completed_record() -> subject.MetadataRecoveryStateRecord:
     )
 
 
+def _failed_record(
+    *,
+    last_verify_error_kind: subject.MetadataVerifyErrorKind | None = None,
+) -> subject.MetadataRecoveryStateRecord:
+    pending = _pending_record()
+    due = pending.recovery.next_check_at
+    assert due is not None
+    return replace(
+        pending,
+        recovery=lifecycle.record_verification_failure(pending.recovery, checked_at=due),
+        last_verify_error_kind=last_verify_error_kind,
+    )
+
+
+def _pending_after_one_attempt(
+    *,
+    last_verify_error_kind: subject.MetadataVerifyErrorKind,
+) -> subject.MetadataRecoveryStateRecord:
+    pending = replace(_pending_record(), observation_provenance=_provenance())
+    due = pending.recovery.next_check_at
+    assert due is not None
+    return replace(
+        pending,
+        recovery=lifecycle.record_pending_verification(pending.recovery, checked_at=due),
+        last_verify_error_kind=last_verify_error_kind,
+    )
+
+
+def _claimed_record(
+    current: subject.MetadataRecoveryStateRecord,
+) -> subject.MetadataRecoveryStateRecord:
+    due = current.recovery.next_check_at
+    assert due is not None
+    return replace(
+        current,
+        recovery=replace(
+            current.recovery,
+            verify_attempts=current.recovery.verify_attempts + 1,
+        ),
+        observation_provenance=replace(current.observation_provenance, observed_at=due),
+        verify_claim=subject.MetadataVerifyClaim(
+            current.recovery.verify_attempts + 1,
+            due,
+            due,
+        ),
+    )
+
+
 def _artifact(
     record: subject.MetadataRecoveryStateRecord,
     package_index: int,
@@ -1042,7 +1262,7 @@ def _artifact(
 
 
 def _state_document(record: subject.MetadataRecoveryStateRecord) -> dict[str, object]:
-    return {"schemaVersion": 5, "recoveries": [record.to_private_document()]}
+    return {"schemaVersion": 6, "recoveries": [record.to_private_document()]}
 
 
 def _provenance(
