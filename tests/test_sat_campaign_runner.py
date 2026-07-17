@@ -48,8 +48,8 @@ def _setup(
 
 
 def _reserve(storage: Path, manifest: SatCampaignManifest, grant: grants.CampaignGrant,
-             invocation: int = 1):
-    return subject.reserve_metadata_campaign_capacity_once(
+             invocation: int = 1, *, max_reservations: int | None = None):
+    kwargs = dict(
         storage_root=storage,
         repo_root=REPO,
         campaign_ref=manifest.campaign_ref,
@@ -58,6 +58,30 @@ def _reserve(storage: Path, manifest: SatCampaignManifest, grant: grants.Campaig
         invocation_ref=f"inv-{invocation:024x}",
         now=NOW,
     )
+    if max_reservations is not None:
+        kwargs["max_reservations"] = max_reservations
+    return subject.reserve_metadata_campaign_capacity_once(**kwargs)
+
+
+def test_first_live_proof_can_reserve_only_received_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage, manifest, grant = _setup(tmp_path, monkeypatch)
+    result = _reserve(storage, manifest, grant, max_reservations=1)
+    assert result.outstanding_work_refs == (manifest.items[0].work_ref,)
+    assert result.actions[0].work_ref == manifest.items[0].work_ref
+    assert manifest.items[0].direction.value == "received"
+    persisted = manifests.load_campaign_manifest(storage, manifest.campaign_ref, repo_root=REPO)
+    assert persisted.items[1].state is CampaignWorkState.PLANNED
+
+
+@pytest.mark.parametrize("limit", (0, 3, True))
+def test_reservation_limit_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limit: object,
+) -> None:
+    storage, manifest, grant = _setup(tmp_path, monkeypatch)
+    with pytest.raises(subject.CampaignRunnerError, match="^campaign-reservation-limit-invalid$"):
+        _reserve(storage, manifest, grant, max_reservations=limit)  # type: ignore[arg-type]
 
 
 def _queries(manifest: SatCampaignManifest) -> dict[str, DownloadQuery]:

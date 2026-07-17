@@ -224,6 +224,7 @@ def test_one_shot_preserves_order_storage_lineage_and_invocation(monkeypatch, tm
         "reserve", "manifest", "queries", "effects",
     ]
     assert calls[1][1] == calls[2][1] == calls[6][1]["storage_root"] == profile.storage_root
+    assert calls[6][1]["max_reservations"] == 1
     assert calls[4][1]["storage_root"] == profile.storage_root
     assert calls[5][1] == {
         "storage_root": profile.storage_root,

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -108,11 +108,12 @@ def reserve_campaign_manifest_capacity(
     max_outstanding: int,
     *,
     repo_root: str | Path | None = None,
+    reservation_limit: int | None = None,
 ) -> CampaignCapacityReservation:
     """Atomically count and reserve chronological work under one store lock."""
     _validate_ref(campaign_ref)
     return _protect(lambda: _reserve_capacity(
-        storage_root, campaign_ref, max_outstanding, repo_root,
+        storage_root, campaign_ref, max_outstanding, repo_root, reservation_limit,
     ))
 
 
@@ -212,6 +213,7 @@ def _reserve_capacity(
     campaign_ref: str,
     max_outstanding: int,
     repo: str | Path | None,
+    reservation_limit: int | None = None,
 ) -> CampaignCapacityReservation:
     with secure_state_transaction(root, _filename(campaign_ref), repo_root=repo) as transaction:
         payload = transaction.read(max_bytes=_MAX_BYTES)
@@ -220,11 +222,29 @@ def _reserve_capacity(
         before = _decode(payload, campaign_ref)
         if type(max_outstanding) is not int or max_outstanding != before.max_outstanding:
             raise CampaignManifestStoreError("campaign-capacity-mismatch")
+        if (reservation_limit is not None
+                and (type(reservation_limit) is not int
+                     or not 1 <= reservation_limit <= before.max_outstanding)):
+            raise CampaignManifestStoreError("campaign-capacity-limit-invalid")
+        limit = before.max_outstanding if reservation_limit is None else reservation_limit
         existing = {
             item.work_ref for item in before.items
             if item.state is CampaignWorkState.OUTSTANDING
         }
-        after = reserve_campaign_work(before)
+        if reservation_limit is None:
+            after = reserve_campaign_work(before)
+        else:
+            free = max(0, limit - len(existing))
+            planned = tuple(
+                item.work_ref for item in before.items
+                if item.state is CampaignWorkState.PLANNED
+            )
+            selected = set(planned[:free])
+            after = replace(before, items=tuple(
+                replace(item, state=CampaignWorkState.OUTSTANDING)
+                if item.work_ref in selected else item
+                for item in before.items
+            ))
         new_refs = tuple(
             item.work_ref for item in after.items
             if item.state is CampaignWorkState.OUTSTANDING and item.work_ref not in existing

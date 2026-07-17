@@ -128,6 +128,7 @@ def run_metadata_campaign_once(
             campaign_ref=campaign_ref,
             grant_ref=grant_ref,
             profile_id=profile_id,
+            max_reservations=1,
             now=current,
         )
         current_manifest = load_campaign_manifest(

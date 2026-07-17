@@ -113,19 +113,26 @@ def reserve_metadata_campaign_capacity_once(
     grant_ref: str,
     profile_id: str,
     invocation_ref: str | None = None,
+    max_reservations: int | None = None,
     now: datetime | None = None,
 ) -> CampaignCapacityResult:
     """Claim one invocation and reserve capacity without permitting SAT contact."""
     manifest = load_campaign_manifest(storage_root, campaign_ref, repo_root=repo_root)
     grant = load_campaign_grant(storage_root, grant_ref, repo_root, now=now)
     _validate_authority(manifest, grant, profile_id)
+    if (max_reservations is not None
+            and (type(max_reservations) is not int
+                 or not 1 <= max_reservations <= grant.max_outstanding)):
+        raise CampaignRunnerError("campaign-reservation-limit-invalid")
+    reservation_limit = grant.max_outstanding if max_reservations is None else max_reservations
     claimed_ref = new_campaign_invocation_ref() if invocation_ref is None else invocation_ref
     claim = claim_campaign_grant_invocation(
         storage_root, grant_ref, claimed_ref, profile_id, repo_root, now=now,
     )
     try:
         reservation = reserve_campaign_manifest_capacity(
-            storage_root, campaign_ref, grant.max_outstanding, repo_root=repo_root,
+            storage_root, campaign_ref, grant.max_outstanding,
+            repo_root=repo_root, reservation_limit=reservation_limit,
         )
     except CampaignManifestStoreError as error:
         if claim.created:
