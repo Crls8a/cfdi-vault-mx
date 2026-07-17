@@ -135,6 +135,36 @@ def test_zero_txt_is_rejected_outside_pending_processing() -> None:
         replace(ready, recovery=forged)
 
 
+@pytest.mark.parametrize(
+    ("aggregate", "other_status", "other_zip"),
+    (
+        (lifecycle.RecoveryStatus.DOWNLOAD_FAILED, lifecycle.PackageRecoveryStatus.FAILED, False),
+        (lifecycle.RecoveryStatus.DOWNLOAD_UNCERTAIN, lifecycle.PackageRecoveryStatus.UNCERTAIN, None),
+    ),
+)
+def test_zip_pending_package_cannot_be_mixed_into_terminal_failure(
+    aggregate: lifecycle.RecoveryStatus,
+    other_status: lifecycle.PackageRecoveryStatus,
+    other_zip: bool | None,
+) -> None:
+    ready = _ready_record()
+    first, second = ready.recovery.packages
+    pending = lifecycle.record_package_download(
+        lifecycle.begin_package_download(ready.recovery, first.package_ref), first.package_ref,
+        zip_valid=True, txt_count=0,
+    )
+    forged_packages = (
+        pending.packages[0],
+        replace(pending.packages[1], status=other_status, zip_valid=other_zip),
+    )
+    with pytest.raises(subject.MetadataRecoveryStateError, match="recovery-state-invalid"):
+        replace(
+            ready,
+            recovery=replace(pending, status=aggregate, packages=forged_packages),
+            zip_receipts=(_zip_receipt(ready, first.package_ref),),
+        )
+
+
 def test_observation_provenance_v4_round_trips_privately_only(tmp_path) -> None:
     record = replace(_pending_record(), observation_provenance=_provenance())
 
@@ -1347,6 +1377,14 @@ def _artifact(
                 ),
             ),
         ),
+    )
+
+
+def _zip_receipt(record: subject.MetadataRecoveryStateRecord, package_ref: str) -> MetadataZipReceipt:
+    return MetadataZipReceipt(
+        record.recovery.recovery_ref, package_ref, "cmp-0123456789ab", "work-abcdef012345",
+        "b" * 64, 123, True,
+        "sat-metadata/cmp-0123456789ab/work-abcdef012345/packages/1-bbbbbbbbbbbb.zip",
     )
 
 

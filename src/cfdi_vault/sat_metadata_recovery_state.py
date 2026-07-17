@@ -555,6 +555,7 @@ def _validate_recovery(
         if package.status is PackageRecoveryStatus.FAILED and (package.zip_valid is not False or package.txt_count):
             raise MetadataRecoveryStateError("recovery-state-invalid")
     statuses = tuple(item.status for item in recovery.packages)
+    has_zip_pending = PackageRecoveryStatus.ZIP_DOWNLOADED_PENDING_PROCESSING in statuses
     no_packages = not statuses and recovery.record_count in {None, 0}
     pending = recovery.status is RecoveryStatus.VERIFY_SCHEDULED
     schedule_attempts = recovery.verify_attempts - (1 if verify_claim is not None else 0)
@@ -580,8 +581,10 @@ def _validate_recovery(
         RecoveryStatus.COMPLETED: bool(statuses)
         and all(s is PackageRecoveryStatus.COMPLETED for s in statuses) and recovery.txt_count > 0,
         RecoveryStatus.DOWNLOAD_UNCERTAIN: statuses.count(PackageRecoveryStatus.UNCERTAIN) == 1
+        and not has_zip_pending
         and all(s not in {PackageRecoveryStatus.DOWNLOADING, PackageRecoveryStatus.FAILED} for s in statuses),
         RecoveryStatus.DOWNLOAD_FAILED: bool(statuses)
+        and not has_zip_pending
         and all(s not in {PackageRecoveryStatus.DOWNLOADING, PackageRecoveryStatus.UNCERTAIN} for s in statuses)
         and (statuses.count(PackageRecoveryStatus.FAILED) == 1
              or (all(s is PackageRecoveryStatus.COMPLETED for s in statuses) and recovery.txt_count == 0)),
