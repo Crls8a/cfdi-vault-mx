@@ -21,6 +21,7 @@ from cfdi_vault.sat_campaign_manifest_store import (
 from cfdi_vault.sat_campaign_query import build_metadata_query_for_work
 from cfdi_vault.sat_metadata_recovery import MetadataRecovery, RecoveryStatus
 from cfdi_vault.sat_metadata_recovery_state import (
+    MetadataObservationProvenance,
     MetadataRecoveryStateRecord,
     MetadataVerifyErrorKind,
     campaign_metadata_recovery_ref,
@@ -83,7 +84,8 @@ def project_persisted_campaign_recovery(
         _deny("campaign-recovery-projection-lineage-invalid")
     try:
         record = load_metadata_recovery_state(storage_root, recovery_ref, repo_root=repo_root)
-        _validate_recovery(record, query, profile, criteria_hash, recovery_ref, grant_ref)
+        _validate_recovery(record, query, profile, criteria_hash, recovery_ref, grant_ref,
+                           grant.tested_commit)
         if record.recovery.created_at < claim.claimed_at:
             raise ValueError
     except CampaignRecoveryProjectionError:
@@ -113,11 +115,11 @@ def project_persisted_campaign_recovery(
 
 def _validate_recovery(
     record: object, query: DownloadQuery, profile: LocalProfile, criteria_hash: str,
-    recovery_ref: str, grant_ref: str,
+    recovery_ref: str, grant_ref: str, tested_commit: str,
 ) -> None:
     if type(record) is not MetadataRecoveryStateRecord or type(record.recovery) is not MetadataRecovery:
         _deny("campaign-recovery-projection-recovery-invalid")
-    period = query.period
+    period, provenance = query.period, record.observation_provenance
     exact = (record.recovery.recovery_ref == recovery_ref
              and record.profile_id == profile.profile_id
              and record.criteria_hash == criteria_hash
@@ -125,7 +127,10 @@ def _validate_recovery(
              and record.kind == query.request_type.value and period is not None
              and record.fecha_inicial == period.start.date().isoformat()
              and record.fecha_final == period.end.date().isoformat()
-             and record.authorization_ref == grant_ref)
+             and record.authorization_ref == grant_ref
+             and type(provenance) is MetadataObservationProvenance
+             and provenance.entry_point == "sat-campaign"
+             and provenance.tested_commit == tested_commit)
     if not exact:
         _deny("campaign-recovery-projection-recovery-invalid")
 
@@ -180,4 +185,4 @@ def _write(operation):  # type: ignore[no-untyped-def]
 
 
 def _deny(reason: str) -> None:
-    raise CampaignRecoveryProjectionError(reason)
+    raise CampaignRecoveryProjectionError(reason) from None

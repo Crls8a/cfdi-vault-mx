@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import traceback
 from dataclasses import fields, replace
 from datetime import datetime, timedelta, timezone
 from inspect import signature
@@ -42,11 +43,7 @@ def test_nonterminal_verified_state_is_unchanged_and_idempotent(tmp_path, monkey
     assert ctx.path.read_bytes() == before
 
 
-@pytest.mark.parametrize(
-    ("status", "expected"),
-    (("no_data", CampaignWorkState.NO_DATA), ("budget", CampaignWorkState.FAILED),
-     ("failed", CampaignWorkState.FAILED), ("uncertain", CampaignWorkState.FAILED)),
-)
+@pytest.mark.parametrize(("status", "expected"), (("no_data", CampaignWorkState.NO_DATA), ("budget", CampaignWorkState.FAILED), ("failed", CampaignWorkState.FAILED), ("uncertain", CampaignWorkState.FAILED)))
 def test_terminal_state_projects_once_and_replays_exactly(tmp_path, monkeypatch, status, expected) -> None:
     ctx = _context(tmp_path, monkeypatch, status)
     projected = subject.project_persisted_campaign_recovery(**ctx.args)
@@ -54,8 +51,7 @@ def test_terminal_state_projects_once_and_replays_exactly(tmp_path, monkeypatch,
     assert subject.project_persisted_campaign_recovery(**ctx.args) == projected
 
 
-@pytest.mark.parametrize(("depth", "expected"), ((0, CampaignWorkState.SPLIT),
-                                                   (1, CampaignWorkState.THRESHOLD_BLOCKED)))
+@pytest.mark.parametrize(("depth", "expected"), ((0, CampaignWorkState.SPLIT), (1, CampaignWorkState.THRESHOLD_BLOCKED)))
 def test_exact_persisted_5003_is_the_only_split_authority(tmp_path, monkeypatch, depth, expected) -> None:
     ctx = _context(tmp_path, monkeypatch, "5003", depth=depth)
     projected = subject.project_persisted_campaign_recovery(**ctx.args)
@@ -69,17 +65,14 @@ def test_exact_persisted_5003_is_the_only_split_authority(tmp_path, monkeypatch,
 @pytest.mark.parametrize("category", (None, "sat_too_many_results", state.MetadataVerifyErrorKind.VERIFY_RETRYABLE))
 def test_missing_forged_or_inconsistent_category_cannot_split(tmp_path, monkeypatch, category) -> None:
     ctx = _context(tmp_path, monkeypatch, "5003")
-    monkeypatch.setattr(subject, "load_metadata_recovery_state",
-                        lambda *a, **k: _tamper(ctx.record, last_verify_error_kind=category))
+    monkeypatch.setattr(subject, "load_metadata_recovery_state", lambda *a, **k: _tamper(ctx.record, last_verify_error_kind=category))
     before = ctx.path.read_bytes()
     with pytest.raises(subject.CampaignRecoveryProjectionError, match="campaign-recovery-projection-state-invalid"):
         subject.project_persisted_campaign_recovery(**ctx.args)
     assert ctx.path.read_bytes() == before
 
 
-@pytest.mark.parametrize("conflict", (
-    "campaign", "profile", "work", "grant", "claim", "recovery", "criteria", "direction", "kind", "date", "query",
-))
+@pytest.mark.parametrize("conflict", ("campaign", "profile", "work", "grant", "claim", "recovery", "criteria", "direction", "kind", "date", "query"))
 def test_every_lineage_binding_conflict_is_redacted_and_read_only(tmp_path, monkeypatch, conflict) -> None:
     ctx = _context(tmp_path, monkeypatch, "no_data")
     argument_conflicts = {"campaign": ("campaign_ref", "cmp-" + "f" * 12), "profile": ("profile", replace(ctx.profile, profile_id="profile-other")), "work": ("work_ref", ctx.manifest.items[1].work_ref), "grant": ("grant_ref", "grt-" + "f" * 24)}
@@ -91,12 +84,9 @@ def test_every_lineage_binding_conflict_is_redacted_and_read_only(tmp_path, monk
         document["submissionClaims"][0]["recoveryRef"] = "run-" + "f" * 12
         ctx.grant_path.write_text(json.dumps(document), encoding="utf-8")
     elif conflict == "query":
-        monkeypatch.setattr(subject, "build_metadata_query_for_work",
-                            lambda *a: replace(ctx.query, direction=DownloadDirection.ISSUED))
+        monkeypatch.setattr(subject, "build_metadata_query_for_work", lambda *a: replace(ctx.query, direction=DownloadDirection.ISSUED))
     else:
-        updates = {"recovery": replace(ctx.record.recovery, recovery_ref="run-" + "f" * 12)} if conflict == "recovery" else {
-            "criteria_hash": "f" * 64} if conflict == "criteria" else {"direction": "issued"} if conflict == "direction" else {
-            "kind": "cfdi"} if conflict == "kind" else {"fecha_final": "2026-01-13"}
+        updates = {"recovery": {"recovery": replace(ctx.record.recovery, recovery_ref="run-" + "f" * 12)}, "criteria": {"criteria_hash": "f" * 64}, "direction": {"direction": "issued"}, "kind": {"kind": "cfdi"}, "date": {"fecha_final": "2026-01-13"}}[conflict]
         monkeypatch.setattr(subject, "load_metadata_recovery_state", lambda *a, **k: _tamper(ctx.record, **updates))
     before = ctx.path.read_bytes()
     with pytest.raises(subject.CampaignRecoveryProjectionError) as captured:
@@ -106,10 +96,36 @@ def test_every_lineage_binding_conflict_is_redacted_and_read_only(tmp_path, monk
     assert ctx.path.read_bytes() == before
 
 
+@pytest.mark.parametrize("update", ({"tested_commit": "b" * 40}, {"entry_point": "metadata-recovery-runner"}, None))
+def test_stale_or_foreign_recovery_provenance_is_rejected(tmp_path, monkeypatch, update) -> None:
+    ctx = _context(tmp_path, monkeypatch, "scheduled")
+    provenance = None if update is None else replace(ctx.record.observation_provenance, **update)
+    stale = replace(ctx.record, observation_provenance=provenance)
+    if update is None:
+        monkeypatch.setattr(subject, "load_metadata_recovery_state", lambda *a, **k: stale)
+    else:
+        state.save_metadata_recovery_state(ctx.storage, stale, repo_root=ctx.repo)
+    before = ctx.path.read_bytes()
+    with pytest.raises(subject.CampaignRecoveryProjectionError, match="campaign-recovery-projection-recovery-invalid"):
+        subject.project_persisted_campaign_recovery(**ctx.args)
+    assert ctx.path.read_bytes() == before
+
+
+@pytest.mark.parametrize(("target", "reason", "outcome"), (("build_metadata_query_for_work", "campaign-recovery-projection-query-invalid", "scheduled"), ("load_campaign_local_reconciliation_evidence", "campaign-recovery-projection-lineage-invalid", "scheduled"), ("load_metadata_recovery_state", "campaign-recovery-projection-recovery-invalid", "scheduled"), ("record_campaign_manifest_result", "campaign-recovery-projection-write-failed", "no_data")))
+def test_generic_failures_suppress_private_exception_context(tmp_path, monkeypatch, target, reason, outcome) -> None:
+    ctx = _context(tmp_path, monkeypatch, outcome)
+    marker = "PRIVATE_MARKER"
+    monkeypatch.setattr(subject, target, lambda *a, **k: (_ for _ in ()).throw(RuntimeError(marker)))
+    with pytest.raises(subject.CampaignRecoveryProjectionError) as captured:
+        subject.project_persisted_campaign_recovery(**ctx.args)
+    formatted = "".join(traceback.format_exception(captured.value))
+    assert captured.value.reason == reason and captured.value.__suppress_context__
+    assert all(value not in formatted + repr(captured.value) for value in (marker, PROFILE, ctx.recovery_ref, str(ctx.storage)))
+
+
 def test_malformed_private_state_and_download_owned_states_fail_closed(tmp_path, monkeypatch) -> None:
     ctx = _context(tmp_path, monkeypatch, "packages")
-    for malformed in (SimpleNamespace(), _tamper(ctx.record, recovery=replace(
-            ctx.record.recovery, status=lifecycle.RecoveryStatus.COMPLETED))):
+    for malformed in (SimpleNamespace(), _tamper(ctx.record, recovery=replace(ctx.record.recovery, status=lifecycle.RecoveryStatus.COMPLETED))):
         monkeypatch.setattr(subject, "load_metadata_recovery_state", lambda *a, value=malformed, **k: value)
         with pytest.raises(subject.CampaignRecoveryProjectionError):
             subject.project_persisted_campaign_recovery(**ctx.args)
@@ -117,12 +133,10 @@ def test_malformed_private_state_and_download_owned_states_fail_closed(tmp_path,
 
 def test_atomic_store_error_flags_are_preserved_without_private_error_text(tmp_path, monkeypatch) -> None:
     ctx = _context(tmp_path, monkeypatch, "no_data")
-    monkeypatch.setattr(subject, "record_campaign_manifest_result", lambda *a, **k: (_ for _ in ()).throw(
-        CampaignManifestStoreError("PRIVATE", committed=True, uncertain=True)))
+    monkeypatch.setattr(subject, "record_campaign_manifest_result", lambda *a, **k: (_ for _ in ()).throw(CampaignManifestStoreError("PRIVATE", committed=True, uncertain=True)))
     with pytest.raises(subject.CampaignRecoveryProjectionError) as captured:
         subject.project_persisted_campaign_recovery(**ctx.args)
-    assert (captured.value.reason, captured.value.committed, captured.value.uncertain,
-            captured.value.retry_safe) == ("campaign-recovery-projection-write-failed", True, True, False)
+    assert (captured.value.reason, captured.value.committed, captured.value.uncertain, captured.value.retry_safe) == ("campaign-recovery-projection-write-failed", True, True, False)
     assert "PRIVATE" not in repr(captured.value)
 
 
@@ -130,9 +144,7 @@ def _context(tmp_path, monkeypatch, outcome: str, *, depth: int = 0):
     repo, storage = tmp_path / "repo", tmp_path / "storage"
     repo.mkdir()
     monkeypatch.setattr(grants, "_repository_context", lambda _root: (repo.resolve(), COMMIT))
-    profile = LocalProfile(PROFILE, "AAA010101AAA", storage, CredentialMode.REFERENCED,
-                           storage / "synthetic.cer", storage / "synthetic.key",
-                           "test-provider://synthetic", LocalProfileStatus.READY, "0" * 64)
+    profile = LocalProfile(PROFILE, "AAA010101AAA", storage, CredentialMode.REFERENCED, storage / "synthetic.cer", storage / "synthetic.key", "test-provider://synthetic", LocalProfileStatus.READY, "0" * 64)
     manifest = reserve_campaign_work(build_campaign_manifest(PROFILE))
     work = manifest.items[0]
     if depth:
@@ -146,39 +158,26 @@ def _context(tmp_path, monkeypatch, outcome: str, *, depth: int = 0):
     recovery_ref = state.campaign_metadata_recovery_ref(PROFILE, query.criteria_hash())
     manifest = bind_campaign_recovery(manifest, work.work_ref, recovery_ref=recovery_ref)
     initialize_campaign_manifest(storage, manifest, repo_root=repo)
-    grant = grants.create_campaign_grant(storage, manifest, PROFILE, COMMIT, repo, "metadata proof",
-                                         timedelta(hours=1), now=NOW)
+    grant = grants.create_campaign_grant(storage, manifest, PROFILE, COMMIT, repo, "metadata proof", timedelta(hours=1), now=NOW)
     invocation = "inv-" + "1" * 24
     grants.claim_campaign_grant_invocation(storage, grant.grant_ref, invocation, PROFILE, repo, now=NOW)
-    grants.claim_campaign_grant_submission(storage, grant.grant_ref, invocation, manifest, work.work_ref,
-                                           recovery_ref, PROFILE, repo, now=NOW)
+    grants.claim_campaign_grant_submission(storage, grant.grant_ref, invocation, manifest, work.work_ref, recovery_ref, PROFILE, repo, now=NOW)
     assert (period := query.period) is not None
     recovery = lifecycle.start_metadata_recovery(recovery_ref, created_at=NOW)
-    record = state.new_metadata_recovery_state(
-        recovery=recovery, id_solicitud="synthetic-request", profile_id=PROFILE,
-        direction=query.direction.value, kind=query.request_type.value,
-        fecha_inicial=period.start.date().isoformat(), fecha_final=period.end.date().isoformat(),
-        criteria_hash=query.criteria_hash(), authorization_ref=grant.grant_ref,
-        observation_provenance=state.new_metadata_observation_provenance(
-            tested_commit=COMMIT, observed_at=NOW, entry_point="sat-campaign"))
+    provenance = state.new_metadata_observation_provenance(tested_commit=COMMIT, observed_at=NOW, entry_point="sat-campaign")
+    record = state.new_metadata_recovery_state(recovery=recovery, id_solicitud="synthetic-request", profile_id=PROFILE, direction=query.direction.value, kind=query.request_type.value, fecha_inicial=period.start.date().isoformat(), fecha_final=period.end.date().isoformat(), criteria_hash=query.criteria_hash(), authorization_ref=grant.grant_ref, observation_provenance=provenance)
     state.save_metadata_recovery_state(storage, record, repo_root=repo)
     record = _persist_outcome(storage, repo, record, outcome)
-    args = dict(storage_root=storage, repo_root=repo, campaign_ref=manifest.campaign_ref,
-                grant_ref=grant.grant_ref, profile=profile, work_ref=work.work_ref,
-                now=NOW + timedelta(hours=2))
-    return SimpleNamespace(repo=repo, storage=storage, profile=profile, manifest=manifest,
-                           work_ref=work.work_ref, query=query, recovery_ref=recovery_ref,
-                           record=record, args=args, path=campaign_manifest_state_path(
-                               storage, manifest.campaign_ref, repo_root=repo),
-                           grant_path=next(storage.rglob(grants._filename(grant.grant_ref))))
+    args = dict(storage_root=storage, repo_root=repo, campaign_ref=manifest.campaign_ref, grant_ref=grant.grant_ref, profile=profile, work_ref=work.work_ref, now=NOW + timedelta(hours=2))
+    path = campaign_manifest_state_path(storage, manifest.campaign_ref, repo_root=repo)
+    return SimpleNamespace(repo=repo, storage=storage, profile=profile, manifest=manifest, work_ref=work.work_ref, query=query, recovery_ref=recovery_ref, record=record, args=args, path=path, grant_path=next(storage.rglob(grants._filename(grant.grant_ref))))
 
 
 def _persist_outcome(storage, repo, record, outcome):
     if outcome == "scheduled":
         return record
     if outcome == "budget":
-        record = replace(record, recovery=lifecycle.apply_recovery_deadline(
-            record.recovery, now=record.recovery.deadline_at))
+        record = replace(record, recovery=lifecycle.apply_recovery_deadline(record.recovery, now=record.recovery.deadline_at))
     else:
         assert (due := record.recovery.next_check_at) is not None
         claimed = runner._claim_verification(record, COMMIT, "sat-campaign", due, due)  # noqa: SLF001
@@ -187,18 +186,13 @@ def _persist_outcome(storage, repo, record, outcome):
         kind = None
         if outcome in {"packages", "no_data"}:
             packages = (state.package_ref("synthetic-package"),) if outcome == "packages" else ()
-            recovery = lifecycle.record_finished_verification(base.recovery, checked_at=due,
-                                                               package_refs=packages, record_count=None)
+            recovery = lifecycle.record_finished_verification(base.recovery, checked_at=due, package_refs=packages, record_count=None)
             bindings = (state.PackageIdBinding(packages[0], "synthetic-package"),) if packages else ()
             base = _tamper(base, package_bindings=bindings)
         else:
             recovery = lifecycle.record_verification_failure(base.recovery, checked_at=due)
-            kind = {"5003": state.MetadataVerifyErrorKind.SAT_TOO_MANY_RESULTS,
-                    "failed": state.MetadataVerifyErrorKind.VERIFY_FAILED,
-                    "uncertain": state.MetadataVerifyErrorKind.VERIFY_UNCERTAIN}[outcome]
-        record = runner._resolve_verification_claim(  # noqa: SLF001
-            base, recovery, kind, COMMIT, "sat-campaign", due,
-            0 if outcome in {"packages", "no_data"} else None)
+            kind = {"5003": state.MetadataVerifyErrorKind.SAT_TOO_MANY_RESULTS, "failed": state.MetadataVerifyErrorKind.VERIFY_FAILED, "uncertain": state.MetadataVerifyErrorKind.VERIFY_UNCERTAIN}[outcome]
+        record = runner._resolve_verification_claim(base, recovery, kind, COMMIT, "sat-campaign", due, 0 if outcome in {"packages", "no_data"} else None)  # noqa: SLF001
     state.save_metadata_recovery_state(storage, record, repo_root=repo)
     return record
 
