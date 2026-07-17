@@ -2,24 +2,27 @@
 
 from __future__ import annotations
 
+import codecs
 import re
 import stat
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import PurePosixPath
+from typing import Iterable
 from zipfile import BadZipFile, LargeZipFile, ZipFile, ZipInfo
 
+from cfdi_vault.metadata_parser import FIELD_ALIASES, REQUIRED_METADATA_FIELDS
 from cfdi_vault.package_processor import PackageProcessingError, PackageStorage, _reject_raw_backslash_names
 from cfdi_vault.storage import sha256_bytes
 
 _RUN_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
-_DELIMITERS = ("~", "\t", "|", ",")
 _MAX_PACKAGE_BYTES = 512 * 1024**2
 _MAX_TXT_MEMBERS = 32
 _MAX_TXT_FILE_BYTES = 1024**3
 _MAX_TOTAL_TXT_BYTES = 2 * 1024**3
 _MAX_COMPRESSION_RATIO = 200
+_MAX_HEADER_BYTES = 1024**2
 
 
 class MetadataPackageError(ValueError):
@@ -114,6 +117,7 @@ def process_metadata_package(
     multiple = len(extracted) > 1
     texts: list[StoredMetadataText] = []
     for entry_ordinal, data in enumerate(extracted, start=1):
+        inspection = _inspect_text(data)
         digest = sha256_bytes(data)
         discriminator = f"{ordinal}-{entry_ordinal}" if multiple else str(ordinal)
         key = f"sat-metadata/{safe_run_ref}/txt/{discriminator}-{digest[:12]}.txt"
@@ -123,7 +127,7 @@ def process_metadata_package(
                 sha256=digest,
                 storage_key=key,
                 written=write.written,
-                inspection=_inspect_text(data),
+                inspection=inspection,
             )
         )
 
@@ -191,22 +195,78 @@ def _validated_txt_members(package: ZipFile) -> tuple[ZipInfo, ...]:
     return tuple(sorted(members, key=lambda info: info.filename.casefold()))
 
 
-def _inspect_text(content: bytes) -> MetadataTextInspection:
+def _inspect_text_chunks(
+    chunks: Iterable[bytes], *, max_bytes: int = _MAX_TXT_FILE_BYTES
+) -> MetadataTextInspection:
+    """Inspect bounded UTF-8 metadata structure without retaining row text."""
+
+    if type(max_bytes) is not int or max_bytes <= 0 or type(chunks) is bytes:
+        raise MetadataPackageError("invalid metadata TXT stream") from None
+    decoder = codecs.getincrementaldecoder("utf-8-sig")()
+    header_parts: list[str] = []
+    header_complete = False
+    counting_header = True
+    records_present = False
+    total_bytes = 0
+    header_bytes = 0
+    seen = False
+
+    def consume(decoded: str) -> None:
+        nonlocal header_complete, records_present
+        if header_complete:
+            records_present = records_present or any(not char.isspace() for char in decoded)
+            return
+        for index, char in enumerate(decoded):
+            if char not in "\r\n":
+                continue
+            header_parts.append(decoded[:index])
+            header_complete = True
+            records_present = any(not decoded[position].isspace() for position in range(index + 1, len(decoded)))
+            return
+        header_parts.append(decoded)
+
     try:
-        decoded = content.decode("utf-8-sig")
+        for chunk in chunks:
+            seen = True
+            if type(chunk) is not bytes or not chunk:
+                raise MetadataPackageError("invalid metadata TXT stream") from None
+            total_bytes += len(chunk)
+            if total_bytes > max_bytes:
+                raise MetadataPackageError("metadata TXT byte budget exceeded") from None
+            if counting_header:
+                positions = tuple(position for position in (chunk.find(b"\r"), chunk.find(b"\n")) if position >= 0)
+                header_bytes += min(positions) if positions else len(chunk)
+                if header_bytes > _MAX_HEADER_BYTES:
+                    raise MetadataPackageError("metadata TXT header budget exceeded") from None
+                counting_header = not positions
+            consume(decoder.decode(chunk))
+        consume(decoder.decode(b"", final=True))
     except UnicodeDecodeError:
         return MetadataTextInspection("unsupported_encoding", None, (), 0, False)
+    except MetadataPackageError:
+        raise
+    except Exception:
+        raise MetadataPackageError("invalid metadata TXT stream") from None
+    if not seen:
+        raise MetadataPackageError("invalid metadata TXT stream") from None
 
-    lines = decoded.splitlines()
-    if not lines or not lines[0].strip():
-        return MetadataTextInspection("utf-8-sig", None, (), 0, any(line.strip() for line in lines[1:]))
-    header = lines[0]
-    delimiter = next((candidate for candidate in _DELIMITERS if candidate in header), None)
-    headers = tuple(part.strip() for part in header.split(delimiter)) if delimiter else (header.strip(),)
-    return MetadataTextInspection(
-        encoding="utf-8-sig",
-        delimiter=delimiter,
-        headers=headers,
-        column_count=len(headers),
-        records_present=any(line.strip() for line in lines[1:]),
+    header = "".join(header_parts)
+    headers = tuple(part.strip() for part in header.split("~")) if "~" in header else ()
+    normalized = tuple(value.casefold() for value in headers)
+    known = {alias.casefold() for aliases in FIELD_ALIASES.values() for alias in aliases}
+    compatible = (
+        headers
+        and all(headers)
+        and len(set(normalized)) == len(normalized)
+        and all(value in known for value in normalized)
+        and all(any(alias.casefold() in normalized for alias in FIELD_ALIASES[field]) for field in REQUIRED_METADATA_FIELDS)
     )
+    if not compatible:
+        raise MetadataPackageError("invalid metadata TXT structure") from None
+    return MetadataTextInspection("utf-8-sig", "~", headers, len(headers), records_present)
+
+
+def _inspect_text(content: bytes) -> MetadataTextInspection:
+    """Inspect one in-memory TXT through the bounded incremental path."""
+
+    return _inspect_text_chunks((content,))

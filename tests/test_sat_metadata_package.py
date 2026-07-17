@@ -12,6 +12,9 @@ import cfdi_vault.sat_metadata_package as subject
 from cfdi_vault.package_processor import MemoryPackageStorage
 from cfdi_vault.sat_metadata_package import MetadataPackageError, process_metadata_package
 
+_VALID_HEADER = b"uuid~rfcEmisor~rfcReceptor~fechaEmision~estadoComprobante~tipoComprobante"
+_VALID_HEADERS = ("uuid", "rfcEmisor", "rfcReceptor", "fechaEmision", "estadoComprobante", "tipoComprobante")
+
 
 def _zip(entries: list[tuple[str | ZipInfo, bytes]]) -> bytes:
     buffer = BytesIO()
@@ -63,8 +66,20 @@ class _Package:
         raise AssertionError("package.read must not run")
 
 
+class _OnePass:
+    def __init__(self, content: bytes) -> None:
+        self.content = content
+        self.iterations = 0
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        self.iterations += 1
+        if self.iterations != 1:
+            raise AssertionError("stream consumed twice")
+        yield from (bytes((value,)) for value in self.content)
+
+
 def test_stores_zip_before_single_txt_and_inspects_only_structure() -> None:
-    content = b"\xef\xbb\xbfVersion~Status\n1~Synthetic\n"
+    content = b"\xef\xbb\xbf" + _VALID_HEADER + b"\nsynthetic-row\n"
     package = _zip([("private/member-name.txt", content)])
     storage = MemoryPackageStorage()
     writes: list[str] = []
@@ -90,14 +105,14 @@ def test_stores_zip_before_single_txt_and_inspects_only_structure() -> None:
     assert repeated.texts[0].written is False
     assert result.texts[0].inspection.encoding == "utf-8-sig"
     assert result.texts[0].inspection.delimiter == "~"
-    assert result.texts[0].inspection.headers == ("Version", "Status")
-    assert result.texts[0].inspection.column_count == 2
+    assert result.texts[0].inspection.headers == _VALID_HEADERS
+    assert result.texts[0].inspection.column_count == 6
     assert result.texts[0].inspection.records_present is True
     assert content not in json.dumps(result.redacted()).encode()
 
 
 def test_multiple_txt_keys_are_deterministic_and_never_reuse_member_names() -> None:
-    content = b"Column\n"
+    content = _VALID_HEADER + b"\n"
     package = _zip([("zeta-secret.txt", content), ("nested/alpha-secret.TXT", content)])
     storage = MemoryPackageStorage()
 
@@ -199,7 +214,7 @@ def test_unsupported_encoding_is_stored_without_guessing_or_row_output() -> None
 def test_package_download_budget_boundaries_without_large_allocation(
     limit_offset: int, accepted: bool, monkeypatch
 ) -> None:  # type: ignore[no-untyped-def]
-    package = _zip([("metadata.txt", b"Header\n")])
+    package = _zip([("metadata.txt", _VALID_HEADER + b"\n")])
     monkeypatch.setattr(subject, "_MAX_PACKAGE_BYTES", len(package) + limit_offset)
     storage = MemoryPackageStorage()
     if accepted:
@@ -212,7 +227,7 @@ def test_package_download_budget_boundaries_without_large_allocation(
 
 @pytest.mark.parametrize(("count", "accepted"), [(31, True), (32, True), (33, False)])
 def test_txt_member_count_boundaries_precede_writes(count: int, accepted: bool) -> None:
-    package = _zip([(f"member-{index}.txt", b"Header\n") for index in range(count)])
+    package = _zip([(f"member-{index}.txt", _VALID_HEADER + b"\n") for index in range(count)])
     storage = MemoryPackageStorage()
     if accepted:
         process_metadata_package("run", 1, package, storage)
@@ -312,3 +327,83 @@ def test_crc_failure_is_fixed_redacted_and_never_written() -> None:
     assert str(caught.value) == "invalid ZIP package" and caught.value.__cause__ is None
     assert marker not in rendered and "Bad CRC-32" not in rendered
     assert storage.objects == {}
+
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
+def test_incremental_inspector_consumes_one_byte_chunks_once(newline: bytes) -> None:
+    stream = _OnePass(b"\xef\xbb\xbf" + _VALID_HEADER + newline + "synthetic-\u00e9".encode() + newline)
+    result = subject._inspect_text_chunks(stream)
+    assert result == subject.MetadataTextInspection("utf-8-sig", "~", _VALID_HEADERS, 6, True)
+    assert stream.iterations == 1
+
+
+@pytest.mark.parametrize(("tail", "records"), [(b"", False), (b"\r\n \n", False), (b"\nrow", True)])
+def test_incremental_inspector_distinguishes_header_only_from_records(tail: bytes, records: bool) -> None:
+    result = subject._inspect_text_chunks((_VALID_HEADER + tail,))
+    assert result.headers == _VALID_HEADERS and result.records_present is records
+
+
+def test_late_invalid_utf8_returns_exact_unsupported_inspection() -> None:
+    result = subject._inspect_text_chunks((_VALID_HEADER + b"\nrow\n", b"\xff"))
+    assert result == subject.MetadataTextInspection("unsupported_encoding", None, (), 0, False)
+
+
+@pytest.mark.parametrize("delimiter", [b",", b"|", b"\t", b""])
+def test_incremental_inspector_rejects_every_alternate_delimiter(delimiter: bytes) -> None:
+    header = delimiter.join(_VALID_HEADER.split(b"~"))
+    with pytest.raises(MetadataPackageError, match="^invalid metadata TXT structure$"):
+        subject._inspect_text_chunks((header,))
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        _VALID_HEADER + b"~UUID",
+        _VALID_HEADER + b"~private-header-marker",
+        _VALID_HEADER.replace(b"~tipoComprobante", b""),
+        _VALID_HEADER.replace(b"~rfcReceptor", b"~~rfcReceptor"),
+    ],
+)
+def test_invalid_headers_raise_fixed_redacted_error(header: bytes) -> None:
+    with pytest.raises(MetadataPackageError) as caught:
+        subject._inspect_text_chunks((header,))
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert str(caught.value) == "invalid metadata TXT structure" and caught.value.__cause__ is None
+    assert "private-header-marker" not in rendered and header.decode() not in rendered
+
+
+@pytest.mark.parametrize(("offset", "accepted"), [(1, True), (0, True), (-1, False)])
+def test_actual_txt_byte_budget_boundaries(offset: int, accepted: bool) -> None:
+    content = _VALID_HEADER
+    if accepted:
+        assert subject._inspect_text_chunks((content,), max_bytes=len(content) + offset).headers == _VALID_HEADERS
+    else:
+        with pytest.raises(MetadataPackageError, match="^metadata TXT byte budget exceeded$"):
+            subject._inspect_text_chunks((content,), max_bytes=len(content) + offset)
+
+
+@pytest.mark.parametrize(("offset", "accepted"), [(1, True), (0, True), (-1, False)])
+def test_header_budget_boundaries(offset: int, accepted: bool, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(subject, "_MAX_HEADER_BYTES", len(_VALID_HEADER) + offset)
+    if accepted:
+        assert subject._inspect_text_chunks((_VALID_HEADER,)).headers == _VALID_HEADERS
+    else:
+        with pytest.raises(MetadataPackageError, match="^metadata TXT header budget exceeded$"):
+            subject._inspect_text_chunks((_VALID_HEADER,))
+
+
+@pytest.mark.parametrize("changes", [{"chunks": b"raw"}, {"chunks": (b"",)}, {"chunks": (bytearray(b"x"),)}, {"chunks": ()}, {"max_bytes": True}, {"max_bytes": 0}, {"max_bytes": 1.0}])
+def test_incremental_inspector_rejects_invalid_exact_inputs(changes: dict[str, object]) -> None:
+    values: dict[str, object] = {"chunks": (_VALID_HEADER,), "max_bytes": 1024}
+    values.update(changes)
+    with pytest.raises(MetadataPackageError, match="^invalid metadata TXT stream$"):
+        subject._inspect_text_chunks(**values)  # type: ignore[arg-type]
+
+
+def test_incompatible_txt_is_inspected_before_txt_write() -> None:
+    package = _zip([("metadata.txt", b"private-header-marker~unknown\nrow")])
+    storage = MemoryPackageStorage()
+    with pytest.raises(MetadataPackageError, match="^invalid metadata TXT structure$"):
+        process_metadata_package("run", 1, package, storage)
+    assert len(storage.objects) == 1
+    assert next(iter(storage.objects)).endswith(".zip")

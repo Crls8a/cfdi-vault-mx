@@ -79,7 +79,10 @@ class _DefinitiveError(RuntimeError):
 def _zip() -> bytes:
     stream = BytesIO()
     with ZipFile(stream, "w") as archive:
-        archive.writestr("metadata.txt", b"\xef\xbb\xbfVersion~Status\n1~Synthetic\n")
+        archive.writestr(
+            "metadata.txt",
+            b"\xef\xbb\xbfuuid~rfcEmisor~rfcReceptor~fechaEmision~estadoComprobante~tipoComprobante\nsynthetic-row\n",
+        )
     return stream.getvalue()
 
 
