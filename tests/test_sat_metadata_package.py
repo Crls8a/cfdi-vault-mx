@@ -407,3 +407,36 @@ def test_incompatible_txt_is_inspected_before_txt_write() -> None:
         process_metadata_package("run", 1, package, storage)
     assert len(storage.objects) == 1
     assert next(iter(storage.objects)).endswith(".zip")
+
+
+def test_single_large_source_chunk_is_subdivided_before_decode(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    real_factory = subject.codecs.getincrementaldecoder
+    decode_sizes: list[int] = []
+
+    class TrackingDecoder:
+        def __init__(self) -> None:
+            self.inner = real_factory("utf-8-sig")()
+
+        def decode(self, data, final=False):  # type: ignore[no-untyped-def]
+            decode_sizes.append(len(data))
+            return self.inner.decode(data, final)
+
+    monkeypatch.setattr(subject.codecs, "getincrementaldecoder", lambda _encoding: TrackingDecoder)
+    content = _VALID_HEADER + b"\n" + b"x" * (4 * 1024**2 + 17)
+    result = subject._inspect_text(content)
+    assert result.headers == _VALID_HEADERS and result.records_present is True
+    assert len(decode_sizes) > 4 and max(decode_sizes) <= 1024**2
+
+
+def test_later_invalid_member_prevents_every_txt_write() -> None:
+    package = _zip(
+        [
+            ("a-valid.txt", _VALID_HEADER + b"\nrow"),
+            ("z-invalid.txt", b"private-header-marker~unknown\nrow"),
+        ]
+    )
+    storage = MemoryPackageStorage()
+    with pytest.raises(MetadataPackageError, match="^invalid metadata TXT structure$"):
+        process_metadata_package("run", 1, package, storage)
+    assert len(storage.objects) == 1
+    assert all(key.endswith(".zip") for key in storage.objects)

@@ -23,6 +23,7 @@ _MAX_TXT_FILE_BYTES = 1024**3
 _MAX_TOTAL_TXT_BYTES = 2 * 1024**3
 _MAX_COMPRESSION_RATIO = 200
 _MAX_HEADER_BYTES = 1024**2
+_DECODE_WINDOW_BYTES = 1024**2
 
 
 class MetadataPackageError(ValueError):
@@ -115,9 +116,9 @@ def process_metadata_package(
 
     package_write = storage.write_bytes_idempotent(package_key, content)
     multiple = len(extracted) > 1
+    inspections = tuple(_inspect_text(data) for data in extracted)
     texts: list[StoredMetadataText] = []
-    for entry_ordinal, data in enumerate(extracted, start=1):
-        inspection = _inspect_text(data)
+    for entry_ordinal, (data, inspection) in enumerate(zip(extracted, inspections), start=1):
         digest = sha256_bytes(data)
         discriminator = f"{ordinal}-{entry_ordinal}" if multiple else str(ordinal)
         key = f"sat-metadata/{safe_run_ref}/txt/{discriminator}-{digest[:12]}.txt"
@@ -239,7 +240,9 @@ def _inspect_text_chunks(
                 if header_bytes > _MAX_HEADER_BYTES:
                     raise MetadataPackageError("metadata TXT header budget exceeded") from None
                 counting_header = not positions
-            consume(decoder.decode(chunk))
+            view = memoryview(chunk)
+            for start in range(0, len(view), _DECODE_WINDOW_BYTES):
+                consume(decoder.decode(view[start : start + _DECODE_WINDOW_BYTES]))
         consume(decoder.decode(b"", final=True))
     except UnicodeDecodeError:
         return MetadataTextInspection("unsupported_encoding", None, (), 0, False)
