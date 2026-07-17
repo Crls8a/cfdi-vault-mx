@@ -119,6 +119,7 @@ supported LIB-005B and LIB-005C rows are public library API.
 
 | Module | Classification | Boundary |
 |---|---|---|
+| `cfdi_vault.sat_artifact_store` | Internal reference-system persistence | Durable chunked writes to opaque external artifact paths; not a supported import. |
 | `cfdi_vault.fake_sat` | Internal compatibility fake | Legacy multi-operation shape; not the split public fake contract. |
 | `cfdi_vault.sat_async_verify` | Internal implementation | Verification helper, not a stable consumer surface. |
 | `cfdi_vault.sat_auth_constants` | Internal implementation | Authentication constants may change with verified evidence. |
