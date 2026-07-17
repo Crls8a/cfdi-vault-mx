@@ -7,8 +7,16 @@ import pytest
 
 import cfdi_vault.sat_campaign_run as subject
 from cfdi_vault.sat_campaign_grant import CampaignGrant, campaign_manifest_digest
-from cfdi_vault.sat_campaign_manifest import build_campaign_manifest
-from cfdi_vault.sat_campaign_runner import CampaignCapacityResult
+from cfdi_vault.sat_campaign_manifest import (
+    CampaignWorkState,
+    build_campaign_manifest,
+    reserve_campaign_work,
+)
+from cfdi_vault.sat_campaign_runner import (
+    CampaignCapacityAction,
+    CampaignCapacityResult,
+    CampaignCapacityWork,
+)
 from cfdi_vault.sat_campaign_submission_effects import (
     CampaignSubmissionEffectAction as Action,
 )
@@ -17,6 +25,15 @@ from cfdi_vault.sat_campaign_submission_effects import (
 )
 from cfdi_vault.sat_campaign_submission_effects import (
     CampaignSubmissionEffectsResult as Effects,
+)
+from cfdi_vault.sat_campaign_verify_effects import (
+    CampaignVerifyEffectAction as VerifyAction,
+)
+from cfdi_vault.sat_campaign_verify_effects import (
+    CampaignVerifyEffectEvent as VerifyEvent,
+)
+from cfdi_vault.sat_campaign_verify_effects import (
+    CampaignVerifyEffectsResult as VerifyEffects,
 )
 from cfdi_vault.setup_core import CredentialMode, LocalProfile, LocalProfileStatus
 
@@ -41,28 +58,50 @@ def _grant(manifest) -> CampaignGrant:
     )
 
 
-def _wire(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, events=(), attempts=0):
-    profile, manifest, calls = _profile(tmp_path), build_campaign_manifest(PROFILE), []
+def _wire(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    events=(),
+    attempts=0,
+    *,
+    manifest=None,
+    projected=None,
+    verify_result=None,
+    call_log=None,
+    capacity=None,
+):
+    profile = _profile(tmp_path)
+    manifest = build_campaign_manifest(PROFILE) if manifest is None else manifest
+    projected = manifest if projected is None else projected
+    calls = [] if call_log is None else call_log
     grant = _grant(manifest)
     provider = SimpleNamespace(provider_scheme="windows-credential-manager")
     monkeypatch.setattr(subject, "load_profile", lambda value: calls.append(("profile", value)) or profile)
-    manifests = iter((manifest, manifest))
+    manifests = iter((manifest, projected))
     monkeypatch.setattr(subject, "load_campaign_manifest", lambda storage, ref, **kw:
                         calls.append(("manifest", storage, ref, kw)) or next(manifests))
     monkeypatch.setattr(subject.grants, "load_campaign_grant", lambda storage, ref, repo, now=None:
                         calls.append(("grant", storage, ref, repo, now)) or grant)
     monkeypatch.setattr(subject.preflight, "verify_campaign_preflight", lambda **kw:
                         calls.append(("preflight", kw)) or "evidence")
-    capacity = CampaignCapacityResult("inv-" + "2" * 24, (), ())
+    capacity = capacity or CampaignCapacityResult("inv-" + "2" * 24, (), ())
     monkeypatch.setattr(subject, "reserve_metadata_campaign_capacity_once", lambda **kw:
                         calls.append(("reserve", kw)) or capacity)
-    queries = {"work-a": object(), "work-b": object(), "work-c": object()}
+    outstanding = tuple(
+        item.work_ref for item in projected.items
+        if item.state is CampaignWorkState.OUTSTANDING
+    )
+    query_refs = outstanding or ("work-a", "work-b", "work-c")
+    queries = {work_ref: object() for work_ref in query_refs}
     monkeypatch.setattr(subject, "build_outstanding_metadata_queries", lambda current, bound:
                         calls.append(("queries", current, bound)) or queries)
     def adapter():
         calls.append(("adapter-called",))
     monkeypatch.setattr(subject, "build_campaign_metadata_request_factory", lambda **kw:
                         calls.append(("adapter-built", kw)) or adapter)
+    verified = VerifyEffects(0, ()) if verify_result is None else verify_result
+    monkeypatch.setattr(subject.verification, "execute_metadata_verify_effects_once", lambda **kw:
+                        calls.append(("verify-effects", kw)) or verified)
     monkeypatch.setattr(subject.submission, "execute_metadata_submission_effects_once", lambda **kw:
                         calls.append(("effects", kw)) or Effects(attempts, tuple(events)))
     result = subject.run_metadata_campaign_once(
@@ -76,13 +115,23 @@ def _wire(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, events=(), attempts=0
 def test_one_shot_preserves_order_storage_lineage_and_invocation(monkeypatch, tmp_path) -> None:
     result, calls, profile, capacity, queries, adapter = _wire(monkeypatch, tmp_path)
     assert [call[0] for call in calls] == [
-        "profile", "manifest", "grant", "preflight", "reserve", "manifest", "queries",
-        "adapter-built", "effects",
+        "profile", "manifest", "grant", "preflight", "adapter-built", "verify-effects",
+        "reserve", "manifest", "queries", "effects",
     ]
-    assert calls[1][1] == calls[2][1] == calls[4][1]["storage_root"] == profile.storage_root
-    assert calls[7][1]["storage_root"] == calls[8][1]["storage_root"] == profile.storage_root
-    assert calls[8][1]["invocation_ref"] == capacity.invocation_ref
-    assert calls[8][1]["queries_by_work"] is queries and calls[8][1]["adapter_factory"] is adapter
+    assert calls[1][1] == calls[2][1] == calls[6][1]["storage_root"] == profile.storage_root
+    assert calls[4][1]["storage_root"] == profile.storage_root
+    assert calls[5][1] == {
+        "storage_root": profile.storage_root,
+        "repo_root": tmp_path / "repo",
+        "campaign_ref": CAMPAIGN,
+        "grant_ref": GRANT,
+        "profile": profile,
+        "verifier_factory": adapter,
+        "now": NOW,
+    }
+    assert calls[9][1]["invocation_ref"] == capacity.invocation_ref
+    assert calls[9][1]["queries_by_work"] is queries
+    assert calls[9][1]["adapter_factory"] is adapter
     assert result == subject.CampaignRunResult("completed", 0, 3, 0, 0, 0, 0, 0, 0)
 
 
@@ -94,6 +143,8 @@ def test_preflight_failure_never_reserves_and_is_retry_safe(monkeypatch, tmp_pat
     monkeypatch.setattr(subject.grants, "load_campaign_grant", lambda *a, **k: grant)
     monkeypatch.setattr(subject.preflight, "verify_campaign_preflight", lambda **kw: (_ for _ in ()).throw(OSError("secret")))
     called = []
+    monkeypatch.setattr(subject.verification, "execute_metadata_verify_effects_once", lambda **kw:
+                        called.append(("verify", kw)))
     monkeypatch.setattr(subject, "reserve_metadata_campaign_capacity_once", lambda **kw: called.append(kw))
     with pytest.raises(subject.CampaignRunError) as caught:
         subject.run_metadata_campaign_once(
@@ -104,6 +155,142 @@ def test_preflight_failure_never_reserves_and_is_retry_safe(monkeypatch, tmp_pat
     assert (caught.value.error, caught.value.reason, caught.value.retry_safe) == \
         ("sat_campaign_run_failed", "campaign-run-preflight-failed", True)
     assert not called and "secret" not in repr(caught.value)
+
+
+@pytest.mark.parametrize(("action", "reserved"), (
+    (VerifyAction.SUBMISSION_PENDING, 0),
+    (VerifyAction.WAITING, 0),
+    (VerifyAction.VERIFY_PENDING, 0),
+    (VerifyAction.PACKAGES_READY, 0),
+    (VerifyAction.NO_DATA, 1),
+    (VerifyAction.SPLIT, 1),
+))
+def test_nonblocking_verify_is_projected_before_reservation(
+    monkeypatch, tmp_path, action, reserved,
+) -> None:
+    manifest = reserve_campaign_work(build_campaign_manifest(PROFILE))
+    work_ref = next(
+        item.work_ref for item in manifest.items
+        if item.state is CampaignWorkState.OUTSTANDING
+    )
+    reservation = CampaignCapacityResult(
+        "inv-" + "2" * 24, (),
+        (() if not reserved else (CampaignCapacityWork(
+            CampaignCapacityAction.RESERVED_WITHOUT_CONTACT,
+            next(item.work_ref for item in manifest.items
+                 if item.state is CampaignWorkState.PLANNED),
+        ),)),
+    )
+    result, calls, *_ = _wire(
+        monkeypatch, tmp_path, manifest=manifest,
+        verify_result=VerifyEffects(0, (VerifyEvent(work_ref, action),)),
+        capacity=reservation,
+    )
+    assert [call[0] for call in calls].index("verify-effects") < \
+        [call[0] for call in calls].index("reserve")
+    assert result.reserved_count == reserved
+
+
+@pytest.mark.parametrize("action", (
+    VerifyAction.ADAPTER_FAILED,
+    VerifyAction.FAILED,
+    VerifyAction.THRESHOLD_BLOCKED,
+))
+def test_blocking_verify_stops_before_reservation(monkeypatch, tmp_path, action) -> None:
+    manifest = reserve_campaign_work(build_campaign_manifest(PROFILE))
+    work_ref = next(
+        item.work_ref for item in manifest.items
+        if item.state is CampaignWorkState.OUTSTANDING
+    )
+    calls = []
+    with pytest.raises(subject.CampaignRunError) as caught:
+        _wire(
+            monkeypatch, tmp_path, manifest=manifest,
+            verify_result=VerifyEffects(1, (VerifyEvent(work_ref, action),)),
+            call_log=calls,
+        )
+    assert (caught.value.reason, caught.value.retry_safe) == \
+        ("campaign-run-reconciliation-required", False)
+    assert "reserve" not in [call[0] for call in calls]
+
+
+def test_two_unique_verify_attempts_are_accepted(monkeypatch, tmp_path) -> None:
+    manifest = reserve_campaign_work(build_campaign_manifest(PROFILE))
+    work_refs = tuple(
+        item.work_ref for item in manifest.items
+        if item.state is CampaignWorkState.OUTSTANDING
+    )
+    result, calls, *_ = _wire(
+        monkeypatch, tmp_path, manifest=manifest,
+        verify_result=VerifyEffects(2, tuple(
+            VerifyEvent(work_ref, VerifyAction.VERIFY_PENDING)
+            for work_ref in work_refs
+        )),
+    )
+    assert result.status == "completed"
+    assert [call[0] for call in calls].count("verify-effects") == 1
+
+
+def _invalid_verify_results(work_ref: str):
+    class WorkRef(str):
+        pass
+
+    event = VerifyEvent(work_ref, VerifyAction.WAITING)
+    return (
+        SimpleNamespace(verify_attempts=0, events=()),
+        VerifyEffects(True, ()), VerifyEffects(-1, ()), VerifyEffects(3, ()),
+        VerifyEffects(0, []),
+        VerifyEffects(0, (SimpleNamespace(work_ref=work_ref, action=VerifyAction.WAITING),)),
+        VerifyEffects(0, (VerifyEvent(WorkRef(work_ref), VerifyAction.WAITING),)),
+        VerifyEffects(0, (VerifyEvent("", VerifyAction.WAITING),)),
+        VerifyEffects(0, (VerifyEvent("work-foreign000000", VerifyAction.WAITING),)),
+        VerifyEffects(0, (VerifyEvent(work_ref, "waiting"),)),
+        VerifyEffects(0, (event, event)),
+        VerifyEffects(0, (event, VerifyEvent(work_ref, VerifyAction.NO_DATA))),
+        VerifyEffects(0, (event, VerifyEvent(work_ref, VerifyAction.WAITING), event)),
+    )
+
+
+def test_malformed_verify_results_fail_closed_before_reservation(monkeypatch, tmp_path) -> None:
+    manifest = reserve_campaign_work(build_campaign_manifest(PROFILE))
+    work_ref = next(
+        item.work_ref for item in manifest.items
+        if item.state is CampaignWorkState.OUTSTANDING
+    )
+    for invalid in _invalid_verify_results(work_ref):
+        calls = []
+        with monkeypatch.context() as scoped:
+            with pytest.raises(subject.CampaignRunError) as caught:
+                _wire(
+                    scoped, tmp_path, manifest=manifest, verify_result=invalid,
+                    call_log=calls,
+                )
+        assert (caught.value.reason, caught.value.retry_safe) == \
+            ("campaign-run-reconciliation-required", False)
+        assert "reserve" not in [call[0] for call in calls]
+
+
+def test_verify_exception_is_redacted_and_stops_before_reservation(monkeypatch, tmp_path) -> None:
+    profile, manifest = _profile(tmp_path), build_campaign_manifest(PROFILE)
+    grant, calls = _grant(manifest), []
+    monkeypatch.setattr(subject, "load_profile", lambda _: profile)
+    monkeypatch.setattr(subject, "load_campaign_manifest", lambda *a, **k: manifest)
+    monkeypatch.setattr(subject.grants, "load_campaign_grant", lambda *a, **k: grant)
+    monkeypatch.setattr(subject.preflight, "verify_campaign_preflight", lambda **kw: object())
+    monkeypatch.setattr(subject, "build_campaign_metadata_request_factory", lambda **kw: object())
+    monkeypatch.setattr(subject.verification, "execute_metadata_verify_effects_once", lambda **kw:
+                        (_ for _ in ()).throw(OSError("PRIVATE-MARKER")))
+    monkeypatch.setattr(subject, "reserve_metadata_campaign_capacity_once", lambda **kw:
+                        calls.append(kw))
+    with pytest.raises(subject.CampaignRunError) as caught:
+        subject.run_metadata_campaign_once(
+            profile_id=PROFILE, campaign_ref=manifest.campaign_ref, grant_ref=GRANT,
+            repo_root=tmp_path / "repo", environ={}, provider_factory=lambda _: object(),
+            checks_factory=lambda _: {}, now=NOW,
+        )
+    assert (caught.value.reason, caught.value.retry_safe) == \
+        ("campaign-run-reconciliation-required", False)
+    assert calls == [] and "PRIVATE-MARKER" not in repr(caught.value)
 
 
 def test_last_event_per_work_drives_redacted_attention_aggregates(monkeypatch, tmp_path) -> None:

@@ -10,8 +10,9 @@ from typing import Literal
 import cfdi_vault.sat_campaign_grant as grants
 import cfdi_vault.sat_campaign_preflight as preflight
 import cfdi_vault.sat_campaign_submission_effects as submission
+import cfdi_vault.sat_campaign_verify_effects as verification
 from cfdi_vault.sat_campaign_adapter import build_campaign_metadata_request_factory
-from cfdi_vault.sat_campaign_manifest import SatCampaignManifest
+from cfdi_vault.sat_campaign_manifest import CampaignWorkState, SatCampaignManifest
 from cfdi_vault.sat_campaign_manifest_store import load_campaign_manifest
 from cfdi_vault.sat_campaign_query import build_outstanding_metadata_queries
 from cfdi_vault.sat_campaign_runner import reserve_metadata_campaign_capacity_once
@@ -53,7 +54,7 @@ def run_metadata_campaign_once(
     checks_factory: ChecksFactory,
     now: datetime | None = None,
 ) -> CampaignRunResult:
-    """Preflight, reserve, and submit at most two due Metadata operations once."""
+    """Preflight, verify, reserve, and submit at most two Metadata operations once."""
     try:
         current = _current_time(now)
         profile = load_profile(profile_id)
@@ -82,6 +83,26 @@ def run_metadata_campaign_once(
         ) from None
 
     try:
+        adapter_factory = build_campaign_metadata_request_factory(
+            storage_root=storage_root,
+            repo_root=repo_root,
+            manifest=manifest,
+            grant_ref=grant_ref,
+            evidence=evidence,
+            environ=environ,
+            provider_selector=provider_factory,
+            now=lambda: current,
+        )
+        verify_effects = verification.execute_metadata_verify_effects_once(
+            storage_root=storage_root,
+            repo_root=repo_root,
+            campaign_ref=campaign_ref,
+            grant_ref=grant_ref,
+            profile=profile,
+            verifier_factory=adapter_factory,
+            now=current,
+        )
+        _validate_verify_effects(manifest, verify_effects)
         capacity = reserve_metadata_campaign_capacity_once(
             storage_root=storage_root,
             repo_root=repo_root,
@@ -94,16 +115,6 @@ def run_metadata_campaign_once(
             storage_root, campaign_ref, repo_root=repo_root,
         )
         queries = build_outstanding_metadata_queries(current_manifest, profile)
-        adapter_factory = build_campaign_metadata_request_factory(
-            storage_root=storage_root,
-            repo_root=repo_root,
-            manifest=current_manifest,
-            grant_ref=grant_ref,
-            evidence=evidence,
-            environ=environ,
-            provider_selector=provider_factory,
-            now=lambda: current,
-        )
         effects = submission.execute_metadata_submission_effects_once(
             storage_root=storage_root,
             repo_root=repo_root,
@@ -122,6 +133,46 @@ def run_metadata_campaign_once(
         raise CampaignRunError(
             "campaign-run-reconciliation-required", retry_safe=False,
         ) from None
+
+
+def _validate_verify_effects(
+    manifest: SatCampaignManifest,
+    effects: verification.CampaignVerifyEffectsResult,
+) -> None:
+    """Reject untrusted VERIFY summaries before any capacity mutation."""
+    if (
+        type(effects) is not verification.CampaignVerifyEffectsResult
+        or type(effects.events) is not tuple
+        or type(effects.verify_attempts) is not int
+        or not 0 <= effects.verify_attempts <= 2
+        or len(effects.events) > 2
+        or effects.verify_attempts > len(effects.events)
+    ):
+        _reconciliation_required()
+    outstanding = {
+        item.work_ref
+        for item in manifest.items
+        if item.state is CampaignWorkState.OUTSTANDING
+    }
+    seen: set[str] = set()
+    blocking = {
+        verification.CampaignVerifyEffectAction.ADAPTER_FAILED,
+        verification.CampaignVerifyEffectAction.FAILED,
+        verification.CampaignVerifyEffectAction.THRESHOLD_BLOCKED,
+    }
+    for event in effects.events:
+        if (
+            type(event) is not verification.CampaignVerifyEffectEvent
+            or type(event.work_ref) is not str
+            or not event.work_ref
+            or event.work_ref not in outstanding
+            or event.work_ref in seen
+            or type(event.action) is not verification.CampaignVerifyEffectAction
+        ):
+            _reconciliation_required()
+        seen.add(event.work_ref)
+        if event.action in blocking:
+            _reconciliation_required()
 
 
 def _aggregate(reservations: tuple[object, ...], queries: Mapping[str, object],
