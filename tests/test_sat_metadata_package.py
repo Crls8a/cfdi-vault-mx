@@ -4,7 +4,7 @@ import hashlib
 import json
 import traceback
 from io import BytesIO
-from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
+from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipExtFile, ZipFile, ZipInfo
 
 import pytest
 
@@ -14,6 +14,8 @@ from cfdi_vault.sat_metadata_package import MetadataPackageError, process_metada
 
 _VALID_HEADER = b"uuid~rfcEmisor~rfcReceptor~fechaEmision~estadoComprobante~tipoComprobante"
 _VALID_HEADERS = ("uuid", "rfcEmisor", "rfcReceptor", "fechaEmision", "estadoComprobante", "tipoComprobante")
+_CAMPAIGN = "cmp-0123456789ab"
+_WORK = "work-abcdef012345"
 
 
 def _zip(entries: list[tuple[str | ZipInfo, bytes]]) -> bytes:
@@ -39,6 +41,16 @@ def _crc_corrupted_zip(name: str) -> bytes:
         package.writestr(name, payload)
     corrupted = bytearray(buffer.getvalue())
     corrupted[corrupted.index(payload)] ^= 1
+    return bytes(corrupted)
+
+
+def _late_crc_corrupted_zip(name: str) -> bytes:
+    payload = b"\xff" + b"x" * (1024**2 + 32)
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", ZIP_STORED) as package:
+        package.writestr(name, payload)
+    corrupted = bytearray(buffer.getvalue())
+    corrupted[corrupted.index(payload) + 1024**2 + 1] ^= 1
     return bytes(corrupted)
 
 
@@ -440,3 +452,128 @@ def test_later_invalid_member_prevents_every_txt_write() -> None:
         process_metadata_package("run", 1, package, storage)
     assert len(storage.objects) == 1
     assert all(key.endswith(".zip") for key in storage.objects)
+
+
+def _durable(tmp_path, package: bytes, **changes):  # type: ignore[no-untyped-def]
+    values = {
+        "campaign_ref": _CAMPAIGN,
+        "work_ref": _WORK,
+        "package_ordinal": 2,
+        "first_text_ordinal": 7,
+        "content": package,
+        "storage_root": tmp_path / "external",
+    }
+    values.update(changes)
+    return subject.process_metadata_package_durably(**values)
+
+
+def test_durable_metadata_storage_has_private_evidence_and_is_idempotent(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    text = _VALID_HEADER + b"\nsynthetic-row"
+    package = _zip([("z-private.txt", text), ("a-private.txt", text)])
+    result = _durable(tmp_path, package)
+    package_hash = hashlib.sha256(package).hexdigest()
+    text_hash = hashlib.sha256(text).hexdigest()
+    assert result.package.relative_key == f"sat-metadata/{_CAMPAIGN}/{_WORK}/packages/2-{package_hash[:12]}.zip"
+    assert [item.artifact.relative_key for item in result.texts] == [
+        f"sat-metadata/{_CAMPAIGN}/{_WORK}/txt/7-{text_hash[:12]}.txt",
+        f"sat-metadata/{_CAMPAIGN}/{_WORK}/txt/8-{text_hash[:12]}.txt",
+    ]
+    root = tmp_path / "external"
+    assert (root / result.package.relative_key).read_bytes() == package
+    assert all((root / item.artifact.relative_key).read_bytes() == text for item in result.texts)
+    assert _durable(tmp_path, package) == result
+    public = result.redacted()
+    rendered = repr(result)
+    assert public["zip_valid"] is True and public["txt_count"] == 2
+    assert public["texts"][0]["headers"] == list(_VALID_HEADERS)
+    assert "written" not in str(public)
+    assert all(marker not in rendered for marker in (_CAMPAIGN, _WORK, package_hash, text_hash, str(tmp_path), "private"))
+
+
+def test_durable_unsupported_encoding_is_stored(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    content = _VALID_HEADER + b"\n\xff"
+    result = _durable(tmp_path, _zip([("metadata.txt", content)]))
+    assert result.texts[0].inspection == subject.MetadataTextInspection("unsupported_encoding", None, (), 0, False)
+    assert (tmp_path / "external" / result.texts[0].artifact.relative_key).read_bytes() == content
+
+
+def test_durable_unsupported_encoding_still_preflights_the_full_member(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    package = _late_crc_corrupted_zip("private-late-crc.txt")
+    with pytest.raises(MetadataPackageError, match="^invalid ZIP package$") as caught:
+        _durable(tmp_path, package)
+    assert caught.value.__cause__ is None
+    assert not (tmp_path / "external").exists()
+
+
+@pytest.mark.parametrize(
+    ("package", "reason"),
+    [
+        (_zip([("a-valid.txt", _VALID_HEADER + b"\nrow"), ("z-private-marker.txt", b"unknown~header\nrow")]), "invalid metadata TXT structure"),
+        (_crc_corrupted_zip("private-crc-marker.txt"), "invalid ZIP package"),
+    ],
+)
+def test_durable_preflight_failure_writes_nothing(tmp_path, package: bytes, reason: str) -> None:  # type: ignore[no-untyped-def]
+    with pytest.raises(MetadataPackageError, match=f"^{reason}$") as caught:
+        _durable(tmp_path, package)
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert "private" not in rendered and caught.value.__cause__ is None
+    root = tmp_path / "external"
+    assert not root.exists() or not any(root.rglob("*"))
+
+
+def test_durable_path_never_uses_zipfile_read_and_bounds_every_stream(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    rows = b"".join(hashlib.sha256(str(index).encode()).hexdigest().encode() for index in range(17_000))
+    content = _VALID_HEADER + b"\n" + rows
+    package = _zip([("metadata.txt", content)])
+    real_read = ZipExtFile.read
+    real_write = subject.write_artifact
+    requests: list[int] = []
+    blocks: list[int] = []
+
+    def tracked_read(stream, size=-1):  # type: ignore[no-untyped-def]
+        requests.append(size)
+        return real_read(stream, size)
+
+    def tracked_write(**kwargs):  # type: ignore[no-untyped-def]
+        chunks = kwargs["chunks"]
+        assert iter(chunks) is chunks
+
+        def tracked():  # type: ignore[no-untyped-def]
+            for block in chunks:
+                blocks.append(len(block))
+                yield block
+
+        return real_write(**{**kwargs, "chunks": tracked()})
+
+    monkeypatch.setattr(subject.ZipFile, "read", lambda *_args: pytest.fail("ZipFile.read must not run"))
+    monkeypatch.setattr(ZipExtFile, "read", tracked_read)
+    monkeypatch.setattr(subject, "write_artifact", tracked_write)
+    result = _durable(tmp_path, package)
+    assert result.texts[0].inspection.records_present is True
+    assert requests and blocks and max(requests) <= 1024**2 and max(blocks) <= 1024**2
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"campaign_ref": "cmp-ABCDEF012345"},
+        {"work_ref": "work-short"},
+        {"package_ordinal": True},
+        {"first_text_ordinal": 0},
+        {"content": bytearray(b"zip")},
+    ],
+)
+def test_durable_inputs_are_exact_and_write_nothing(tmp_path, changes: dict[str, object]) -> None:  # type: ignore[no-untyped-def]
+    with pytest.raises(MetadataPackageError, match="^invalid durable metadata package input$"):
+        _durable(tmp_path, _zip([("metadata.txt", _VALID_HEADER)]), **changes)
+    assert not (tmp_path / "external").exists()
+
+
+def test_durable_storage_failure_is_fixed_and_redacted(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    marker = "C:/private/storage/path"
+    monkeypatch.setattr(subject, "write_artifact", lambda **_kwargs: (_ for _ in ()).throw(subject.ArtifactStoreError(marker)))
+    with pytest.raises(MetadataPackageError) as caught:
+        _durable(tmp_path, _zip([("metadata.txt", _VALID_HEADER)]))
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert str(caught.value) == "metadata artifact storage failed" and caught.value.__cause__ is None
+    assert marker not in rendered
