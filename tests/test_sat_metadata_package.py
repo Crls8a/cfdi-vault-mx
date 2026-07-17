@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import struct
 import traceback
 from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipExtFile, ZipFile, ZipInfo
@@ -52,6 +53,17 @@ def _late_crc_corrupted_zip(name: str) -> bytes:
     corrupted = bytearray(buffer.getvalue())
     corrupted[corrupted.index(payload) + 1024**2 + 1] ^= 1
     return bytes(corrupted)
+
+
+def _forged_central_size_zip(name: str, content: bytes) -> bytes:
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", ZIP_STORED) as package:
+        package.writestr(name, content)
+    forged = bytearray(buffer.getvalue())
+    central = forged.index(b"PK\x01\x02")
+    size = struct.unpack_from("<I", forged, central + 24)[0]
+    struct.pack_into("<I", forged, central + 24, size + 1)
+    return bytes(forged)
 
 
 def _info(name: str, size: int, compressed: int) -> ZipInfo:
@@ -481,6 +493,8 @@ def test_durable_metadata_storage_has_private_evidence_and_is_idempotent(tmp_pat
     root = tmp_path / "external"
     assert (root / result.package.relative_key).read_bytes() == package
     assert all((root / item.artifact.relative_key).read_bytes() == text for item in result.texts)
+    assert all(item.artifact.byte_count == len(text) for item in result.texts)
+    assert all(item.artifact.sha256 == text_hash for item in result.texts)
     assert _durable(tmp_path, package) == result
     public = result.redacted()
     rendered = repr(result)
@@ -503,6 +517,65 @@ def test_durable_unsupported_encoding_still_preflights_the_full_member(tmp_path)
         _durable(tmp_path, package)
     assert caught.value.__cause__ is None
     assert not (tmp_path / "external").exists()
+
+
+def test_durable_forged_central_size_writes_zero_artifacts(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    package = _forged_central_size_zip("private-forged-size.txt", _VALID_HEADER + b"\nrow")
+    with pytest.raises(MetadataPackageError, match="^invalid ZIP package$") as caught:
+        _durable(tmp_path, package)
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert caught.value.__cause__ is None and "private-forged-size" not in rendered
+    assert not (tmp_path / "external").exists()
+
+
+def test_durable_second_pass_mismatch_never_installs_txt(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    package = _zip([("private-second-pass.txt", _VALID_HEADER + b"\nrow")])
+    real_open = subject.ZipFile.open
+    calls = 0
+
+    class ChangedStream:
+        def __init__(self, stream) -> None:  # type: ignore[no-untyped-def]
+            self.stream = stream
+            self.changed = False
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+            self.stream.close()
+
+        def read(self, size=-1):  # type: ignore[no-untyped-def]
+            block = self.stream.read(size)
+            if block and not self.changed:
+                self.changed = True
+                return bytes((block[0] ^ 1,)) + block[1:]
+            return block
+
+    def changed_second_open(zip_file, info):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        stream = real_open(zip_file, info)
+        return ChangedStream(stream) if calls == 2 else stream
+
+    monkeypatch.setattr(subject.ZipFile, "open", changed_second_open)
+    with pytest.raises(MetadataPackageError, match="^metadata artifact storage failed$") as caught:
+        _durable(tmp_path, package)
+    assert caught.value.__cause__ is None
+    root = tmp_path / "external"
+    assert len(tuple(root.rglob("*.zip"))) == 1 and not tuple(root.rglob("*.txt"))
+
+
+@pytest.mark.parametrize("declared_size", [1, 3])
+def test_member_chunks_rejects_excess_and_short_streams(declared_size: int) -> None:
+    class Package:
+        def open(self, _info: ZipInfo) -> BytesIO:
+            return BytesIO(b"xx")
+
+    info = ZipInfo("private-size-marker.txt")
+    info.file_size = declared_size
+    with pytest.raises(MetadataPackageError, match="^invalid ZIP package$") as caught:
+        tuple(subject._member_chunks(Package(), info))  # type: ignore[arg-type]
+    assert caught.value.__cause__ is None
 
 
 @pytest.mark.parametrize(

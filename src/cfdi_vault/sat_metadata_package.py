@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import codecs
+import hashlib
 import re
 import stat
 from dataclasses import dataclass
@@ -131,6 +132,12 @@ class DurableMetadataPackage:
         return f"DurableMetadataPackage({self.redacted()!r})"
 
 
+@dataclass(frozen=True, slots=True)
+class _MemberEvidence:
+    sha256: str
+    byte_count: int
+
+
 def process_metadata_package(
     run_ref: str,
     package_ordinal: int,
@@ -223,7 +230,7 @@ def process_metadata_package_durably(
     try:
         with ZipFile(BytesIO(content)) as package:
             members = _validated_txt_members(package)
-            inspections = tuple(_preflight_member(package, info) for info in members)
+            preflighted = tuple(_preflight_member(package, info) for info in members)
     except MetadataPackageError:
         raise
     except (BadZipFile, LargeZipFile, NotImplementedError, RuntimeError, OSError):
@@ -241,15 +248,17 @@ def process_metadata_package_durably(
         )
         texts: list[DurableMetadataText] = []
         with ZipFile(BytesIO(content)) as package:
-            for index, (info, inspection) in enumerate(zip(members, inspections)):
+            for index, (info, (inspection, expected)) in enumerate(zip(members, preflighted)):
                 artifact = write_artifact(
                     storage_root=storage_root,
                     relative_dir=f"{relative_base}/txt",
                     ordinal=first_text_ordinal + index,
                     suffix=".txt",
-                    chunks=_member_chunks(package, info),
+                    chunks=_member_chunks(package, info, expected=expected),
                     max_bytes=_MAX_TXT_FILE_BYTES,
                 )
+                if (artifact.sha256, artifact.byte_count) != (expected.sha256, expected.byte_count):
+                    raise MetadataPackageError("metadata artifact storage failed") from None
                 texts.append(DurableMetadataText(artifact, inspection))
     except ArtifactStoreError:
         raise MetadataPackageError("metadata artifact storage failed") from None
@@ -265,25 +274,45 @@ def _bytes_chunks(content: bytes) -> Iterator[bytes]:
         yield content[start : start + _IO_BLOCK_BYTES]
 
 
-def _member_chunks(package: ZipFile, info: ZipInfo) -> Iterator[bytes]:
+def _member_chunks(
+    package: ZipFile,
+    info: ZipInfo,
+    *,
+    captured: list[_MemberEvidence] | None = None,
+    expected: _MemberEvidence | None = None,
+) -> Iterator[bytes]:
+    digest = hashlib.sha256()
+    actual_size = 0
     try:
         with package.open(info) as stream:
             while block := stream.read(_IO_BLOCK_BYTES):
                 if type(block) is not bytes or len(block) > _IO_BLOCK_BYTES:
                     raise MetadataPackageError("invalid ZIP package") from None
+                actual_size += len(block)
+                if actual_size > info.file_size:
+                    raise MetadataPackageError("invalid ZIP package") from None
+                digest.update(block)
                 yield block
+        evidence = _MemberEvidence(digest.hexdigest(), actual_size)
+        if actual_size != info.file_size or (expected is not None and evidence != expected):
+            raise MetadataPackageError("invalid ZIP package") from None
+        if captured is not None:
+            captured.append(evidence)
     except MetadataPackageError:
         raise
     except (BadZipFile, LargeZipFile, NotImplementedError, RuntimeError, OSError):
         raise MetadataPackageError("invalid ZIP package") from None
 
 
-def _preflight_member(package: ZipFile, info: ZipInfo) -> MetadataTextInspection:
-    chunks = _member_chunks(package, info)
+def _preflight_member(package: ZipFile, info: ZipInfo) -> tuple[MetadataTextInspection, _MemberEvidence]:
+    evidence: list[_MemberEvidence] = []
+    chunks = _member_chunks(package, info, captured=evidence)
     inspection = _inspect_text_chunks(chunks)
     for _remaining in chunks:
         pass
-    return inspection
+    if len(evidence) != 1:
+        raise MetadataPackageError("invalid ZIP package") from None
+    return inspection, evidence[0]
 
 
 def _validate_run_ref(run_ref: str) -> str:
