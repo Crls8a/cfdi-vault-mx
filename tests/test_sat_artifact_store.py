@@ -63,6 +63,23 @@ def test_existing_identical_is_idempotent_and_different_content_collides(tmp_pat
     assert path.read_bytes() == b"tampered"
 
 
+def test_concurrent_different_winner_is_never_overwritten(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    digest = hashlib.sha256(b"abcdef").hexdigest()
+    destination = tmp_path / "external/sat-metadata/campaign/work/packages"
+    final = destination / f"1-{digest[:12]}.zip"
+    winner = b"concurrent-winner"
+
+    def race(_source, target):  # type: ignore[no-untyped-def]
+        Path(target).write_bytes(winner)
+        raise FileExistsError
+
+    monkeypatch.setattr(subject.os, "link", race)
+    with pytest.raises(subject.ArtifactStoreError, match="^artifact-collision$"):
+        subject.write_artifact(**_args(tmp_path))
+    assert final.read_bytes() == winner
+    assert not any(path.name.startswith(".artifact-") for path in destination.iterdir())
+
+
 def test_rejects_noncanonical_exact_inputs_before_artifact_visibility(tmp_path: Path) -> None:
     class Text(str):
         pass
@@ -83,6 +100,16 @@ def test_rejects_noncanonical_exact_inputs_before_artifact_visibility(tmp_path: 
         with pytest.raises(subject.ArtifactStoreError):
             subject.write_artifact(**_args(tmp_path, **changes))
     assert not any((tmp_path / "external").rglob("*.zip"))
+
+
+def test_symlink_loop_root_error_is_typed_and_redacted(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    marker = "C:/private/taxpayer/symlink-loop"
+    monkeypatch.setattr(subject.Path, "resolve", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError(marker)))
+    with pytest.raises(subject.ArtifactStoreError) as caught:
+        subject.write_artifact(**_args(tmp_path))
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert caught.value.reason == "artifact-root-invalid" and caught.value.__cause__ is None
+    assert marker not in rendered
 
 
 @pytest.mark.parametrize(
@@ -134,24 +161,24 @@ def test_rejects_existing_final_symlink_instead_of_following_it(tmp_path: Path, 
 
 def test_windows_skips_directory_sync_but_posix_performs_it(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     directory_syncs = []
-    replaces, file_syncs = [], []
-    real_replace, real_fsync = subject.os.replace, subject.os.fsync
+    links, file_syncs = [], []
+    real_link, real_fsync = subject.os.link, subject.os.fsync
     monkeypatch.setattr(subject, "_fsync_directory_posix", lambda path: directory_syncs.append(path))
-    monkeypatch.setattr(subject.os, "replace", lambda source, target: (replaces.append(target), real_replace(source, target))[1])
+    monkeypatch.setattr(subject.os, "link", lambda source, target: (links.append(target), real_link(source, target))[1])
     monkeypatch.setattr(subject.os, "fsync", lambda descriptor: (file_syncs.append(descriptor), real_fsync(descriptor))[1])
 
     monkeypatch.setattr(subject, "_WINDOWS", True)
     subject.write_artifact(**_args(tmp_path, ordinal=1))
-    assert len(replaces) == len(file_syncs) == 1 and directory_syncs == []
+    assert len(links) == len(file_syncs) == 1 and directory_syncs == []
     monkeypatch.setattr(subject, "_WINDOWS", False)
     subject.write_artifact(**_args(tmp_path, ordinal=2))
-    assert len(replaces) == len(file_syncs) == 2
+    assert len(links) == len(file_syncs) == 2
     assert directory_syncs == [tmp_path / "external/sat-metadata/campaign/work/packages"]
 
 
 def test_oserror_is_redacted_and_cleans_temp(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     marker = "C:/private/taxpayer/artifact.zip"
-    monkeypatch.setattr(subject.os, "replace", lambda *_args: (_ for _ in ()).throw(PermissionError(marker)))
+    monkeypatch.setattr(subject.os, "link", lambda *_args: (_ for _ in ()).throw(PermissionError(marker)))
     with pytest.raises(subject.ArtifactStoreError) as caught:
         subject.write_artifact(**_args(tmp_path))
     rendered = "".join(traceback.format_exception(caught.value))

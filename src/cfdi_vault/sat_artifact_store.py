@@ -48,7 +48,7 @@ def _validated_root(value: str | Path) -> Path:
         resolved = root.resolve(strict=False)
         if resolved == _REPO_ROOT or resolved.is_relative_to(_REPO_ROOT):
             _fail("artifact-root-invalid")
-    except OSError:
+    except (OSError, RuntimeError):
         _fail("artifact-root-invalid")
     return root
 
@@ -112,6 +112,7 @@ def write_artifact(
         _fail("artifact-input-invalid")
 
     temporary: Path | None = None
+    destination: Path | None = None
     try:
         destination = _ensure_directory(root, segments)
         descriptor, raw_temporary = tempfile.mkstemp(prefix=".artifact-", dir=destination)
@@ -143,19 +144,18 @@ def write_artifact(
         final = destination / filename
         result = StoredArtifact("/".join((*segments, filename)), hexdigest, byte_count)
         try:
+            os.link(temporary, final)
+        except FileExistsError:
             final_info = os.lstat(final)
-        except FileNotFoundError:
-            final_info = None
-        if final_info is not None:
             if stat.S_ISLNK(final_info.st_mode) or not stat.S_ISREG(final_info.st_mode):
                 _fail("artifact-path-invalid")
             if _inspect(final) != (byte_count, hexdigest):
                 _fail("artifact-collision")
-            return result
-        os.replace(temporary, final)
+        else:
+            if _inspect(final) != (byte_count, hexdigest):
+                _fail("artifact-verification-failed")
+        temporary.unlink()
         temporary = None
-        if _inspect(final) != (byte_count, hexdigest):
-            _fail("artifact-verification-failed")
         if not _WINDOWS:
             _fsync_directory_posix(destination)
         return result
@@ -167,5 +167,7 @@ def write_artifact(
         if temporary is not None:
             try:
                 temporary.unlink(missing_ok=True)
+                if destination is not None and not _WINDOWS:
+                    _fsync_directory_posix(destination)
             except OSError:
                 pass
