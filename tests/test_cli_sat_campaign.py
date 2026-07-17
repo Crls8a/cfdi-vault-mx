@@ -24,6 +24,9 @@ EXPECTED_KEYS = (
     "failed_count",
     "threshold_blocked_count",
 )
+STATUS_KEYS = EXPECTED_KEYS + (
+    "verify_attempts", "next_check_at", "package_count", "zip_valid_count", "txt_count",
+)
 
 
 def _profile(storage_root: Path, profile_id: str = "campaign-test") -> LocalProfile:
@@ -43,6 +46,12 @@ def _profile(storage_root: Path, profile_id: str = "campaign-test") -> LocalProf
 def _output(result) -> dict[str, str]:  # type: ignore[no-untyped-def]
     lines = result.stdout.strip().splitlines()
     assert tuple(line.split("=", 1)[0] for line in lines) == EXPECTED_KEYS
+    return dict(line.split("=", 1) for line in lines)
+
+
+def _status_output(result) -> dict[str, str]:  # type: ignore[no-untyped-def]
+    lines = result.stdout.strip().splitlines()
+    assert tuple(line.split("=", 1)[0] for line in lines) == STATUS_KEYS
     return dict(line.split("=", 1) for line in lines)
 
 
@@ -177,7 +186,29 @@ def test_campaign_status_returns_the_persisted_aggregate_summary(tmp_path: Path,
     )
 
     assert status.exit_code == 0
-    assert status.stdout == created.stdout
+    values = _status_output(status)
+    assert {key: values[key] for key in EXPECTED_KEYS} == _output(created)
+    assert {key: values[key] for key in STATUS_KEYS[-5:]} == {
+        "verify_attempts": "0", "next_check_at": "", "package_count": "0",
+        "zip_valid_count": "0", "txt_count": "0",
+    }
+
+
+def test_campaign_status_sanitizes_recovery_lineage_errors(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from cfdi_vault.adapters.cli import sat_campaign
+    from cfdi_vault.sat_campaign_status import CampaignStatusError
+
+    monkeypatch.setattr(sat_campaign, "load_profile", lambda _profile_id: _profile(tmp_path))
+    monkeypatch.setattr(
+        sat_campaign, "load_campaign_status",
+        lambda *_args: (_ for _ in ()).throw(CampaignStatusError("campaign-status-recovery-invalid")),
+    )
+    result = CliRunner().invoke(
+        app, ["sat", "campaign", "status", "--profile", "campaign-test", "--campaign-ref", "cmp-" + "1" * 12]
+    )
+
+    assert result.exit_code == 1
+    assert result.stderr == "error=sat_campaign_failed\nreason=campaign-status-recovery-invalid\n"
 
 
 @pytest.mark.parametrize(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import asdict
 from typing import cast
 
 import typer
@@ -18,6 +19,11 @@ from cfdi_vault.sat_campaign_manifest_store import (
     CampaignManifestStoreError,
     initialize_campaign_manifest,
     load_campaign_manifest,
+)
+from cfdi_vault.sat_campaign_status import (
+    CampaignStatusError,
+    CampaignStatusResult,
+    load_campaign_status,
 )
 from cfdi_vault.setup_core import LocalProfile, SetupError, load_profile
 
@@ -48,14 +54,13 @@ def campaign_status(
     profile: str = typer.Option(..., "--profile", help="Exact local profile identifier."),
     campaign_ref: str = typer.Option(..., "--campaign-ref", help="Opaque campaign reference."),
 ) -> None:
-    """Show only persisted campaign aggregate counters."""
+    """Show only persisted campaign and bound recovery aggregates."""
 
-    def operation() -> SatCampaignManifest:
+    def operation() -> CampaignStatusResult:
         loaded = _load_exact_profile(profile)
-        manifest = load_campaign_manifest(loaded.storage_root, campaign_ref)
-        return _require_profile(manifest, profile)
+        return load_campaign_status(loaded.storage_root, campaign_ref, loaded)
 
-    _run(operation)
+    _run_status(campaign_ref, operation)
 
 
 def _run(operation: Callable[[], SatCampaignManifest]) -> None:
@@ -70,6 +75,20 @@ def _run(operation: Callable[[], SatCampaignManifest]) -> None:
     except Exception:
         _fail("campaign-operation-failed")
     _print_summary(manifest)
+
+
+def _run_status(campaign_ref: str, operation: Callable[[], CampaignStatusResult]) -> None:
+    try:
+        result = operation()
+    except SetupError:
+        _fail("campaign-profile-invalid")
+    except OSError:
+        _fail("campaign-profile-unavailable")
+    except (CampaignManifestError, CampaignManifestStoreError, CampaignStatusError, _CampaignCliError) as error:
+        _fail(error.reason)
+    except Exception:
+        _fail("campaign-operation-failed")
+    _print_status(campaign_ref, result)
 
 
 def _load_exact_profile(profile_id: str) -> LocalProfile:
@@ -120,6 +139,12 @@ def _print_summary(manifest: SatCampaignManifest) -> None:
         "failed_count": counts[CampaignWorkState.FAILED.value],
         "threshold_blocked_count": counts[CampaignWorkState.THRESHOLD_BLOCKED.value],
     }
+    for key, value in output.items():
+        typer.echo(f"{key}={value}")
+
+
+def _print_status(campaign_ref: str, result: CampaignStatusResult) -> None:
+    output = {"campaign_ref": campaign_ref, **asdict(result)}
     for key, value in output.items():
         typer.echo(f"{key}={value}")
 
