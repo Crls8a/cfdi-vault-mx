@@ -51,6 +51,7 @@ def _print_result(result: CampaignRunResult) -> None:
     for key in (
         "status", "reserved_count", "outstanding_count", "submission_attempts",
         "accepted_count", "failed_count", "uncertain_count", "deferred_count", "replay_count",
+        "zip_downloaded", "zip_valid", "package_count", "next_check_at", "zip_status",
     ):
         typer.echo(f"{key}={getattr(result, key)}")
 

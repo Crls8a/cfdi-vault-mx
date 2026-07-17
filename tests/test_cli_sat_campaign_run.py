@@ -15,6 +15,7 @@ PROFILE, CAMPAIGN, GRANT = "profile-synthetic", "cmp-123456789abc", "grt-" + "1"
 EXPECTED_KEYS = (
     "status", "reserved_count", "outstanding_count", "submission_attempts",
     "accepted_count", "failed_count", "uncertain_count", "deferred_count", "replay_count",
+    "zip_downloaded", "zip_valid", "package_count", "next_check_at", "zip_status",
 )
 
 
@@ -64,6 +65,8 @@ def test_run_has_exact_required_options_and_one_shot_redacted_output(monkeypatch
         "status": "completed", "reserved_count": "2", "outstanding_count": "2",
         "submission_attempts": "2", "accepted_count": "1", "failed_count": "1",
         "uncertain_count": "0", "deferred_count": "0", "replay_count": "0",
+        "zip_downloaded": "False", "zip_valid": "False", "package_count": "0",
+        "next_check_at": "None", "zip_status": "None",
     }
     assert calls[0] == ("runtime", root)
     kwargs = calls[1][1]
@@ -76,6 +79,19 @@ def test_run_has_exact_required_options_and_one_shot_redacted_output(monkeypatch
     assert [(parameter.name, parameter.required) for parameter in parameters] == [
         ("profile", True), ("campaign_ref", True), ("grant", True),
     ]
+
+
+def test_run_prints_sanitized_zip_aggregates(monkeypatch, tmp_path) -> None:
+    _wire(monkeypatch, tmp_path, CampaignRunResult(
+        "completed", 0, 1, 0, 0, 0, 0, 0, 0,
+        True, True, 1, None, "downloaded",
+    ))
+    result = CliRunner().invoke(app, _args())
+    values = dict(line.split("=", 1) for line in result.stdout.strip().splitlines())
+    assert {key: values[key] for key in EXPECTED_KEYS[-5:]} == {
+        "zip_downloaded": "True", "zip_valid": "True", "package_count": "1",
+        "next_check_at": "None", "zip_status": "downloaded",
+    }
 
 
 @pytest.mark.parametrize(("failure", "reason", "retry"), (
