@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import cfdi_vault.sat_campaign_run as subject
+from cfdi_vault.sat_campaign_download_effects import CampaignMetadataZipDownloadResult
 from cfdi_vault.sat_campaign_grant import CampaignGrant, campaign_manifest_digest
 from cfdi_vault.sat_campaign_manifest import (
     CampaignWorkState,
@@ -70,6 +71,7 @@ def _wire(
     verify_result=None,
     call_log=None,
     capacity=None,
+    zip_result=None,
 ):
     profile = _profile(tmp_path)
     manifest = build_campaign_manifest(PROFILE) if manifest is None else manifest
@@ -103,6 +105,12 @@ def _wire(
     verified = VerifyEffects(0, ()) if verify_result is None else verify_result
     monkeypatch.setattr(subject.verification, "execute_metadata_verify_effects_once", lambda **kw:
                         calls.append(("verify-effects", kw)) or verified)
+    if zip_result is None:
+        zip_result = CampaignMetadataZipDownloadResult(
+            False, False, 0, None, "no-pending-package", "no-pending-package",
+        )
+    monkeypatch.setattr(subject.download, "execute_campaign_metadata_zip_download_once", lambda **kw:
+                        calls.append(("zip-download", kw)) or zip_result)
     monkeypatch.setattr(subject.submission, "execute_metadata_submission_effects_once", lambda **kw:
                         calls.append(("effects", kw)) or Effects(attempts, tuple(events)))
     result = subject.run_metadata_campaign_once(
@@ -111,6 +119,102 @@ def _wire(
         checks_factory=lambda bound: {}, now=NOW,
     )
     return result, calls, profile, capacity, queries, adapter
+
+
+def test_packages_ready_downloads_before_reservation_and_stops(monkeypatch, tmp_path) -> None:
+    manifest = reserve_campaign_work(build_campaign_manifest(PROFILE))
+    work_ref = next(item.work_ref for item in manifest.items
+                    if item.state is CampaignWorkState.OUTSTANDING)
+    zip_result = CampaignMetadataZipDownloadResult(
+        True, True, 1, None, "downloaded", None,
+    )
+    result, calls, *_ = _wire(
+        monkeypatch, tmp_path, manifest=manifest,
+        verify_result=VerifyEffects(0, (VerifyEvent(work_ref, VerifyAction.PACKAGES_READY),
+                                        VerifyEvent(next(item.work_ref for item in manifest.items
+                                                         if item.state is CampaignWorkState.OUTSTANDING
+                                                         and item.work_ref != work_ref),
+                                                    VerifyAction.WAITING))),
+        zip_result=zip_result,
+    )
+    names = [call[0] for call in calls]
+    assert names.index("verify-effects") < names.index("zip-download")
+    assert "reserve" not in names and "effects" not in names
+    assert calls[names.index("zip-download")][1]["work_ref"] == work_ref
+    assert calls[names.index("zip-download")][1]["downloader_factory"] is calls[names.index("verify-effects")][1]["verifier_factory"]
+    assert (result.zip_downloaded, result.zip_valid, result.package_count,
+            result.zip_status, result.submission_attempts) == (True, True, 1, "downloaded", 0)
+    assert result.status == "completed"
+
+
+def test_ready_package_is_prioritized_over_an_earlier_waiting_work(monkeypatch, tmp_path) -> None:
+    manifest = reserve_campaign_work(build_campaign_manifest(PROFILE))
+    refs = tuple(item.work_ref for item in manifest.items
+                 if item.state is CampaignWorkState.OUTSTANDING)
+    result, calls, *_ = _wire(
+        monkeypatch, tmp_path, manifest=manifest,
+        verify_result=VerifyEffects(0, (
+            VerifyEvent(refs[0], VerifyAction.WAITING),
+            VerifyEvent(refs[1], VerifyAction.PACKAGES_READY),
+        )),
+        zip_result=CampaignMetadataZipDownloadResult(True, True, 1, None, "downloaded", None),
+    )
+    names = [call[0] for call in calls]
+    assert "reserve" not in names and calls[names.index("zip-download")][1]["work_ref"] == refs[1]
+    assert result.zip_valid is True
+
+
+@pytest.mark.parametrize("zip_status", ("in-progress", "already-downloaded"))
+def test_zip_pending_or_idempotent_stops_before_new_requests(monkeypatch, tmp_path, zip_status) -> None:
+    manifest = reserve_campaign_work(build_campaign_manifest(PROFILE))
+    work_ref = next(item.work_ref for item in manifest.items
+                    if item.state is CampaignWorkState.OUTSTANDING)
+    result, calls, *_ = _wire(
+        monkeypatch, tmp_path, manifest=manifest,
+        verify_result=VerifyEffects(0, (VerifyEvent(work_ref, VerifyAction.PACKAGES_READY),
+                                        VerifyEvent(next(item.work_ref for item in manifest.items
+                                                         if item.state is CampaignWorkState.OUTSTANDING
+                                                         and item.work_ref != work_ref),
+                                                    VerifyAction.WAITING))),
+        zip_result=CampaignMetadataZipDownloadResult(
+            zip_status == "already-downloaded", zip_status == "already-downloaded", 1,
+            "2026-07-16T12:00:00Z" if zip_status == "in-progress" else None,
+            zip_status, None,
+        ),
+    )
+    names = [call[0] for call in calls]
+    assert "zip-download" in names and "reserve" not in names and "effects" not in names
+    assert result.zip_status == zip_status
+    assert result.submission_attempts == 0
+
+
+def test_waiting_work_with_pending_zip_stops_before_new_requests(monkeypatch, tmp_path) -> None:
+    manifest = reserve_campaign_work(build_campaign_manifest(PROFILE))
+    refs = tuple(item.work_ref for item in manifest.items
+                 if item.state is CampaignWorkState.OUTSTANDING)
+    result, calls, *_ = _wire(
+        monkeypatch, tmp_path, manifest=manifest,
+        verify_result=VerifyEffects(0, tuple(
+            VerifyEvent(ref, VerifyAction.WAITING) for ref in refs
+        )),
+        zip_result=CampaignMetadataZipDownloadResult(
+            False, False, 1, "2026-07-16T12:00:00Z", "in-progress", None,
+        ),
+    )
+    names = [call[0] for call in calls]
+    assert "zip-download" in names and "reserve" not in names and "effects" not in names
+    assert result.zip_status == "in-progress"
+
+
+def test_no_ready_package_preserves_reserve_and_submission(monkeypatch, tmp_path) -> None:
+    result, calls, *_ = _wire(
+        monkeypatch, tmp_path,
+        verify_result=VerifyEffects(0, ()),
+        zip_result=CampaignMetadataZipDownloadResult(False, False, 0, None, "no-pending-package", "no-pending-package"),
+    )
+    names = [call[0] for call in calls]
+    assert "zip-download" not in names and "reserve" in names and "effects" in names
+    assert (result.zip_downloaded, result.zip_valid, result.package_count, result.zip_status) == (False, False, 0, None)
 
 
 def test_one_shot_preserves_order_storage_lineage_and_invocation(monkeypatch, tmp_path) -> None:
@@ -190,8 +294,11 @@ def test_nonblocking_verify_is_projected_before_reservation(
         )),
         capacity=reservation,
     )
-    assert [call[0] for call in calls].index("verify-effects") < \
-        [call[0] for call in calls].index("reserve")
+    names = [call[0] for call in calls]
+    if action is VerifyAction.PACKAGES_READY:
+        assert "zip-download" in names and "reserve" not in names
+    else:
+        assert names.index("verify-effects") < names.index("reserve")
     assert result.reserved_count == reserved
 
 
@@ -356,6 +463,7 @@ def test_last_event_per_work_drives_redacted_attention_aggregates(monkeypatch, t
     assert set(result.__dataclass_fields__) == {
         "status", "reserved_count", "outstanding_count", "submission_attempts",
         "accepted_count", "failed_count", "uncertain_count", "deferred_count", "replay_count",
+        "zip_downloaded", "zip_valid", "package_count", "next_check_at", "zip_status",
     }
     assert all(value not in repr(result) for value in (PROFILE, CAMPAIGN, GRANT, "work-a"))
     with pytest.raises((AttributeError, TypeError)):

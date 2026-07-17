@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
+import cfdi_vault.sat_campaign_download_effects as download
 import cfdi_vault.sat_campaign_grant as grants
 import cfdi_vault.sat_campaign_preflight as preflight
 import cfdi_vault.sat_campaign_submission_effects as submission
@@ -46,6 +47,11 @@ class CampaignRunResult:
     uncertain_count: int
     deferred_count: int
     replay_count: int
+    zip_downloaded: bool = False
+    zip_valid: bool = False
+    package_count: int = 0
+    next_check_at: str | None = None
+    zip_status: str | None = None
 
 
 def run_metadata_campaign_once(
@@ -103,6 +109,19 @@ def run_metadata_campaign_once(
             now=current,
         )
         _validate_verify_effects(manifest, verify_effects)
+        zip_candidate = _first_zip_candidate(verify_effects)
+        if zip_candidate is not None:
+            ready_work, ready = zip_candidate
+            zip_result = download.execute_campaign_metadata_zip_download_once(
+                storage_root=storage_root,
+                repo_root=repo_root,
+                campaign_ref=campaign_ref,
+                work_ref=ready_work,
+                downloader_factory=adapter_factory,
+            )
+            _validate_zip_effect(zip_result)
+            if ready or zip_result.status != "no-pending-package":
+                return _zip_aggregate(verify_effects, zip_result)
         capacity = reserve_metadata_campaign_capacity_once(
             storage_root=storage_root,
             repo_root=repo_root,
@@ -133,6 +152,55 @@ def run_metadata_campaign_once(
         raise CampaignRunError(
             "campaign-run-reconciliation-required", retry_safe=False,
         ) from None
+
+
+def _first_zip_candidate(
+    effects: verification.CampaignVerifyEffectsResult,
+) -> tuple[str, bool] | None:
+    for event in effects.events:
+        if event.action is verification.CampaignVerifyEffectAction.PACKAGES_READY:
+            return event.work_ref, True
+    for event in effects.events:
+        if event.action is verification.CampaignVerifyEffectAction.WAITING:
+            return event.work_ref, False
+    return None
+
+
+_ZIP_STATUSES = frozenset({
+    "downloaded", "already-downloaded", "in-progress", "failed",
+    "uncertain", "no-pending-package", "state-failed", "state-invalid",
+})
+
+
+def _validate_zip_effect(value: object) -> None:
+    if type(value) is not download.CampaignMetadataZipDownloadResult:
+        _reconciliation_required()
+    if (
+        type(value.zip_downloaded) is not bool
+        or type(value.zip_valid) is not bool
+        or type(value.package_count) is not int
+        or value.package_count < 0
+        or (value.next_check_at is not None and type(value.next_check_at) is not str)
+        or type(value.status) is not str
+        or value.status not in _ZIP_STATUSES
+        or (value.error is not None and type(value.error) is not str)
+        or (value.zip_valid and not value.zip_downloaded)
+    ):
+        _reconciliation_required()
+
+
+def _zip_aggregate(
+    verify_effects: verification.CampaignVerifyEffectsResult,
+    result: download.CampaignMetadataZipDownloadResult,
+) -> CampaignRunResult:
+    failed = int(result.status == "failed")
+    uncertain = int(result.status == "uncertain")
+    status = "completed" if result.status in {"downloaded", "already-downloaded"} else "attention_required"
+    return CampaignRunResult(
+        status, 0, len(verify_effects.events), 0, 0, failed, uncertain, 0, 0,
+        result.zip_downloaded, result.zip_valid, result.package_count,
+        result.next_check_at, result.status,
+    )
 
 
 def _validate_verify_effects(
