@@ -149,30 +149,34 @@ def _validate_verify_effects(
         or effects.verify_attempts > len(effects.events)
     ):
         _reconciliation_required()
-    outstanding = {
+    expected = tuple(
         item.work_ref
         for item in manifest.items
         if item.state is CampaignWorkState.OUTSTANDING
-    }
+    )[:2]
+    outstanding = set(expected)
     seen: set[str] = set()
     blocking = {
         verification.CampaignVerifyEffectAction.ADAPTER_FAILED,
         verification.CampaignVerifyEffectAction.FAILED,
         verification.CampaignVerifyEffectAction.THRESHOLD_BLOCKED,
     }
-    for event in effects.events:
+    for index, event in enumerate(effects.events):
         if (
             type(event) is not verification.CampaignVerifyEffectEvent
             or type(event.work_ref) is not str
             or not event.work_ref
             or event.work_ref not in outstanding
             or event.work_ref in seen
+            or event.work_ref != expected[index]
             or type(event.action) is not verification.CampaignVerifyEffectAction
         ):
             _reconciliation_required()
         seen.add(event.work_ref)
         if event.action in blocking:
             _reconciliation_required()
+    if tuple(event.work_ref for event in effects.events) != expected:
+        _reconciliation_required()
 
 
 def _aggregate(reservations: tuple[object, ...], queries: Mapping[str, object],

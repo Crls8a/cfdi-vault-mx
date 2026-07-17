@@ -1,4 +1,5 @@
 import ast
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -169,7 +170,7 @@ def test_nonblocking_verify_is_projected_before_reservation(
     monkeypatch, tmp_path, action, reserved,
 ) -> None:
     manifest = reserve_campaign_work(build_campaign_manifest(PROFILE))
-    work_ref = next(
+    work_refs = tuple(
         item.work_ref for item in manifest.items
         if item.state is CampaignWorkState.OUTSTANDING
     )
@@ -183,7 +184,10 @@ def test_nonblocking_verify_is_projected_before_reservation(
     )
     result, calls, *_ = _wire(
         monkeypatch, tmp_path, manifest=manifest,
-        verify_result=VerifyEffects(0, (VerifyEvent(work_ref, action),)),
+        verify_result=VerifyEffects(0, (
+            VerifyEvent(work_refs[0], action),
+            VerifyEvent(work_refs[1], VerifyAction.WAITING),
+        )),
         capacity=reservation,
     )
     assert [call[0] for call in calls].index("verify-effects") < \
@@ -231,10 +235,32 @@ def test_two_unique_verify_attempts_are_accepted(monkeypatch, tmp_path) -> None:
     assert [call[0] for call in calls].count("verify-effects") == 1
 
 
-def _invalid_verify_results(work_ref: str):
+def test_one_outstanding_requires_its_exact_verify_event(monkeypatch, tmp_path) -> None:
+    manifest = reserve_campaign_work(build_campaign_manifest(PROFILE))
+    outstanding = tuple(
+        item for item in manifest.items
+        if item.state is CampaignWorkState.OUTSTANDING
+    )
+    manifest = replace(manifest, items=tuple(
+        replace(item, state=CampaignWorkState.PLANNED)
+        if item.work_ref == outstanding[1].work_ref else item
+        for item in manifest.items
+    ))
+    result, calls, *_ = _wire(
+        monkeypatch, tmp_path, manifest=manifest,
+        verify_result=VerifyEffects(0, (
+            VerifyEvent(outstanding[0].work_ref, VerifyAction.WAITING),
+        )),
+    )
+    assert result.status == "completed"
+    assert [call[0] for call in calls].count("verify-effects") == 1
+
+
+def _invalid_verify_results(work_refs: tuple[str, str]):
     class WorkRef(str):
         pass
 
+    work_ref, second_ref = work_refs
     event = VerifyEvent(work_ref, VerifyAction.WAITING)
     return (
         SimpleNamespace(verify_attempts=0, events=()),
@@ -245,6 +271,11 @@ def _invalid_verify_results(work_ref: str):
         VerifyEffects(0, (VerifyEvent("", VerifyAction.WAITING),)),
         VerifyEffects(0, (VerifyEvent("work-foreign000000", VerifyAction.WAITING),)),
         VerifyEffects(0, (VerifyEvent(work_ref, "waiting"),)),
+        VerifyEffects(0, ()),
+        VerifyEffects(0, (event,)),
+        VerifyEffects(0, (
+            VerifyEvent(second_ref, VerifyAction.WAITING), event,
+        )),
         VerifyEffects(0, (event, event)),
         VerifyEffects(0, (event, VerifyEvent(work_ref, VerifyAction.NO_DATA))),
         VerifyEffects(0, (event, VerifyEvent(work_ref, VerifyAction.WAITING), event)),
@@ -253,11 +284,11 @@ def _invalid_verify_results(work_ref: str):
 
 def test_malformed_verify_results_fail_closed_before_reservation(monkeypatch, tmp_path) -> None:
     manifest = reserve_campaign_work(build_campaign_manifest(PROFILE))
-    work_ref = next(
+    work_refs = tuple(
         item.work_ref for item in manifest.items
         if item.state is CampaignWorkState.OUTSTANDING
     )
-    for invalid in _invalid_verify_results(work_ref):
+    for invalid in _invalid_verify_results(work_refs):
         calls = []
         with monkeypatch.context() as scoped:
             with pytest.raises(subject.CampaignRunError) as caught:
@@ -268,6 +299,26 @@ def test_malformed_verify_results_fail_closed_before_reservation(monkeypatch, tm
         assert (caught.value.reason, caught.value.retry_safe) == \
             ("campaign-run-reconciliation-required", False)
         assert "reserve" not in [call[0] for call in calls]
+
+
+def test_blocking_verify_cannot_skip_the_first_outstanding_slot(monkeypatch, tmp_path) -> None:
+    manifest = reserve_campaign_work(build_campaign_manifest(PROFILE))
+    work_refs = tuple(
+        item.work_ref for item in manifest.items
+        if item.state is CampaignWorkState.OUTSTANDING
+    )
+    calls = []
+    with pytest.raises(subject.CampaignRunError) as caught:
+        _wire(
+            monkeypatch, tmp_path, manifest=manifest,
+            verify_result=VerifyEffects(1, (
+                VerifyEvent(work_refs[1], VerifyAction.ADAPTER_FAILED),
+            )),
+            call_log=calls,
+        )
+    assert (caught.value.reason, caught.value.retry_safe) == \
+        ("campaign-run-reconciliation-required", False)
+    assert not any(call[0] in {"reserve", "effects"} for call in calls)
 
 
 def test_verify_exception_is_redacted_and_stops_before_reservation(monkeypatch, tmp_path) -> None:
