@@ -127,9 +127,7 @@ def test_legacy_state_reads_without_claim_and_rewrites_v6(tmp_path, schema_versi
 def test_verify_error_kind_v6_round_trips_privately(
     tmp_path, kind: subject.MetadataVerifyErrorKind,
 ) -> None:
-    record = _failed_record(last_verify_error_kind=kind)
-
-    subject.save_metadata_recovery_state(tmp_path, record)
+    record = _persist_verify_error_resolution(tmp_path, kind)
 
     loaded = subject.load_metadata_recovery_state(tmp_path, record.recovery.recovery_ref)
     private = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
@@ -138,9 +136,10 @@ def test_verify_error_kind_v6_round_trips_privately(
     assert private["recoveries"][0]["lastVerifyErrorKind"] == kind.value
 
 
-def test_verify_error_kind_is_safe_in_redacted_projection() -> None:
-    record = _failed_record(
-        last_verify_error_kind=subject.MetadataVerifyErrorKind.SAT_TOO_MANY_RESULTS,
+def test_verify_error_kind_is_safe_in_redacted_projection(tmp_path) -> None:
+    record = _persist_verify_error_resolution(
+        tmp_path,
+        subject.MetadataVerifyErrorKind.SAT_TOO_MANY_RESULTS,
     )
 
     redacted = record.to_redacted_document()
@@ -205,11 +204,25 @@ def test_verify_error_kind_rejects_value_before_completed_attempt() -> None:
             )
 
 
-def test_verify_error_kind_cannot_mutate_without_exact_claim_resolution(tmp_path) -> None:
-    current = _failed_record(
+def test_verify_error_kind_rejects_first_insert_without_persisted_claim(tmp_path) -> None:
+    forged = _failed_record(
         last_verify_error_kind=subject.MetadataVerifyErrorKind.VERIFY_FAILED,
     )
-    subject.save_metadata_recovery_state(tmp_path, current)
+
+    with pytest.raises(
+        subject.MetadataRecoveryStateError,
+        match="verify-error-kind-transition-invalid",
+    ):
+        subject.save_metadata_recovery_state(tmp_path, forged)
+
+    assert subject.list_metadata_recovery_states(tmp_path) == ()
+
+
+def test_verify_error_kind_cannot_mutate_without_exact_claim_resolution(tmp_path) -> None:
+    current = _persist_verify_error_resolution(
+        tmp_path,
+        subject.MetadataVerifyErrorKind.VERIFY_FAILED,
+    )
 
     for value in (None, subject.MetadataVerifyErrorKind.VERIFY_UNCERTAIN):
         with pytest.raises(
@@ -223,11 +236,12 @@ def test_verify_error_kind_cannot_mutate_without_exact_claim_resolution(tmp_path
 
 
 def test_verify_claim_creation_preserves_prior_error_kind(tmp_path) -> None:
-    current = _pending_after_one_attempt(
-        last_verify_error_kind=subject.MetadataVerifyErrorKind.VERIFY_RETRYABLE,
+    current = _persist_verify_error_resolution(
+        tmp_path,
+        subject.MetadataVerifyErrorKind.VERIFY_RETRYABLE,
+        pending=True,
     )
     claimed = _claimed_record(current)
-    subject.save_metadata_recovery_state(tmp_path, current)
 
     with pytest.raises(
         subject.MetadataRecoveryStateError,
@@ -263,8 +277,11 @@ def test_exact_claim_resolution_sets_error_kind_and_clears_it_on_success(tmp_pat
         tmp_path, initial.recovery.recovery_ref,
     ).last_verify_error_kind is subject.MetadataVerifyErrorKind.VERIFY_FAILED
 
-    retry = _pending_after_one_attempt(
-        last_verify_error_kind=subject.MetadataVerifyErrorKind.VERIFY_RETRYABLE,
+    second_root = tmp_path / "second"
+    retry = _persist_verify_error_resolution(
+        second_root,
+        subject.MetadataVerifyErrorKind.VERIFY_RETRYABLE,
+        pending=True,
     )
     retry_claimed = _claimed_record(retry)
     retry_due = retry_claimed.verify_claim.due_at
@@ -283,8 +300,6 @@ def test_exact_claim_resolution_sets_error_kind_and_clears_it_on_success(tmp_pat
         verify_claim=None,
         last_verify_error_kind=None,
     )
-    second_root = tmp_path / "second"
-    subject.save_metadata_recovery_state(second_root, retry)
     subject.save_metadata_recovery_state(second_root, retry_claimed)
     subject.save_metadata_recovery_state(second_root, successful)
     assert subject.load_metadata_recovery_state(
@@ -1192,18 +1207,30 @@ def _failed_record(
     )
 
 
-def _pending_after_one_attempt(
+def _persist_verify_error_resolution(
+    storage_root: Path,
+    kind: subject.MetadataVerifyErrorKind,
     *,
-    last_verify_error_kind: subject.MetadataVerifyErrorKind,
+    pending: bool = False,
 ) -> subject.MetadataRecoveryStateRecord:
-    pending = replace(_pending_record(), observation_provenance=_provenance())
-    due = pending.recovery.next_check_at
-    assert due is not None
-    return replace(
-        pending,
-        recovery=lifecycle.record_pending_verification(pending.recovery, checked_at=due),
-        last_verify_error_kind=last_verify_error_kind,
+    initial = replace(_pending_record(), observation_provenance=_provenance())
+    claimed = _claimed_record(initial)
+    due = claimed.verify_claim.due_at
+    recovery = (
+        lifecycle.record_pending_verification(initial.recovery, checked_at=due)
+        if pending
+        else lifecycle.record_verification_failure(initial.recovery, checked_at=due)
     )
+    resolved = replace(
+        claimed,
+        recovery=recovery,
+        verify_claim=None,
+        last_verify_error_kind=kind,
+    )
+    subject.save_metadata_recovery_state(storage_root, initial)
+    subject.save_metadata_recovery_state(storage_root, claimed)
+    subject.save_metadata_recovery_state(storage_root, resolved)
+    return resolved
 
 
 def _claimed_record(

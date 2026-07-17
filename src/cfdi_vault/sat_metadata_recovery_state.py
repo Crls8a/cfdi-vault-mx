@@ -244,6 +244,7 @@ def save_metadata_recovery_state(
     path = _resolved_state_path(storage_root, repo_root=repo_root, create_parent=True)
     with _exclusive_state_lock(path):
         records = list(_records_from_path(path))
+        replacing = False
         for current in records:
             if (current.id_solicitud == record.id_solicitud
                     and current.recovery.recovery_ref != record.recovery.recovery_ref):
@@ -252,7 +253,10 @@ def save_metadata_recovery_state(
                     and _identity(current) != _identity(record)):
                 raise MetadataRecoveryStateError("recovery-ref-conflict")
             if current.recovery.recovery_ref == record.recovery.recovery_ref:
+                replacing = True
                 _validate_replacement(current, record)
+        if not replacing and record.last_verify_error_kind is not None:
+            raise MetadataRecoveryStateError("verify-error-kind-transition-invalid")
         records = [item for item in records if item.recovery.recovery_ref != record.recovery.recovery_ref]
         records.append(record)
         records.sort(key=lambda item: item.recovery.created_at, reverse=True)
