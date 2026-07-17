@@ -18,6 +18,12 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "example": "cfdi-vault sat campaign authorize --profile default --campaign-ref <campaign-ref> --phase metadata-proof --expires-days 14 --reason <reason>",
     },
     {
+        "command": "sat campaign run",
+        "purpose": "Execute one bounded productive Metadata campaign submission run.",
+        "when": "Run once after authorization and again only when persisted work is due.",
+        "example": "cfdi-vault sat campaign run --profile default --campaign-ref <campaign-ref> --grant <grant-ref>",
+    },
+    {
         "command": "sat campaign status",
         "purpose": "Show only sanitized aggregate progress for one persisted SAT campaign.",
         "when": "Run after creation or campaign executions to inspect durable progress.",

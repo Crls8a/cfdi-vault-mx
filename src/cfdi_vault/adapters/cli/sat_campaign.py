@@ -22,6 +22,7 @@ from cfdi_vault.sat_campaign_manifest_store import (
 from cfdi_vault.setup_core import LocalProfile, SetupError, load_profile
 
 from .sat_campaign_authorize import campaign_authorize
+from .sat_campaign_run import campaign_run
 
 
 class _CampaignCliError(ValueError):
@@ -134,4 +135,5 @@ def register(campaign_app: typer.Typer) -> None:
 
     campaign_app.command("create")(campaign_create)
     campaign_app.command("authorize")(campaign_authorize)
+    campaign_app.command("run")(campaign_run)
     campaign_app.command("status")(campaign_status)
