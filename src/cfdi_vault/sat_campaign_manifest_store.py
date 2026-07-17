@@ -15,6 +15,7 @@ from cfdi_vault.sat_campaign_manifest import (
     CampaignWorkItem,
     CampaignWorkState,
     SatCampaignManifest,
+    apply_campaign_submission_failure,
     bind_campaign_recovery,
     campaign_redacted_summary,
     record_campaign_result,
@@ -154,6 +155,18 @@ def split_campaign_manifest_work(
         storage_root, campaign_ref,
         lambda manifest: split_campaign_work(manifest, work_ref), repo_root,
     ))
+
+
+def project_campaign_manifest_submission_failure(
+    storage_root: str | Path, campaign_ref: str, work_ref: str,
+    recovery_ref: str, category: str, *, repo_root: str | Path | None = None,
+) -> SatCampaignManifest:
+    """Atomically project one failure and any approved split under one state lock."""
+    _validate_ref(campaign_ref)
+    return _protect(lambda: _transaction(
+        storage_root, campaign_ref,
+        lambda manifest: apply_campaign_submission_failure(
+            manifest, work_ref, recovery_ref, category), repo_root))
 
 
 def _initialize(root: str | Path, manifest: SatCampaignManifest, repo: str | Path | None) -> SatCampaignManifest:

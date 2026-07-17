@@ -163,6 +163,31 @@ def split_campaign_work(manifest: SatCampaignManifest, work_ref: str) -> SatCamp
     items = tuple(replace(item, state=CampaignWorkState.SPLIT)
                   if item.work_ref == parent.work_ref else item for item in manifest.items) + children
     return replace(manifest, items=tuple(sorted(items, key=_priority)))
+
+
+def apply_campaign_submission_failure(
+    manifest: SatCampaignManifest, work_ref: str, recovery_ref: str, category: str,
+) -> SatCampaignManifest:
+    """Idempotently project one persisted failed submission and its bounded split."""
+    _validate_manifest(manifest)
+    item = _find(manifest, work_ref)
+    threshold = type(category) is str and category == THRESHOLD_EVIDENCE
+    expected = (CampaignWorkState.SPLIT if threshold and item.depth == 0
+                else CampaignWorkState.THRESHOLD_BLOCKED if threshold
+                else CampaignWorkState.FAILED)
+    evidence = THRESHOLD_EVIDENCE if threshold else None
+    if item.state is expected:
+        if item.recovery_ref == recovery_ref and item.evidence == evidence:
+            return manifest
+        raise CampaignManifestError("submission-failure-projection-conflict")
+    if (type(category) is not str or item.state is not CampaignWorkState.OUTSTANDING
+            or item.recovery_ref != recovery_ref or item.evidence is not None):
+        raise CampaignManifestError("submission-failure-projection-conflict")
+    projected = record_campaign_result(
+        manifest, work_ref,
+        CampaignWorkState.THRESHOLD_BLOCKED if threshold else CampaignWorkState.FAILED,
+        recovery_ref=recovery_ref, evidence=evidence)
+    return split_campaign_work(projected, work_ref) if threshold and item.depth == 0 else projected
 def campaign_redacted_summary(manifest: SatCampaignManifest) -> dict[str, object]:
     """Return only the opaque campaign reference and aggregate counters."""
     _validate_manifest(manifest)

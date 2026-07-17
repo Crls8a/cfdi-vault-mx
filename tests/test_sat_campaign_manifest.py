@@ -167,6 +167,44 @@ def test_threshold_split_creates_exact_children_and_children_cannot_split() -> N
     )
     with pytest.raises(CampaignManifestError, match="split-depth-invalid"):
         split_campaign_work(child_blocked, child_outstanding.work_ref)
+
+
+def test_persisted_threshold_failure_is_idempotent_and_children_never_split() -> None:
+    manifest = reserve_campaign_work(build_campaign_manifest(PROFILE))
+    parent = manifest.items[0]
+    bound = _bind(manifest, parent.work_ref)
+    split = campaign_manifest.apply_campaign_submission_failure(
+        bound, parent.work_ref, RUN_REF, "sat_too_many_results")
+    assert campaign_manifest.apply_campaign_submission_failure(
+        split, parent.work_ref, RUN_REF, "sat_too_many_results") is split
+    assert len(tuple(item for item in split.items if item.parent_ref == parent.work_ref)) == 2
+    child_manifest = reserve_campaign_work(split)
+    child = next(item for item in child_manifest.items
+                 if item.parent_ref == parent.work_ref and item.state is CampaignWorkState.OUTSTANDING)
+    child_manifest = _bind(child_manifest, child.work_ref, SECOND_RUN_REF)
+    blocked = campaign_manifest.apply_campaign_submission_failure(
+        child_manifest, child.work_ref, SECOND_RUN_REF, "sat_too_many_results")
+    assert _work(blocked, child.work_ref).state is CampaignWorkState.THRESHOLD_BLOCKED
+    assert (campaign_manifest.apply_campaign_submission_failure(
+        blocked, child.work_ref, SECOND_RUN_REF, "sat_too_many_results") is blocked
+        and not any(item.parent_ref == child.work_ref for item in blocked.items))
+
+@pytest.mark.parametrize("category", (
+    "configuration_invalid", "credential_invalid", "signature_invalid", "identity_invalid",
+    "endpoint_failed", "sat_rejected", "submit_uncertain", "legacy_failure",
+))
+def test_other_persisted_submission_failures_are_failed_without_evidence(category: str) -> None:
+    manifest = reserve_campaign_work(build_campaign_manifest(PROFILE))
+    work = manifest.items[0]
+    failed = campaign_manifest.apply_campaign_submission_failure(
+        _bind(manifest, work.work_ref), work.work_ref, RUN_REF, category)
+    assert (_work(failed, work.work_ref).state,
+            _work(failed, work.work_ref).evidence) == (CampaignWorkState.FAILED, None)
+    assert campaign_manifest.apply_campaign_submission_failure(
+        failed, work.work_ref, RUN_REF, category) is failed
+    with pytest.raises(CampaignManifestError, match="submission-failure-projection-conflict"):
+        campaign_manifest.apply_campaign_submission_failure(
+            failed, work.work_ref, RUN_REF, "sat_too_many_results")
 def test_all_approved_splits_stop_at_eighty_four_requests_and_fifty_six_leaves() -> None:
     manifest = build_campaign_manifest(PROFILE)
     run_number = 0
