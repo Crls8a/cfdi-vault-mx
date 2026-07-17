@@ -117,16 +117,17 @@ def _advance(tmp_path, verifier, downloader, now, storage=None, *, commit=CURREN
     )
 
 
-def _verify_once(tmp_path, verifier, now):  # type: ignore[no-untyped-def]
+def _verify_once(tmp_path, verifier, now, factory=None):  # type: ignore[no-untyped-def]
     return subject.verify_metadata_recovery_once(
-        storage_root=tmp_path, recovery_ref=RUN_REF, verifier=verifier, now=now,
+        storage_root=tmp_path, recovery_ref=RUN_REF,
+        verifier_factory=factory or (lambda: verifier), now=now,
         tested_commit=CURRENT_COMMIT, entry_point="metadata-recovery-runner",
     )
 
 
 def test_verify_only_signature_excludes_download_capabilities() -> None:
     assert set(signature(subject.verify_metadata_recovery_once).parameters) == {
-        "storage_root", "recovery_ref", "verifier", "now", "tested_commit",
+        "storage_root", "recovery_ref", "verifier_factory", "now", "tested_commit",
         "entry_point", "repo_root",
     }
 
@@ -139,12 +140,13 @@ def test_verify_only_signature_excludes_download_capabilities() -> None:
 def test_verify_only_skips_before_due_and_at_deadline(tmp_path, now, expected) -> None:  # type: ignore[no-untyped-def]
     _saved(tmp_path)
     verifier = _Verifier(_verification())
+    factory_calls = []
 
-    outcome = _verify_once(tmp_path, verifier, now)
+    outcome = _verify_once(tmp_path, verifier, now, lambda: factory_calls.append(1) or verifier)
 
     assert outcome.recovery["status"] == expected
     assert (outcome.sat_contacted, outcome.verify_count, outcome.download_attempts) == (False, 0, 0)
-    assert verifier.calls == []
+    assert verifier.calls == factory_calls == []
     assert state.load_metadata_recovery_state(tmp_path, RUN_REF).verify_claim is None
 
 
@@ -163,11 +165,16 @@ def test_verify_only_skips_terminal_verified_recovery(tmp_path, terminal) -> Non
         tmp_path, replace(record, recovery=finished, package_bindings=bindings),
     )
     verifier = _Verifier(ValueError("PRIVATE"))
+    factory_calls = []
 
-    outcome = _verify_once(tmp_path, verifier, NOW + timedelta(minutes=6))
+    outcome = _verify_once(
+        tmp_path, verifier, NOW + timedelta(minutes=6),
+        lambda: factory_calls.append(1) or verifier,
+    )
 
     assert outcome.recovery["status"] == terminal
     assert (outcome.verify_count, outcome.download_attempts, verifier.calls) == (0, 0, [])
+    assert factory_calls == []
 
 
 def test_verify_only_resolves_crash_left_claim_as_uncertain(tmp_path) -> None:
@@ -178,11 +185,16 @@ def test_verify_only_resolves_crash_left_claim_as_uncertain(tmp_path) -> None:
     )
     state.save_metadata_recovery_state(tmp_path, claimed)
     verifier = _Verifier(_verification())
+    factory_calls = []
 
-    outcome = _verify_once(tmp_path, verifier, due + timedelta(minutes=1))
+    outcome = _verify_once(
+        tmp_path, verifier, due + timedelta(minutes=1),
+        lambda: factory_calls.append(1) or verifier,
+    )
 
     loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
     assert (outcome.error_kind, outcome.verify_count, verifier.calls) == ("verify_uncertain", 0, [])
+    assert factory_calls == []
     assert loaded.verify_claim is None
     assert loaded.last_verify_error_kind is state.MetadataVerifyErrorKind.VERIFY_UNCERTAIN
 
@@ -193,10 +205,26 @@ def test_verify_only_resolves_crash_left_claim_as_uncertain(tmp_path) -> None:
       state.MetadataVerifyErrorKind.VERIFY_RETRYABLE),
      (SatVerificationError(operation="verify", code="timeout", message="safe", retryable=True),
       "verify_scheduled", "verify_retryable", state.MetadataVerifyErrorKind.VERIFY_RETRYABLE),
-     (_verification(sat_code="5003"), "verify_failed", "sat_too_many_results",
+     (replace(_verification(), state=SatRequestState.ERROR, sat_code="5003",
+              action=SatOutcomeAction.PERMANENT_FAILURE),
+      "verify_failed", "sat_too_many_results",
       state.MetadataVerifyErrorKind.SAT_TOO_MANY_RESULTS),
+     (_verification(sat_code="5003"), "verify_failed", "verify_failed",
+      state.MetadataVerifyErrorKind.VERIFY_FAILED),
      (_verification(request_id="synthetic-foreign-request", sat_code="5003"),
       "verify_failed", "verify_failed", state.MetadataVerifyErrorKind.VERIFY_FAILED),
+     (replace(_verification(), sat_code=None), "verify_failed", "verify_failed",
+      state.MetadataVerifyErrorKind.VERIFY_FAILED),
+     (replace(_verification(), state="finished"), "verify_failed", "verify_failed",
+      state.MetadataVerifyErrorKind.VERIFY_FAILED),
+     (replace(_verification(), action="finished"), "verify_failed", "verify_failed",
+      state.MetadataVerifyErrorKind.VERIFY_FAILED),
+     (replace(_verification(), message=None), "verify_failed", "verify_failed",
+      state.MetadataVerifyErrorKind.VERIFY_FAILED),
+     (replace(_verification(), package_ids=[PACKAGES[0]]), "verify_failed", "verify_failed",
+      state.MetadataVerifyErrorKind.VERIFY_FAILED),
+     (replace(_verification(), package_ids=(None,)), "verify_failed", "verify_failed",
+      state.MetadataVerifyErrorKind.VERIFY_FAILED),
      (ValueError("PRIVATE"), "verify_failed", "verify_failed",
       state.MetadataVerifyErrorKind.VERIFY_FAILED)),
 )
@@ -222,14 +250,20 @@ def test_verify_only_persists_sanitized_classification(
 )
 def test_verify_only_stops_after_finished_verification(tmp_path, packages, status) -> None:  # type: ignore[no-untyped-def]
     _saved(tmp_path)
+    claims = []
+    verifier = _Verifier(_verification(packages=packages))
 
     outcome = _verify_once(
-        tmp_path, _Verifier(_verification(packages=packages)), NOW + timedelta(minutes=5),
+        tmp_path, verifier, NOW + timedelta(minutes=5),
+        lambda: claims.append(
+            state.load_metadata_recovery_state(tmp_path, RUN_REF).verify_claim is not None,
+        ) or verifier,
     )
 
     loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
     assert outcome.recovery["status"] == status
     assert outcome.download_attempts == 0 and loaded.last_verify_error_kind is None
+    assert claims == [True]
     assert len(loaded.package_bindings) == len(packages)
 
 
@@ -262,6 +296,19 @@ def test_verify_only_success_clears_prior_retryable_kind(tmp_path) -> None:
     loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
     assert outcome.recovery["status"] == "no_data"
     assert loaded.last_verify_error_kind is None
+
+
+def test_verify_only_factory_failure_resolves_claim_without_contact(tmp_path) -> None:
+    _saved(tmp_path)
+
+    outcome = _verify_once(
+        tmp_path, None, NOW + timedelta(minutes=5),
+        lambda: (_ for _ in ()).throw(RuntimeError("PRIVATE")),
+    )
+
+    loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
+    assert (outcome.error_kind, outcome.sat_contacted, outcome.verify_count) == ("verify_failed", False, 1)
+    assert loaded.verify_claim is None
 
 
 def test_verify_only_lock_allows_exactly_one_due_call(tmp_path) -> None:
@@ -465,7 +512,10 @@ def test_sat_no_data_code_never_writes_an_invented_zero(tmp_path) -> None:
     _saved(tmp_path)
     outcome = _advance(
         tmp_path,
-        _Verifier(_verification(sat_code="5004")),
+        _Verifier(replace(
+            _verification(), state=SatRequestState.ERROR, sat_code="5004",
+            action=SatOutcomeAction.PERMANENT_FAILURE,
+        )),
         _Downloader(),
         NOW + timedelta(minutes=5),
     )

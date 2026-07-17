@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -100,7 +101,8 @@ def advance_metadata_recovery_once(
 
 
 def verify_metadata_recovery_once(
-    *, storage_root: str | Path, recovery_ref: str, verifier: SatVerificationPort,
+    *, storage_root: str | Path, recovery_ref: str,
+    verifier_factory: Callable[[], SatVerificationPort],
     now: datetime, tested_commit: str, entry_point: str,
     repo_root: str | Path | None = None,
 ) -> MetadataRecoveryAdvanceOutcome:
@@ -125,7 +127,7 @@ def verify_metadata_recovery_once(
             if due_at is None or now < due_at:
                 return _out(record, audit)
             record, error = _run_due_verification(
-                storage_root, record, verifier, now, tested_commit, entry_point,
+                storage_root, record, verifier_factory, now, tested_commit, entry_point,
                 repo_root, audit, due_at,
             )
             return _out(record, audit, error=error)
@@ -186,7 +188,8 @@ def _advance(
         if due_at is None or now < due_at:
             return _out(record, audit)
         record, error = _run_due_verification(
-            root, record, verifier, now, tested_commit, entry_point, repo_root, audit, due_at,
+            root, record, lambda: verifier, now, tested_commit, entry_point,
+            repo_root, audit, due_at,
         )
         if record.recovery.status not in {RecoveryStatus.PACKAGES_READY, RecoveryStatus.DOWNLOADING}:
             return _out(record, audit, error=error)
@@ -277,16 +280,19 @@ def _settle_record(root, record, now, tested_commit, entry_point, repo_root):
 
 
 def _run_due_verification(
-    root, record, verifier, now, tested_commit, entry_point, repo_root, audit, due_at,
+    root, record, verifier_factory, now, tested_commit, entry_point, repo_root, audit, due_at,
 ):
     claimed = _claim_verification(record, tested_commit, entry_point, now, due_at)
     state.save_metadata_recovery_state(root, claimed, repo_root=repo_root)
     audit.verify_count += 1
     base = _verification_base(claimed)
+    verifier_ready = False
     try:
+        verifier = verifier_factory()
+        verifier_ready = True
         result = verifier.verify_request(claimed.id_solicitud)
     except Exception as exc:
-        contacted = _exception_confirms_sat_contact(exc, SatOperation.VERIFY)
+        contacted = verifier_ready and _exception_confirms_sat_contact(exc, SatOperation.VERIFY)
         audit.sat_contacted = audit.sat_contacted or contacted
         bucket = _record_verify_contact(audit, now, due_at) if contacted else None
         if _retryable_verification(exc):
@@ -323,27 +329,40 @@ def _resolve_verification_claim(
 
 def _apply_verification(record, result, now):
     recovery = record.recovery
-    valid = type(result) is SatVerificationResult and result.request_id == record.id_solicitud
-    if valid and type(result.sat_code) is str and result.sat_code.strip() == "5004":
+    ids_valid = type(result) is SatVerificationResult and type(result.package_ids) is tuple \
+        and all(type(item) is str and item == item.strip() and item for item in result.package_ids)
+    valid = (
+        type(result) is SatVerificationResult
+        and type(result.request_id) is str and result.request_id == result.request_id.strip()
+        and bool(result.request_id) and result.request_id == record.id_solicitud
+        and type(result.state) is SatRequestState
+        and type(result.sat_code) is str and result.sat_code == result.sat_code.strip()
+        and bool(result.sat_code) and type(result.message) is str and ids_valid
+        and type(result.action) is SatOutcomeAction
+    )
+    failure = valid and not result.package_ids and result.state is SatRequestState.ERROR \
+        and result.action is SatOutcomeAction.PERMANENT_FAILURE
+    if failure and result.sat_code == "5004":
         return replace(record, recovery=lifecycle.record_finished_verification(
             recovery, checked_at=now, package_refs=(), record_count=None)), None, None
-    if valid and type(result.sat_code) is str and result.sat_code.strip() == "5003":
+    if failure and result.sat_code == "5003":
         failed = lifecycle.record_verification_failure(recovery, checked_at=now)
         return (
             replace(record, recovery=failed),
             "sat_too_many_results",
             state.MetadataVerifyErrorKind.SAT_TOO_MANY_RESULTS,
         )
-    pending = valid and result.state in {SatRequestState.ACCEPTED, SatRequestState.IN_PROCESS} \
+    if valid and result.sat_code in {"5003", "5004"}:
+        valid = False
+    pending = valid and result.sat_code == "5000" and not result.package_ids \
+        and result.state in {SatRequestState.ACCEPTED, SatRequestState.IN_PROCESS} \
         and result.action in {SatOutcomeAction.ACCEPTED, SatOutcomeAction.IN_PROGRESS, SatOutcomeAction.RETRY}
     if pending:
         return replace(record, recovery=lifecycle.record_pending_verification(
             recovery, checked_at=now)), None, state.MetadataVerifyErrorKind.VERIFY_RETRYABLE
-    ids_valid = valid and type(result.package_ids) is tuple and all(
-        type(item) is str and item == item.strip() and item for item in result.package_ids)
-    ids = result.package_ids if ids_valid else ()
+    ids = result.package_ids if valid else ()
     refs = tuple(state.package_ref(item) for item in ids)
-    finished = (valid and result.state is SatRequestState.FINISHED
+    finished = (valid and result.sat_code == "5000" and result.state is SatRequestState.FINISHED
                 and result.action is SatOutcomeAction.FINISHED
                 and ids_valid and len(ids) == len(set(ids)) == len(set(refs)))
     if finished:
