@@ -146,8 +146,7 @@ def test_ambiguous_download_is_terminal_and_never_retried() -> None:
         subject.begin_package_download(recovery, PACKAGE_B)
 
 
-@pytest.mark.parametrize(("zip_valid", "txt_count"), [(False, 0), (True, 0)])
-def test_invalid_zip_or_zero_total_txt_cannot_complete(zip_valid: bool, txt_count: int) -> None:
+def test_invalid_zip_is_terminal_but_valid_zip_without_txt_waits_for_processing() -> None:
     recovery = subject.record_finished_verification(
         _start(),
         checked_at=START + timedelta(minutes=5),
@@ -155,8 +154,16 @@ def test_invalid_zip_or_zero_total_txt_cannot_complete(zip_valid: bool, txt_coun
         record_count=1,
     )
     recovery = subject.begin_package_download(recovery, PACKAGE_A)
-    recovery = subject.record_package_download(recovery, PACKAGE_A, zip_valid=zip_valid, txt_count=txt_count)
+    recovery = subject.record_package_download(recovery, PACKAGE_A, zip_valid=False, txt_count=0)
     assert recovery.status is subject.RecoveryStatus.DOWNLOAD_FAILED
+
+    recovery = subject.begin_package_download(_ready(), PACKAGE_A)
+    pending = subject.record_package_download(recovery, PACKAGE_A, zip_valid=True, txt_count=0)
+    assert pending.status is subject.RecoveryStatus.ZIP_DOWNLOADED_PENDING_PROCESSING
+    assert pending.packages[0].status is subject.PackageRecoveryStatus.ZIP_DOWNLOADED_PENDING_PROCESSING
+    assert pending.packages[0].zip_valid is True
+    with pytest.raises(subject.MetadataRecoveryError, match="recovery-terminal"):
+        subject.begin_package_download(pending, PACKAGE_B)
 
 
 def test_redacted_document_has_only_safe_references_and_aggregates() -> None:

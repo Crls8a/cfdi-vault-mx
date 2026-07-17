@@ -27,6 +27,10 @@ from cfdi_vault.sat_metadata_recovery import (
     PackageRecoveryStatus,
     RecoveryStatus,
 )
+from cfdi_vault.sat_metadata_zip_state import (
+    MetadataZipReceipt,
+    MetadataZipReceiptError,
+)
 
 _SCHEMA_VERSION = 6
 _LEGACY_SCHEMA_VERSION = 3
@@ -40,6 +44,11 @@ _LEGACY_RECORD_KEYS = {
 _PROVENANCE_RECORD_KEYS = _LEGACY_RECORD_KEYS | {"observationProvenance"}
 _VERIFY_CLAIM_RECORD_KEYS = _PROVENANCE_RECORD_KEYS | {"verifyClaim"}
 _RECORD_KEYS = _VERIFY_CLAIM_RECORD_KEYS | {"lastVerifyErrorKind"}
+_ZIP_RECEIPTS_KEY = "zipReceipts"
+_ZIP_RECEIPT_KEYS = {
+    "recoveryRef", "packageRef", "campaignRef", "workRef", "sha256", "byteCount",
+    "zipValid", "storageKey",
+}
 _VERIFY_CLAIM_KEYS = {"attempt", "dueAt", "claimedAt"}
 _PROVENANCE_KEYS = {
     "projectionVersion", "testedCommit", "observedAt", "entryPoint",
@@ -132,6 +141,7 @@ class MetadataRecoveryStateRecord:
     observation_provenance: MetadataObservationProvenance | None = None
     verify_claim: MetadataVerifyClaim | None = None
     last_verify_error_kind: MetadataVerifyErrorKind | None = None
+    zip_receipts: tuple[MetadataZipReceipt, ...] = ()
 
     def __post_init__(self) -> None:
         _validate_record(self)
@@ -143,6 +153,7 @@ class MetadataRecoveryStateRecord:
         document["lastVerifyErrorKind"] = (
             self.last_verify_error_kind.value if self.last_verify_error_kind is not None else None
         )
+        document[_ZIP_RECEIPTS_KEY] = [item.to_redacted_document() for item in self.zip_receipts]
         return document
 
     def to_private_document(self) -> dict[str, object]:
@@ -161,6 +172,7 @@ class MetadataRecoveryStateRecord:
         document["lastVerifyErrorKind"] = (
             self.last_verify_error_kind.value if self.last_verify_error_kind is not None else None
         )
+        document[_ZIP_RECEIPTS_KEY] = [item.to_private_document() for item in self.zip_receipts]
         return document
 
 
@@ -342,6 +354,7 @@ def _validate_record(record: MetadataRecoveryStateRecord) -> None:
     ):
         raise MetadataRecoveryStateError("package-binding-invalid")
     _validate_artifact_bindings(record)
+    _validate_zip_receipts(record)
 
 
 def _validate_verify_error_kind(record: MetadataRecoveryStateRecord) -> None:
@@ -440,6 +453,32 @@ def _validate_artifact_bindings(record: MetadataRecoveryStateRecord) -> None:
         storage_keys.update(artifact_keys)
 
 
+def _validate_zip_receipts(record: MetadataRecoveryStateRecord) -> None:
+    receipts = record.zip_receipts
+    if type(receipts) is not tuple or any(type(item) is not MetadataZipReceipt for item in receipts):
+        raise MetadataRecoveryStateError("zip-receipt-invalid")
+    package_refs = {item.package_ref for item in record.package_bindings}
+    receipt_refs = tuple(item.package_ref for item in receipts)
+    if len(set(receipt_refs)) != len(receipt_refs) or any(
+        item.recovery_ref != record.recovery.recovery_ref or item.package_ref not in package_refs
+        for item in receipts
+    ):
+        raise MetadataRecoveryStateError("zip-receipt-duplicate")
+    pending = tuple(
+        item for item in record.recovery.packages
+        if item.status is PackageRecoveryStatus.ZIP_DOWNLOADED_PENDING_PROCESSING
+    )
+    if len(receipts) != len(pending) or {item.package_ref for item in pending} != set(receipt_refs):
+        raise MetadataRecoveryStateError("zip-receipt-correspondence-invalid")
+    ordinals = {item.package_ref: index for index, item in enumerate(record.package_bindings, start=1)}
+    for receipt in receipts:
+        if receipt.storage_key != (
+            f"sat-metadata/{receipt.campaign_ref}/{receipt.work_ref}/packages/"
+            f"{ordinals[receipt.package_ref]}-{receipt.sha256[:12]}.zip"
+        ):
+            raise MetadataRecoveryStateError("zip-receipt-storage-key-invalid")
+
+
 def _storage_key_ordinal(storage_key: str) -> int:
     """Read the ordinal from a key already validated by artifact state."""
     return int(storage_key.rsplit("/", 1)[1].split("-", 1)[0])
@@ -480,6 +519,11 @@ def _validate_recovery(
         redaction_invalid = False
     if redaction_invalid:
         raise MetadataRecoveryStateError("recovery-state-invalid")
+    if type(recovery.status) is not RecoveryStatus or any(
+        type(package) is not PackageRecovery or type(package.status) is not PackageRecoveryStatus
+        for package in recovery.packages
+    ):
+        raise MetadataRecoveryStateError("recovery-state-invalid")
     datetimes = (recovery.created_at, recovery.deadline_at, recovery.next_check_at)
     if (
         any(value is not None and value.utcoffset() is None for value in datetimes)
@@ -498,9 +542,15 @@ def _validate_recovery(
             PackageRecoveryStatus.DOWNLOADING,
             PackageRecoveryStatus.UNCERTAIN,
         }
-        if package.txt_count < 0 or (neutral and (package.zip_valid is not None or package.txt_count)):
+        if type(package.txt_count) is not int or package.txt_count < 0 or (
+            neutral and (package.zip_valid is not None or package.txt_count)
+        ):
             raise MetadataRecoveryStateError("recovery-state-invalid")
         if package.status is PackageRecoveryStatus.COMPLETED and package.zip_valid is not True:
+            raise MetadataRecoveryStateError("recovery-state-invalid")
+        if package.status is PackageRecoveryStatus.ZIP_DOWNLOADED_PENDING_PROCESSING and (
+            package.zip_valid is not True or package.txt_count != 0
+        ):
             raise MetadataRecoveryStateError("recovery-state-invalid")
         if package.status is PackageRecoveryStatus.FAILED and (package.zip_valid is not False or package.txt_count):
             raise MetadataRecoveryStateError("recovery-state-invalid")
@@ -523,6 +573,10 @@ def _validate_recovery(
         and all(s in {PackageRecoveryStatus.PENDING, PackageRecoveryStatus.DOWNLOADING,
                       PackageRecoveryStatus.COMPLETED} for s in statuses)
         and not all(s is PackageRecoveryStatus.COMPLETED for s in statuses),
+        RecoveryStatus.ZIP_DOWNLOADED_PENDING_PROCESSING: bool(statuses)
+        and any(s is PackageRecoveryStatus.ZIP_DOWNLOADED_PENDING_PROCESSING for s in statuses)
+        and all(s not in {PackageRecoveryStatus.DOWNLOADING, PackageRecoveryStatus.UNCERTAIN,
+                          PackageRecoveryStatus.FAILED} for s in statuses),
         RecoveryStatus.COMPLETED: bool(statuses)
         and all(s is PackageRecoveryStatus.COMPLETED for s in statuses) and recovery.txt_count > 0,
         RecoveryStatus.DOWNLOAD_UNCERTAIN: statuses.count(PackageRecoveryStatus.UNCERTAIN) == 1
@@ -586,10 +640,20 @@ def _validate_replacement(
     added_artifacts = candidate.artifact_bindings[len(previous_artifacts):]
     if len(added_artifacts) > 1:
         raise MetadataRecoveryStateError("artifact-binding-transition-invalid")
+    previous_receipts = current.zip_receipts
+    if (
+        len(candidate.zip_receipts) < len(previous_receipts)
+        or candidate.zip_receipts[:len(previous_receipts)] != previous_receipts
+    ):
+        raise MetadataRecoveryStateError("zip-receipt-immutable")
+    added_receipts = candidate.zip_receipts[len(previous_receipts):]
+    if len(added_receipts) > 1:
+        raise MetadataRecoveryStateError("zip-receipt-transition-invalid")
     if (
         current.recovery == candidate.recovery
         and current.package_bindings == candidate.package_bindings
         and current.artifact_bindings == candidate.artifact_bindings
+        and not added_receipts
     ):
         return
     before, after = current.recovery, candidate.recovery
@@ -605,7 +669,8 @@ def _validate_replacement(
     except ValueError:
         expected = None
     if expected != after:
-        raise MetadataRecoveryStateError("recovery-state-regression")
+        if not added_receipts or before != after:
+            raise MetadataRecoveryStateError("recovery-state-regression")
     if added_artifacts and not _artifact_matches_completion(
         before,
         after,
@@ -762,7 +827,10 @@ def _record_from_document(
         _VERIFY_CLAIM_SCHEMA_VERSION: _VERIFY_CLAIM_RECORD_KEYS,
         _SCHEMA_VERSION: _RECORD_KEYS,
     }[schema_version]
-    document = _mapping(value, keys)
+    has_receipts = isinstance(value, Mapping) and _ZIP_RECEIPTS_KEY in value
+    if has_receipts and schema_version != _SCHEMA_VERSION and value[_ZIP_RECEIPTS_KEY] != []:
+        raise MetadataRecoveryStateError("zip-receipt-schema-invalid")
+    document = _mapping(value, keys | {_ZIP_RECEIPTS_KEY}) if has_receipts else _mapping(value, keys)
     packages = document["packages"]
     if not isinstance(packages, list):
         raise MetadataRecoveryStateError("recovery-state-invalid")
@@ -780,6 +848,21 @@ def _record_from_document(
         )
     except MetadataArtifactStateError:
         raise MetadataRecoveryStateError("artifact-binding-invalid") from None
+    receipts_value = document.get(_ZIP_RECEIPTS_KEY, [])
+    if type(receipts_value) is not list:
+        raise MetadataRecoveryStateError("zip-receipt-invalid")
+    try:
+        receipts = tuple(
+            MetadataZipReceipt(
+                _string(item, "recoveryRef"), _string(item, "packageRef"),
+                _string(item, "campaignRef"), _string(item, "workRef"),
+                _string(item, "sha256"), _integer(item, "byteCount"),
+                _boolean(item, "zipValid"), _string(item, "storageKey"),
+            )
+            for item in (_mapping(item, _ZIP_RECEIPT_KEYS) for item in receipts_value)
+        )
+    except (MetadataRecoveryStateError, MetadataZipReceiptError, TypeError, ValueError, AttributeError):
+        raise MetadataRecoveryStateError("zip-receipt-invalid") from None
     return MetadataRecoveryStateRecord(
         recovery=_recovery_from_document(document["recovery"]),
         id_solicitud=_string(document, "idSolicitud"), profile_id=_string(document, "profileId"),
@@ -800,7 +883,24 @@ def _record_from_document(
             _verify_error_kind_from_document(document["lastVerifyErrorKind"])
             if schema_version == _SCHEMA_VERSION else None
         ),
+        zip_receipts=receipts,
     )
+
+
+def bind_metadata_zip_receipt(
+    record: MetadataRecoveryStateRecord, package_ref_value: str, *, campaign_ref: str,
+    work_ref: str, sha256: str, byte_count: int, storage_key: str,
+) -> MetadataRecoveryStateRecord:
+    """Attach exactly one immutable raw-ZIP receipt to a pending package."""
+    receipt = MetadataZipReceipt(
+        record.recovery.recovery_ref, package_ref_value, campaign_ref, work_ref,
+        sha256, byte_count, True, storage_key,
+    )
+    return replace(record, zip_receipts=(*record.zip_receipts, receipt))
+
+
+record_metadata_zip_receipt = bind_metadata_zip_receipt
+record_raw_zip_receipt = bind_metadata_zip_receipt
 
 
 def _verify_error_kind_from_document(value: object) -> MetadataVerifyErrorKind | None:
@@ -1125,6 +1225,13 @@ def _record_count(document: Mapping[str, object], key: str) -> int | None:
 def _optional_bool(document: Mapping[str, object], key: str) -> bool | None:
     value = document.get(key)
     if value is not None and not isinstance(value, bool):
+        raise MetadataRecoveryStateError("recovery-state-invalid")
+    return value
+
+
+def _boolean(document: Mapping[str, object], key: str) -> bool:
+    value = document.get(key)
+    if type(value) is not bool:
         raise MetadataRecoveryStateError("recovery-state-invalid")
     return value
 

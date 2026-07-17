@@ -161,6 +161,7 @@ supported LIB-005B and LIB-005C rows are public library API.
 | `cfdi_vault.sat_metadata_recovery_runner` | Reference-system orchestration | Advances one persisted recovery through injected boundaries; not public API. |
 | `cfdi_vault.sat_metadata_recovery_scheduler` | Internal reference-system scheduling | Pure due selection for a local scheduler wake; not a supported consumer surface. |
 | `cfdi_vault.sat_metadata_recovery_state` | Internal reference-system persistence | Private resumable recovery state and identifiers; never re-exported. |
+| `cfdi_vault.sat_metadata_zip_state` | Internal reference-system evidence | Private raw-ZIP receipts bound to opaque campaign/work references; never re-exported. |
 | `cfdi_vault.sat_metadata_submission` | Internal live submission helper | Permit-gated exactly-once request claim; no default use or supported import. |
 | `cfdi_vault.sat_metadata_window_plan` | Internal planning helper | Operator-metadata window selection without network behavior; not public API. |
 | `cfdi_vault.sat_orchestration` | Reference-system orchestration | Application flow, persistence, and runtime coordination. |

@@ -34,6 +34,7 @@ class RecoveryStatus(StrEnum):
     VERIFY_SCHEDULED = "verify_scheduled"
     PACKAGES_READY = "packages_ready"
     DOWNLOADING = "downloading"
+    ZIP_DOWNLOADED_PENDING_PROCESSING = "zip_downloaded_pending_processing"
     COMPLETED = "completed"
     NO_DATA = "no_data"
     PENDING_AFTER_BUDGET = "pending_after_budget"
@@ -48,6 +49,7 @@ class PackageRecoveryStatus(StrEnum):
     PENDING = "pending"
     DOWNLOADING = "downloading"
     COMPLETED = "completed"
+    ZIP_DOWNLOADED_PENDING_PROCESSING = "zip_downloaded_pending_processing"
     UNCERTAIN = "uncertain"
     FAILED = "failed"
 
@@ -55,6 +57,7 @@ class PackageRecoveryStatus(StrEnum):
 _TERMINAL_STATUSES = frozenset({
     RecoveryStatus.COMPLETED, RecoveryStatus.NO_DATA, RecoveryStatus.PENDING_AFTER_BUDGET,
     RecoveryStatus.VERIFY_FAILED, RecoveryStatus.DOWNLOAD_UNCERTAIN, RecoveryStatus.DOWNLOAD_FAILED,
+    RecoveryStatus.ZIP_DOWNLOADED_PENDING_PROCESSING,
 })
 
 
@@ -92,7 +95,10 @@ class MetadataRecovery:
             not _PACKAGE_REF_RE.fullmatch(package.package_ref) for package in self.packages
         ):
             raise MetadataRecoveryError("recovery-reference-invalid")
-        completed = tuple(p for p in self.packages if p.status is PackageRecoveryStatus.COMPLETED)
+        completed = tuple(p for p in self.packages if p.status in {
+            PackageRecoveryStatus.COMPLETED,
+            PackageRecoveryStatus.ZIP_DOWNLOADED_PENDING_PROCESSING,
+        })
         return {
             "schemaVersion": 1,
             "recoveryRef": self.recovery_ref,
@@ -245,14 +251,26 @@ def record_package_download(
     if uncertain:
         updated = replace(package, status=PackageRecoveryStatus.UNCERTAIN)
         return _replace_package(recovery, updated, RecoveryStatus.DOWNLOAD_UNCERTAIN)
-    if txt_count < 0 or zip_valid is None:
+    if (
+        type(txt_count) is not int or txt_count < 0 or type(zip_valid) is not bool
+        or (not zip_valid and txt_count != 0)
+    ):
         raise MetadataRecoveryError("package-result-invalid")
-    package_status = PackageRecoveryStatus.COMPLETED if zip_valid else PackageRecoveryStatus.FAILED
+    package_status = (
+        PackageRecoveryStatus.ZIP_DOWNLOADED_PENDING_PROCESSING
+        if zip_valid and txt_count == 0
+        else PackageRecoveryStatus.COMPLETED if zip_valid else PackageRecoveryStatus.FAILED
+    )
     updated = replace(package, status=package_status, zip_valid=zip_valid, txt_count=txt_count)
     candidate = _replace_package(recovery, updated, RecoveryStatus.DOWNLOADING)
     if not zip_valid:
         return replace(candidate, status=RecoveryStatus.DOWNLOAD_FAILED)
-    if all(item.status is PackageRecoveryStatus.COMPLETED for item in candidate.packages):
+    if package_status is PackageRecoveryStatus.ZIP_DOWNLOADED_PENDING_PROCESSING:
+        return replace(candidate, status=RecoveryStatus.ZIP_DOWNLOADED_PENDING_PROCESSING)
+    if all(item.status in {
+        PackageRecoveryStatus.COMPLETED,
+        PackageRecoveryStatus.ZIP_DOWNLOADED_PENDING_PROCESSING,
+    } for item in candidate.packages):
         final = RecoveryStatus.COMPLETED if candidate.txt_count else RecoveryStatus.DOWNLOAD_FAILED
         return replace(candidate, status=final)
     return candidate

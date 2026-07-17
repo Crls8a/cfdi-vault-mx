@@ -18,6 +18,7 @@ from cfdi_vault.sat_metadata_artifact_state import (
     MetadataTextArtifact,
 )
 from cfdi_vault.sat_metadata_package import MetadataTextInspection
+from cfdi_vault.sat_metadata_zip_state import MetadataZipReceipt
 
 START = datetime(2026, 6, 30, tzinfo=timezone.utc)
 CRITERIA_HASH = "a" * 64
@@ -71,6 +72,67 @@ def test_private_state_round_trips_exact_lifecycle_and_package_bindings(tmp_path
     assert subject.metadata_recovery_state_path(tmp_path).name == "sat-metadata-recoveries.json"
     assert subject.metadata_recovery_state_path(tmp_path).read_bytes() == first
     assert _lock_path(tmp_path).exists()
+
+
+def test_raw_zip_receipt_round_trips_for_pending_processing_and_is_redacted(tmp_path) -> None:
+    ready = _ready_record()
+    package = ready.recovery.packages[0].package_ref
+    recovery = lifecycle.record_package_download(
+        lifecycle.begin_package_download(ready.recovery, package), package,
+        zip_valid=True, txt_count=0,
+    )
+    receipt = MetadataZipReceipt(
+        recovery.recovery_ref, package, "cmp-0123456789ab", "work-abcdef012345",
+        "b" * 64, 123, True,
+        "sat-metadata/cmp-0123456789ab/work-abcdef012345/packages/1-bbbbbbbbbbbb.zip",
+    )
+    record = replace(ready, recovery=recovery, zip_receipts=(receipt,))
+
+    subject.save_metadata_recovery_state(tmp_path, ready)
+    subject.save_metadata_recovery_state(
+        tmp_path, replace(ready, recovery=lifecycle.begin_package_download(ready.recovery, package)),
+    )
+    subject.save_metadata_recovery_state(tmp_path, record)
+    assert subject.load_metadata_recovery_state(tmp_path, record.recovery.recovery_ref) == record
+    redacted = record.to_redacted_document()
+    serialized = repr(redacted)
+    assert redacted["zipReceipts"] == [{"zipValid": True, "byteCount": 123}]
+    for private in (receipt.campaign_ref, receipt.work_ref, receipt.sha256, receipt.storage_key):
+        assert private not in serialized
+
+
+def test_raw_zip_receipt_changes_and_duplicates_are_rejected(tmp_path) -> None:
+    ready = _ready_record()
+    package = ready.recovery.packages[0].package_ref
+    recovery = lifecycle.record_package_download(
+        lifecycle.begin_package_download(ready.recovery, package), package,
+        zip_valid=True, txt_count=0,
+    )
+    receipt = MetadataZipReceipt(
+        recovery.recovery_ref, package, "cmp-0123456789ab", "work-abcdef012345",
+        "b" * 64, 123, True,
+        "sat-metadata/cmp-0123456789ab/work-abcdef012345/packages/1-bbbbbbbbbbbb.zip",
+    )
+    record = replace(ready, recovery=recovery, zip_receipts=(receipt,))
+    subject.save_metadata_recovery_state(tmp_path, record)
+    subject.save_metadata_recovery_state(tmp_path, record)
+    conflict = replace(record, zip_receipts=(replace(receipt, byte_count=124),))
+    with pytest.raises(subject.MetadataRecoveryStateError, match="zip-receipt-immutable"):
+        subject.save_metadata_recovery_state(tmp_path, conflict)
+    with pytest.raises(subject.MetadataRecoveryStateError, match="zip-receipt-duplicate"):
+        replace(record, zip_receipts=(receipt, receipt))
+
+
+def test_zero_txt_is_rejected_outside_pending_processing() -> None:
+    ready = _ready_record()
+    package = ready.recovery.packages[0].package_ref
+    pending = lifecycle.record_package_download(
+        lifecycle.begin_package_download(ready.recovery, package), package,
+        zip_valid=True, txt_count=0,
+    )
+    forged = replace(pending, status=lifecycle.RecoveryStatus.COMPLETED)
+    with pytest.raises(subject.MetadataRecoveryStateError, match="recovery-state-invalid"):
+        replace(ready, recovery=forged)
 
 
 def test_observation_provenance_v4_round_trips_privately_only(tmp_path) -> None:
