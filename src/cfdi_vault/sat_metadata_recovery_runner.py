@@ -99,6 +99,43 @@ def advance_metadata_recovery_once(
         return _failed_out(audit, "runner_failed")
 
 
+def verify_metadata_recovery_once(
+    *, storage_root: str | Path, recovery_ref: str, verifier: SatVerificationPort,
+    now: datetime, tested_commit: str, entry_point: str,
+    repo_root: str | Path | None = None,
+) -> MetadataRecoveryAdvanceOutcome:
+    """Run at most one due VERIFY and never expose package download capability."""
+    audit = _SatCallAudit()
+    try:
+        state.new_metadata_observation_provenance(
+            tested_commit=tested_commit, observed_at=now, entry_point=entry_point,
+        )
+        with state.metadata_recovery_operation_lock(storage_root, repo_root=repo_root):
+            record = state.load_metadata_recovery_state(
+                storage_root, recovery_ref, repo_root=repo_root,
+            )
+            record, local_error, requires_live = _settle_record(
+                storage_root, record, now, tested_commit, entry_point, repo_root,
+            )
+            if local_error == "observation-provenance-missing":
+                return _failed_out(audit, local_error)
+            if not requires_live or record.recovery.status is not RecoveryStatus.VERIFY_SCHEDULED:
+                return _out(record, audit, error=local_error)
+            due_at = record.recovery.next_check_at
+            if due_at is None or now < due_at:
+                return _out(record, audit)
+            record, error = _run_due_verification(
+                storage_root, record, verifier, now, tested_commit, entry_point,
+                repo_root, audit, due_at,
+            )
+            return _out(record, audit, error=error)
+    except state.MetadataRecoveryStateError as exc:
+        kind = "busy" if exc.reason == "recovery-state-busy" else "state_failed"
+        return _failed_out(audit, kind)
+    except Exception:
+        return _failed_out(audit, "runner_failed")
+
+
 def settle_metadata_recovery_locally(
     *, storage_root: str | Path, recovery_ref: str, now: datetime,
     tested_commit: str, entry_point: str, repo_root: str | Path | None = None,
@@ -148,36 +185,9 @@ def _advance(
         due_at = recovery.next_check_at
         if due_at is None or now < due_at:
             return _out(record, audit)
-        record = _claim_verification(record, tested_commit, entry_point, now, due_at)
-        state.save_metadata_recovery_state(root, record, repo_root=repo_root)
-        audit.verify_count += 1
-        verification_base = _verification_base(record)
-        try:
-            result = verifier.verify_request(record.id_solicitud)
-        except Exception as exc:
-            contacted = _exception_confirms_sat_contact(exc, SatOperation.VERIFY)
-            audit.sat_contacted = audit.sat_contacted or contacted
-            bucket = _record_verify_contact(audit, now, due_at) if contacted else None
-            if _retryable_verification(exc):
-                recovery = lifecycle.record_pending_verification(
-                    verification_base.recovery, checked_at=now,
-                )
-                error = "verify_retryable"
-            else:
-                recovery = lifecycle.record_verification_failure(
-                    verification_base.recovery, checked_at=now,
-                )
-                error = "verify_failed"
-            record = replace(verification_base, recovery=recovery)
-            record = _with_provenance(record, tested_commit, entry_point, now, bucket)
-            state.save_metadata_recovery_state(root, record, repo_root=repo_root)
-            return _out(record, audit, error=error)
-        audit.sat_contacted = True
-        bucket = _record_verify_contact(audit, now, due_at)
-        record, error = _apply_verification(verification_base, result, now)
-        record = _with_provenance(record, tested_commit, entry_point, now, bucket)
-        audit.terminal_status_received = record.recovery.status in _VERIFIED_TERMINAL
-        state.save_metadata_recovery_state(root, record, repo_root=repo_root)
+        record, error = _run_due_verification(
+            root, record, verifier, now, tested_commit, entry_point, repo_root, audit, due_at,
+        )
         if record.recovery.status not in {RecoveryStatus.PACKAGES_READY, RecoveryStatus.DOWNLOADING}:
             return _out(record, audit, error=error)
     for ordinal, binding in enumerate(record.package_bindings, start=1):
@@ -235,8 +245,9 @@ def _settle_record(root, record, now, tested_commit, entry_point, repo_root):
         recovery = lifecycle.record_verification_failure(
             base.recovery, checked_at=record.verify_claim.claimed_at,
         )
-        record = _with_provenance(
-            replace(base, recovery=recovery), tested_commit, entry_point, now,
+        record = _resolve_verification_claim(
+            base, recovery, state.MetadataVerifyErrorKind.VERIFY_UNCERTAIN,
+            tested_commit, entry_point, now,
         )
         state.save_metadata_recovery_state(root, record, repo_root=repo_root)
         return record, "verify_uncertain", False
@@ -265,17 +276,69 @@ def _settle_record(root, record, now, tested_commit, entry_point, repo_root):
     return record, None, True
 
 
+def _run_due_verification(
+    root, record, verifier, now, tested_commit, entry_point, repo_root, audit, due_at,
+):
+    claimed = _claim_verification(record, tested_commit, entry_point, now, due_at)
+    state.save_metadata_recovery_state(root, claimed, repo_root=repo_root)
+    audit.verify_count += 1
+    base = _verification_base(claimed)
+    try:
+        result = verifier.verify_request(claimed.id_solicitud)
+    except Exception as exc:
+        contacted = _exception_confirms_sat_contact(exc, SatOperation.VERIFY)
+        audit.sat_contacted = audit.sat_contacted or contacted
+        bucket = _record_verify_contact(audit, now, due_at) if contacted else None
+        if _retryable_verification(exc):
+            recovery = lifecycle.record_pending_verification(base.recovery, checked_at=now)
+            error = "verify_retryable"
+            kind = state.MetadataVerifyErrorKind.VERIFY_RETRYABLE
+        else:
+            recovery = lifecycle.record_verification_failure(base.recovery, checked_at=now)
+            error = "verify_failed"
+            kind = state.MetadataVerifyErrorKind.VERIFY_FAILED
+        record = _resolve_verification_claim(
+            base, recovery, kind, tested_commit, entry_point, now, bucket,
+        )
+    else:
+        audit.sat_contacted = True
+        bucket = _record_verify_contact(audit, now, due_at)
+        record, error, kind = _apply_verification(base, result, now)
+        record = _resolve_verification_claim(
+            record, record.recovery, kind, tested_commit, entry_point, now, bucket,
+        )
+        audit.terminal_status_received = record.recovery.status in _VERIFIED_TERMINAL
+    state.save_metadata_recovery_state(root, record, repo_root=repo_root)
+    return record, error
+
+
+def _resolve_verification_claim(
+    base, recovery, kind, tested_commit, entry_point, now, bucket=None,
+):
+    resolved = replace(
+        base, recovery=recovery, verify_claim=None, last_verify_error_kind=kind,
+    )
+    return _with_provenance(resolved, tested_commit, entry_point, now, bucket)
+
+
 def _apply_verification(record, result, now):
     recovery = record.recovery
     valid = type(result) is SatVerificationResult and result.request_id == record.id_solicitud
     if valid and type(result.sat_code) is str and result.sat_code.strip() == "5004":
         return replace(record, recovery=lifecycle.record_finished_verification(
-            recovery, checked_at=now, package_refs=(), record_count=None)), None
+            recovery, checked_at=now, package_refs=(), record_count=None)), None, None
+    if valid and type(result.sat_code) is str and result.sat_code.strip() == "5003":
+        failed = lifecycle.record_verification_failure(recovery, checked_at=now)
+        return (
+            replace(record, recovery=failed),
+            "sat_too_many_results",
+            state.MetadataVerifyErrorKind.SAT_TOO_MANY_RESULTS,
+        )
     pending = valid and result.state in {SatRequestState.ACCEPTED, SatRequestState.IN_PROCESS} \
         and result.action in {SatOutcomeAction.ACCEPTED, SatOutcomeAction.IN_PROGRESS, SatOutcomeAction.RETRY}
     if pending:
         return replace(record, recovery=lifecycle.record_pending_verification(
-            recovery, checked_at=now)), None
+            recovery, checked_at=now)), None, state.MetadataVerifyErrorKind.VERIFY_RETRYABLE
     ids_valid = valid and type(result.package_ids) is tuple and all(
         type(item) is str and item == item.strip() and item for item in result.package_ids)
     ids = result.package_ids if ids_valid else ()
@@ -287,9 +350,13 @@ def _apply_verification(record, result, now):
         recovery = lifecycle.record_finished_verification(
             recovery, checked_at=now, package_refs=refs, record_count=None)
         bindings = tuple(state.PackageIdBinding(ref, raw) for ref, raw in zip(refs, ids, strict=True))
-        return replace(record, recovery=recovery, package_bindings=bindings), None
+        return replace(record, recovery=recovery, package_bindings=bindings), None, None
     recovery = lifecycle.record_verification_failure(recovery, checked_at=now)
-    return replace(record, recovery=recovery), "verify_failed"
+    return (
+        replace(record, recovery=recovery),
+        "verify_failed",
+        state.MetadataVerifyErrorKind.VERIFY_FAILED,
+    )
 
 
 def _claim_verification(record, tested_commit, entry_point, now, due_at):  # type: ignore[no-untyped-def]

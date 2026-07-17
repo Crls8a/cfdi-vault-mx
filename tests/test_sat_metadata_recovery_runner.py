@@ -4,6 +4,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from inspect import signature
 from io import BytesIO
 from threading import Event
 from zipfile import ZipFile
@@ -23,12 +24,12 @@ from cfdi_vault.sat_contract import (
     SatVerificationError,
     SatVerificationResult,
 )
-from cfdi_vault.sat_v15_adapter import SatV15AdapterError
 from cfdi_vault.sat_metadata_recovery_runner import (
     MetadataRecoveryAdvanceOutcome,
     advance_metadata_recovery_once,
     settle_metadata_recovery_locally,
 )
+from cfdi_vault.sat_v15_adapter import SatV15AdapterError
 
 NOW = datetime(2026, 6, 30, tzinfo=timezone.utc)
 REQUEST = "synthetic-request"
@@ -114,6 +115,176 @@ def _advance(tmp_path, verifier, downloader, now, storage=None, *, commit=CURREN
         downloader=downloader, package_storage=storage or MemoryPackageStorage(), now=now,
         tested_commit=commit, entry_point="metadata-recovery-runner",
     )
+
+
+def _verify_once(tmp_path, verifier, now):  # type: ignore[no-untyped-def]
+    return subject.verify_metadata_recovery_once(
+        storage_root=tmp_path, recovery_ref=RUN_REF, verifier=verifier, now=now,
+        tested_commit=CURRENT_COMMIT, entry_point="metadata-recovery-runner",
+    )
+
+
+def test_verify_only_signature_excludes_download_capabilities() -> None:
+    assert set(signature(subject.verify_metadata_recovery_once).parameters) == {
+        "storage_root", "recovery_ref", "verifier", "now", "tested_commit",
+        "entry_point", "repo_root",
+    }
+
+
+@pytest.mark.parametrize(
+    ("now", "expected"),
+    ((NOW + timedelta(minutes=4), "verify_scheduled"),
+     (NOW + timedelta(days=7), "pending_after_budget")),
+)
+def test_verify_only_skips_before_due_and_at_deadline(tmp_path, now, expected) -> None:  # type: ignore[no-untyped-def]
+    _saved(tmp_path)
+    verifier = _Verifier(_verification())
+
+    outcome = _verify_once(tmp_path, verifier, now)
+
+    assert outcome.recovery["status"] == expected
+    assert (outcome.sat_contacted, outcome.verify_count, outcome.download_attempts) == (False, 0, 0)
+    assert verifier.calls == []
+    assert state.load_metadata_recovery_state(tmp_path, RUN_REF).verify_claim is None
+
+
+@pytest.mark.parametrize("terminal", ("no_data", "packages_ready"))
+def test_verify_only_skips_terminal_verified_recovery(tmp_path, terminal) -> None:  # type: ignore[no-untyped-def]
+    record = _saved(tmp_path)
+    package_refs = () if terminal == "no_data" else (state.package_ref(PACKAGES[0]),)
+    finished = lifecycle.record_finished_verification(
+        record.recovery, checked_at=NOW + timedelta(minutes=5),
+        package_refs=package_refs, record_count=None,
+    )
+    bindings = () if not package_refs else (
+        state.PackageIdBinding(package_refs[0], PACKAGES[0]),
+    )
+    state.save_metadata_recovery_state(
+        tmp_path, replace(record, recovery=finished, package_bindings=bindings),
+    )
+    verifier = _Verifier(ValueError("PRIVATE"))
+
+    outcome = _verify_once(tmp_path, verifier, NOW + timedelta(minutes=6))
+
+    assert outcome.recovery["status"] == terminal
+    assert (outcome.verify_count, outcome.download_attempts, verifier.calls) == (0, 0, [])
+
+
+def test_verify_only_resolves_crash_left_claim_as_uncertain(tmp_path) -> None:
+    record = _saved(tmp_path)
+    due = record.recovery.next_check_at
+    claimed = subject._claim_verification(
+        record, CURRENT_COMMIT, "metadata-recovery-runner", due, due,
+    )
+    state.save_metadata_recovery_state(tmp_path, claimed)
+    verifier = _Verifier(_verification())
+
+    outcome = _verify_once(tmp_path, verifier, due + timedelta(minutes=1))
+
+    loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
+    assert (outcome.error_kind, outcome.verify_count, verifier.calls) == ("verify_uncertain", 0, [])
+    assert loaded.verify_claim is None
+    assert loaded.last_verify_error_kind is state.MetadataVerifyErrorKind.VERIFY_UNCERTAIN
+
+
+@pytest.mark.parametrize(
+    ("result", "status", "error", "kind"),
+    ((_verification(action=SatOutcomeAction.IN_PROGRESS), "verify_scheduled", None,
+      state.MetadataVerifyErrorKind.VERIFY_RETRYABLE),
+     (SatVerificationError(operation="verify", code="timeout", message="safe", retryable=True),
+      "verify_scheduled", "verify_retryable", state.MetadataVerifyErrorKind.VERIFY_RETRYABLE),
+     (_verification(sat_code="5003"), "verify_failed", "sat_too_many_results",
+      state.MetadataVerifyErrorKind.SAT_TOO_MANY_RESULTS),
+     (_verification(request_id="synthetic-foreign-request", sat_code="5003"),
+      "verify_failed", "verify_failed", state.MetadataVerifyErrorKind.VERIFY_FAILED),
+     (ValueError("PRIVATE"), "verify_failed", "verify_failed",
+      state.MetadataVerifyErrorKind.VERIFY_FAILED)),
+)
+def test_verify_only_persists_sanitized_classification(
+    tmp_path, result, status, error, kind,
+) -> None:  # type: ignore[no-untyped-def]
+    _saved(tmp_path)
+    verifier = _Verifier(result)
+
+    outcome = _verify_once(tmp_path, verifier, NOW + timedelta(minutes=5))
+
+    loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
+    assert (outcome.recovery["status"], outcome.error_kind) == (status, error)
+    assert (outcome.verify_count, outcome.download_attempts) == (1, 0)
+    assert verifier.calls == [REQUEST]
+    assert loaded.verify_claim is None and loaded.last_verify_error_kind is kind
+    assert all(value not in repr(outcome) for value in (REQUEST, "synthetic-foreign-request", "PRIVATE"))
+
+
+@pytest.mark.parametrize(
+    ("packages", "status"),
+    ((PACKAGES, "packages_ready"), ((), "no_data")),
+)
+def test_verify_only_stops_after_finished_verification(tmp_path, packages, status) -> None:  # type: ignore[no-untyped-def]
+    _saved(tmp_path)
+
+    outcome = _verify_once(
+        tmp_path, _Verifier(_verification(packages=packages)), NOW + timedelta(minutes=5),
+    )
+
+    loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
+    assert outcome.recovery["status"] == status
+    assert outcome.download_attempts == 0 and loaded.last_verify_error_kind is None
+    assert len(loaded.package_bindings) == len(packages)
+
+
+def test_verify_only_reuses_exact_lifecycle_schedule(tmp_path) -> None:
+    _saved(tmp_path)
+    verifier = _Verifier(_verification(action=SatOutcomeAction.IN_PROGRESS))
+    due = NOW + timedelta(minutes=5)
+    delays = (15, 30, 60, 120, 240, 480, 480)
+
+    for delay in delays:
+        outcome = _verify_once(tmp_path, verifier, due)
+        due += timedelta(minutes=delay)
+        loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
+        assert outcome.recovery["nextCheckAt"] == due.isoformat().replace("+00:00", "Z")
+        assert loaded.recovery.next_check_at == due
+
+    assert verifier.calls == [REQUEST] * len(delays)
+
+
+def test_verify_only_success_clears_prior_retryable_kind(tmp_path) -> None:
+    _saved(tmp_path)
+    _verify_once(
+        tmp_path, _Verifier(_verification(action=SatOutcomeAction.IN_PROGRESS)),
+        NOW + timedelta(minutes=5),
+    )
+    pending = state.load_metadata_recovery_state(tmp_path, RUN_REF)
+
+    outcome = _verify_once(tmp_path, _Verifier(_verification()), pending.recovery.next_check_at)
+
+    loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
+    assert outcome.recovery["status"] == "no_data"
+    assert loaded.last_verify_error_kind is None
+
+
+def test_verify_only_lock_allows_exactly_one_due_call(tmp_path) -> None:
+    _saved(tmp_path)
+    entered, release = Event(), Event()
+
+    class Blocking(_Verifier):
+        def verify_request(self, request_id: str):  # type: ignore[no-untyped-def]
+            self.calls.append(request_id)
+            entered.set()
+            release.wait(2)
+            return _verification(action=SatOutcomeAction.IN_PROGRESS)
+
+    verifier = Blocking(_verification())
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(_verify_once, tmp_path, verifier, NOW + timedelta(minutes=5))
+        assert entered.wait(1)
+        busy = _verify_once(tmp_path, verifier, NOW + timedelta(minutes=5))
+        release.set()
+        first_outcome = first.result()
+
+    assert (first_outcome.verify_count, busy.error_kind, verifier.calls) == (1, "busy", [REQUEST])
+    assert first_outcome.download_attempts == busy.download_attempts == 0
 
 
 @pytest.mark.parametrize(
@@ -451,6 +622,7 @@ def test_invalid_commit_and_legacy_state_stop_before_verify(tmp_path) -> None:
     document["schemaVersion"] = 3
     del document["recoveries"][0]["observationProvenance"]
     del document["recoveries"][0]["verifyClaim"]
+    del document["recoveries"][0]["lastVerifyErrorKind"]
     path.write_text(json.dumps(document), encoding="utf-8")
     legacy = _advance(legacy_root, verifier, _Downloader(), NOW + timedelta(minutes=5))
     assert legacy.error_kind == "observation-provenance-missing" and verifier.calls == []
