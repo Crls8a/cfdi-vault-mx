@@ -91,9 +91,8 @@ def execute_campaign_metadata_zip_download_once(
         adapter = downloader_factory()
         download = adapter.download_package(binding.id_paquete)  # type: ignore[union-attr]
     except Exception:
-        return _finish_uncertain(
-            storage_root, repo_root, work.recovery_ref, package.package_ref,
-        )
+        return _finish(storage_root, repo_root, work.recovery_ref, package.package_ref,
+                       uncertain=True, error="download-uncertain")
     if not _valid_result(download, binding.id_paquete):
         return _finish_terminal(
             storage_root, repo_root, work.recovery_ref, package.package_ref,
@@ -119,7 +118,7 @@ def execute_campaign_metadata_zip_download_once(
             storage_root, repo_root, work.recovery_ref, package.package_ref,
             error="storage-failed",
         )
-    package_count = 1
+    package_count, current = 1, None
     try:
         with metadata_recovery_operation_lock(storage_root, repo_root=repo_root):
             current = load_metadata_recovery_state(
@@ -137,6 +136,15 @@ def execute_campaign_metadata_zip_download_once(
             save_metadata_recovery_state(storage_root, updated, repo_root=repo_root)
             return _from_record(updated, True, True, "downloaded", None)
     except Exception:
+        if current is not None:
+            try:
+                uncertain = replace(current, recovery=record_package_download(
+                    current.recovery, package.package_ref, uncertain=True,
+                ))
+                save_metadata_recovery_state(storage_root, uncertain, repo_root=repo_root)
+                return _from_record(uncertain, False, False, "uncertain", "state-save-uncertain")
+            except Exception:
+                pass
         return _empty("uncertain", "state-save-uncertain", package_count=package_count)
 
 
@@ -185,12 +193,7 @@ def _atomic_zip_record(current: MetadataRecoveryStateRecord, recovery, package_r
 
 
 def _valid_result(value: object, package_id: str) -> bool:
-    return (
-        type(value) is SatDownloadResult
-        and value.package_id == package_id
-        and type(value.content) is bytes
-        and 0 < len(value.content) <= _MAX_BYTES
-    )
+    return type(value) is SatDownloadResult and value.package_id == package_id and type(value.content) is bytes and 0 < len(value.content) <= _MAX_BYTES
 
 
 def _valid_zip(content: bytes | None) -> bool:
@@ -221,8 +224,7 @@ def _valid_zip(content: bytes | None) -> bool:
 
 
 def _chunks(content: bytes) -> Iterable[bytes]:
-    for offset in range(0, len(content), _CHUNK_BYTES):
-        yield content[offset : offset + _CHUNK_BYTES]
+    return (content[offset : offset + _CHUNK_BYTES] for offset in range(0, len(content), _CHUNK_BYTES))
 
 
 def _finish(root, repo, recovery_ref, package_ref_value, *, uncertain, error):  # type: ignore[no-untyped-def]
@@ -245,11 +247,6 @@ def _finish(root, repo, recovery_ref, package_ref_value, *, uncertain, error):  
         return _empty("uncertain", "state-save-uncertain")
 
 
-def _finish_uncertain(root, repo, recovery_ref, package_ref_value):  # type: ignore[no-untyped-def]
-    return _finish(root, repo, recovery_ref, package_ref_value,
-                   uncertain=True, error="download-uncertain")
-
-
 def _finish_terminal(root, repo, recovery_ref, package_ref_value, *, error):  # type: ignore[no-untyped-def]
     return _finish(root, repo, recovery_ref, package_ref_value,
                    uncertain=False, error=error)
@@ -258,10 +255,7 @@ def _finish_terminal(root, repo, recovery_ref, package_ref_value, *, error):  # 
 def _from_record(record, downloaded, valid, status, error):  # type: ignore[no-untyped-def]
     try:
         document = record.recovery.to_redacted_document()
-        return CampaignMetadataZipDownloadResult(
-            bool(downloaded), bool(valid), int(document["packageCount"]),
-            document["nextCheckAt"] or None, status, error,
-        )
+        return CampaignMetadataZipDownloadResult(bool(downloaded), bool(valid), int(document["packageCount"]), document["nextCheckAt"] or None, status, error)
     except Exception:
         return _empty("state-invalid", "state-invalid")
 

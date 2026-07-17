@@ -124,3 +124,24 @@ def test_zip_proof_never_reads_members_or_accepts_traversal(tmp_path, monkeypatc
     invalid = _run(root, repo, lambda: SimpleNamespace(
         download_package=lambda _: _result(content=unsafe_content)))
     assert (invalid.status, invalid.error) == ("failed", "zip-invalid")
+
+
+def test_final_state_save_failure_fails_closed_without_recontact(tmp_path, monkeypatch):
+    root, repo, _, recovery_ref, _ = _setup(tmp_path, monkeypatch)
+    original = subject.save_metadata_recovery_state
+    save_calls, contacts = [], []
+
+    def flaky_save(*args, **kwargs):
+        save_calls.append(1)
+        if len(save_calls) == 2:
+            raise RuntimeError("synthetic-state-save-failure")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(subject, "save_metadata_recovery_state", flaky_save)
+    first = _run(root, repo, lambda: contacts.append(1) or SimpleNamespace(
+        download_package=lambda _: _result()))
+    second = _run(root, repo, lambda: contacts.append(2))
+    loaded = state.load_metadata_recovery_state(root, recovery_ref, repo_root=repo)
+    assert first.status == "uncertain"
+    assert second.status != "in-progress" and contacts == [1]
+    assert loaded.recovery.status is lifecycle.RecoveryStatus.DOWNLOAD_UNCERTAIN
