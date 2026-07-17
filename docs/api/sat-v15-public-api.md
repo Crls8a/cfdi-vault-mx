@@ -137,10 +137,13 @@ supported LIB-005B and LIB-005C rows are public library API.
 | `cfdi_vault.sat_campaign_preflight` | Internal reference-system safety evidence | Neutral injected local-readiness proof for later campaign guards; no authorization, adapter construction, state mutation, or SAT contact. |
 | `cfdi_vault.sat_campaign_adapter` | Internal reference-system adapter factory | Lazy grant- and preflight-bound canonical v1.5 Metadata adapter construction; no import-time or factory-creation I/O. |
 | `cfdi_vault.sat_campaign_query` | Internal reference-system planning | Pure profile-bound Metadata query derivation for outstanding campaign work; not a supported import. |
+| `cfdi_vault.sat_campaign_recovery_projection` | Internal reference-system reconciliation | Projects persisted recovery outcomes into campaign transitions; no stable consumer surface. |
 | `cfdi_vault.sat_campaign_run` | Internal reference-system application service | One-shot preflight, reservation, and bounded Metadata submission with ref-free aggregates; not a supported import. |
 | `cfdi_vault.sat_campaign_runner` | Internal reference-system orchestration | One-shot campaign reservation, recovery binding, and claim planning; no stable consumer surface. |
+| `cfdi_vault.sat_campaign_status` | Internal reference-system reporting | Read-only manifest-bound recovery aggregates; not a supported import and never contacts SAT. |
 | `cfdi_vault.sat_campaign_submission_effects` | Internal live orchestration | Sequential grant-authorized Metadata submission effects; never selected implicitly. |
 | `cfdi_vault.sat_campaign_submission_projection` | Internal reference-system reconciliation | Read-only persisted-outcome validation with an atomic failure-only campaign transition; no SAT contact. |
+| `cfdi_vault.sat_campaign_verify_effects` | Internal live orchestration | Bounded due VERIFY effects with persisted claims; never selected implicitly. |
 | `cfdi_vault.sat_contract` | LIB-005B public contract | Supported typed results, errors, and outcome policy remain side-effect free. |
 | `cfdi_vault.sat_download` | LIB-005C public facade | Two-name import-first surface; injected delegation plus deterministic offline factory only. |
 | `cfdi_vault.sat_download_envelope_lint` | Research tool | Download envelope inspection helper. |

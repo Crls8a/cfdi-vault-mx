@@ -5,25 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from cfdi_vault.sat_campaign_manifest import (
-    CampaignWorkItem,
-    CampaignWorkState,
-    SatCampaignManifest,
-    campaign_redacted_summary,
-)
-from cfdi_vault.sat_campaign_manifest_store import load_campaign_manifest
+import cfdi_vault.sat_campaign_manifest as campaign
+import cfdi_vault.sat_metadata_recovery_state as recovery_state
+from cfdi_vault.sat_campaign_manifest_store import CampaignManifestStoreError, load_campaign_manifest
 from cfdi_vault.sat_campaign_query import build_metadata_query_for_work
-from cfdi_vault.sat_metadata_recovery_state import (
-    MetadataRecoveryStateRecord,
-    campaign_metadata_recovery_ref,
-    list_metadata_recovery_states,
-)
 from cfdi_vault.setup_core import LocalProfile
 
 
 class CampaignStatusError(ValueError):
     """Reject invalid status lineage without retaining private details."""
-
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(reason)
@@ -32,7 +22,6 @@ class CampaignStatusError(ValueError):
 @dataclass(frozen=True, slots=True)
 class CampaignStatusResult:
     """Ref-free manifest and Metadata recovery aggregates."""
-
     base_count: int
     split_count: int
     leaf_count: int
@@ -51,74 +40,66 @@ class CampaignStatusResult:
     txt_count: int
 
 
-def load_campaign_status(
-    storage_root: str | Path,
-    campaign_ref: str,
-    profile: LocalProfile,
-) -> CampaignStatusResult:
+def load_campaign_status(storage_root: str | Path, campaign_ref: str, profile: LocalProfile) -> CampaignStatusResult:
     """Load private local state and return only validated campaign aggregates."""
-
-    manifest = load_campaign_manifest(storage_root, campaign_ref)
     try:
-        records = list_metadata_recovery_states(storage_root)
-    except Exception as error:
-        raise CampaignStatusError("campaign-status-recovery-invalid") from error
-    return project_campaign_status(manifest, records, profile)
+        manifest = load_campaign_manifest(storage_root, campaign_ref)
+        records = recovery_state.list_metadata_recovery_states(storage_root)
+        return project_campaign_status(manifest, records, profile)
+    except CampaignManifestStoreError as error:
+        raise CampaignManifestStoreError(error.reason) from None
+    except CampaignStatusError as error:
+        raise CampaignStatusError(error.reason) from None
+    except Exception:
+        raise CampaignStatusError("campaign-status-recovery-invalid") from None
 
 
-def project_campaign_status(
-    manifest: SatCampaignManifest,
-    records: tuple[MetadataRecoveryStateRecord, ...],
-    profile: LocalProfile,
-) -> CampaignStatusResult:
+def project_campaign_status(manifest: campaign.SatCampaignManifest,
+                            records: tuple[recovery_state.MetadataRecoveryStateRecord, ...],
+                            profile: LocalProfile) -> CampaignStatusResult:
     """Project only recovery records bound to exact campaign work lineage."""
-
-    if type(profile) is not LocalProfile or manifest.profile_id != profile.profile_id:
-        raise CampaignStatusError("campaign-profile-mismatch")
     try:
-        summary = campaign_redacted_summary(manifest)
+        if type(profile) is not LocalProfile or manifest.profile_id != profile.profile_id:
+            raise CampaignStatusError("campaign-profile-mismatch")
+        if type(records) is not tuple or any(type(record) is not recovery_state.MetadataRecoveryStateRecord
+                                             for record in records):
+            raise CampaignStatusError("campaign-status-recovery-invalid")
+        refs = tuple(record.recovery.recovery_ref for record in records)
+        if len(refs) != len(set(refs)):
+            raise CampaignStatusError("campaign-status-recovery-invalid")
+        summary = campaign.campaign_redacted_summary(manifest)
         counts = summary["stateCounts"]
         if type(counts) is not dict:
             raise ValueError
         indexed = {record.recovery.recovery_ref: record for record in records}
         bound = tuple(item for item in manifest.items if item.recovery_ref is not None)
         selected = tuple(_require_exact_record(manifest, profile, item, indexed) for item in bound)
-        due = tuple(
-            record.recovery.to_redacted_document()["nextCheckAt"] for record in selected
-            if record.recovery.next_check_at is not None
-        )
+        due = tuple(record.recovery.to_redacted_document()["nextCheckAt"] for record in selected
+                    if record.recovery.next_check_at is not None)
+        states = (campaign.CampaignWorkState.PLANNED, campaign.CampaignWorkState.COMPLETED,
+                  campaign.CampaignWorkState.NO_DATA, campaign.CampaignWorkState.FAILED,
+                  campaign.CampaignWorkState.THRESHOLD_BLOCKED)
         return CampaignStatusResult(
             int(summary["baseCount"]), int(summary["splitCount"]),
             int(summary["leafCount"]), int(summary["totalCount"]),
             int(summary["outstandingCount"]), int(summary["terminalCount"]),
-            int(counts[CampaignWorkState.PLANNED.value]),
-            int(counts[CampaignWorkState.COMPLETED.value]),
-            int(counts[CampaignWorkState.NO_DATA.value]),
-            int(counts[CampaignWorkState.FAILED.value]),
-            int(counts[CampaignWorkState.THRESHOLD_BLOCKED.value]),
+            *(int(counts[state.value]) for state in states),
             sum(record.recovery.verify_attempts for record in selected),
             min(due, default=""),
             sum(len(record.recovery.packages) for record in selected),
-            sum(
-                package.zip_valid is True
-                for record in selected for package in record.recovery.packages
-            ),
+            sum(package.zip_valid is True for record in selected for package in record.recovery.packages),
             sum(record.recovery.txt_count for record in selected),
         )
-    except CampaignStatusError:
-        raise
-    except Exception as error:
-        raise CampaignStatusError("campaign-status-recovery-invalid") from error
+    except CampaignStatusError as error:
+        raise CampaignStatusError(error.reason) from None
+    except Exception:
+        raise CampaignStatusError("campaign-status-recovery-invalid") from None
 
 
-def _require_exact_record(
-    manifest: SatCampaignManifest,
-    profile: LocalProfile,
-    item: CampaignWorkItem,
-    indexed: dict[str, MetadataRecoveryStateRecord],
-) -> MetadataRecoveryStateRecord:
-    work_ref = item.work_ref
-    recovery_ref = item.recovery_ref
+def _require_exact_record(manifest: campaign.SatCampaignManifest, profile: LocalProfile,
+                          item: campaign.CampaignWorkItem, indexed: dict[str, recovery_state.MetadataRecoveryStateRecord]
+                          ) -> recovery_state.MetadataRecoveryStateRecord:
+    work_ref, recovery_ref = item.work_ref, item.recovery_ref
     record = indexed.get(recovery_ref)
     query = build_metadata_query_for_work(manifest, profile, work_ref)
     period = query.period
@@ -133,7 +114,7 @@ def _require_exact_record(
         and record.fecha_inicial == period.start.date().isoformat()
         and record.fecha_final == period.end.date().isoformat()
         and record.criteria_hash == query.criteria_hash()
-        and recovery_ref == campaign_metadata_recovery_ref(profile.profile_id, record.criteria_hash)
+        and recovery_ref == recovery_state.campaign_metadata_recovery_ref(profile.profile_id, record.criteria_hash)
         and provenance is not None
         and provenance.entry_point == "sat-campaign"
     )

@@ -1,24 +1,19 @@
 from __future__ import annotations
 
+import traceback
 from dataclasses import fields, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+import cfdi_vault.sat_campaign_status as subject
 import cfdi_vault.sat_metadata_recovery as lifecycle
 from cfdi_vault.domain import DownloadDirection
-from cfdi_vault.sat_campaign_manifest import (
-    bind_campaign_recovery,
-    build_campaign_manifest,
-    reserve_campaign_work,
-)
+from cfdi_vault.sat_campaign_manifest import bind_campaign_recovery, build_campaign_manifest, reserve_campaign_work
 from cfdi_vault.sat_campaign_query import build_metadata_query_for_work
-from cfdi_vault.sat_campaign_status import CampaignStatusError, project_campaign_status
-from cfdi_vault.sat_metadata_artifact_state import (
-    MetadataPackageArtifactState,
-    MetadataTextArtifact,
-)
+from cfdi_vault.sat_campaign_status import CampaignStatusError, load_campaign_status, project_campaign_status
+from cfdi_vault.sat_metadata_artifact_state import MetadataPackageArtifactState, MetadataTextArtifact
 from cfdi_vault.sat_metadata_package import MetadataTextInspection
 from cfdi_vault.sat_metadata_recovery_state import (
     MetadataRecoveryStateRecord,
@@ -49,13 +44,9 @@ def _bound_record(manifest, profile, work_ref: str, created_at: datetime):  # ty
     item = next(item for item in manifest.items if item.work_ref == work_ref)
     record = new_metadata_recovery_state(
         recovery=lifecycle.start_metadata_recovery(recovery_ref, created_at=created_at),
-        id_solicitud="synthetic-request",
-        profile_id=profile.profile_id,
-        direction=item.direction.value,
-        kind="metadata",
-        fecha_inicial=item.start.isoformat(),
-        fecha_final=item.end.isoformat(),
-        criteria_hash=criteria,
+        id_solicitud="synthetic-request", profile_id=profile.profile_id,
+        direction=item.direction.value, kind="metadata",
+        fecha_inicial=item.start.isoformat(), fecha_final=item.end.isoformat(), criteria_hash=criteria,
         authorization_ref="grt-" + "1" * 24,
         observation_provenance=new_metadata_observation_provenance(
             tested_commit="a" * 40, observed_at=created_at, entry_point="sat-campaign",
@@ -64,9 +55,16 @@ def _bound_record(manifest, profile, work_ref: str, created_at: datetime):  # ty
     return manifest, record
 
 
+def _one_bound(tmp_path: Path):  # type: ignore[no-untyped-def]
+    profile = _profile(tmp_path)
+    manifest = reserve_campaign_work(build_campaign_manifest(PROFILE_ID))
+    work_ref = next(item.work_ref for item in manifest.items if item.state.value == "outstanding")
+    manifest, record = _bound_record(manifest, profile, work_ref, NOW)
+    return profile, manifest, record
+
+
 def test_empty_status_is_immutable_ref_free_and_preserves_manifest_counts(tmp_path: Path) -> None:
     result = project_campaign_status(build_campaign_manifest(PROFILE_ID), (), _profile(tmp_path))
-
     assert result.base_count == result.leaf_count == result.total_count == 28
     assert result.planned_count == 28
     assert (result.verify_attempts, result.next_check_at) == (0, "")
@@ -82,35 +80,22 @@ def test_status_aggregates_only_bound_lineage_and_uses_earliest_due(tmp_path: Pa
     work = [item.work_ref for item in manifest.items if item.recovery_ref is None and item.state.value == "outstanding"]
     manifest, first = _bound_record(manifest, profile, work[0], NOW + timedelta(hours=1))
     manifest, second = _bound_record(manifest, profile, work[1], NOW)
-    first = replace(
-        first,
-        recovery=lifecycle.record_pending_verification(
-            first.recovery, checked_at=first.recovery.next_check_at,
-        ),
-    )
-    second = replace(
-        second,
-        recovery=lifecycle.record_pending_verification(
-            second.recovery, checked_at=second.recovery.next_check_at,
-        ),
-    )
+    first = replace(first, recovery=lifecycle.record_pending_verification(
+        first.recovery, checked_at=first.recovery.next_check_at))
+    second = replace(second, recovery=lifecycle.record_pending_verification(
+        second.recovery, checked_at=second.recovery.next_check_at))
     other_profile = replace(profile, profile_id="unrelated-profile")
     other_manifest = reserve_campaign_work(build_campaign_manifest(other_profile.profile_id))
     other_work = next(item.work_ref for item in other_manifest.items if item.state.value == "outstanding")
     _, unrelated = _bound_record(other_manifest, other_profile, other_work, NOW)
-
     result = project_campaign_status(manifest, (first, unrelated, second), profile)
-
     assert result.verify_attempts == 2
     assert result.next_check_at == "2026-07-16T12:20:00Z"
     assert result.outstanding_count == 2
 
 
 def test_status_sums_downloaded_package_and_txt_evidence(tmp_path: Path) -> None:
-    profile = _profile(tmp_path)
-    manifest = reserve_campaign_work(build_campaign_manifest(PROFILE_ID))
-    work_ref = next(item.work_ref for item in manifest.items if item.state.value == "outstanding")
-    manifest, record = _bound_record(manifest, profile, work_ref, NOW)
+    profile, manifest, record = _one_bound(tmp_path)
     raw_package = "synthetic-package"
     ready = lifecycle.record_finished_verification(
         record.recovery, checked_at=record.recovery.next_check_at,
@@ -137,19 +122,14 @@ def test_status_sums_downloaded_package_and_txt_evidence(tmp_path: Path) -> None
         ),),
     )
     record = replace(record, recovery=recovery, artifact_bindings=(artifact,))
-
     result = project_campaign_status(manifest, (record,), profile)
-
     assert (result.verify_attempts, result.package_count) == (1, 1)
     assert (result.zip_valid_count, result.txt_count, result.next_check_at) == (1, 1, "")
 
 
 @pytest.mark.parametrize("mismatch", ("missing", "direction", "entry-point"))
 def test_bound_recovery_errors_are_fixed_and_redacted(tmp_path: Path, mismatch: str) -> None:
-    profile = _profile(tmp_path)
-    manifest = reserve_campaign_work(build_campaign_manifest(PROFILE_ID))
-    work_ref = next(item.work_ref for item in manifest.items if item.state.value == "outstanding")
-    manifest, record = _bound_record(manifest, profile, work_ref, NOW)
+    profile, manifest, record = _one_bound(tmp_path)
     records: tuple[MetadataRecoveryStateRecord, ...] = ()
     if mismatch == "direction":
         other = DownloadDirection.ISSUED if record.direction == "received" else DownloadDirection.RECEIVED
@@ -159,9 +139,47 @@ def test_bound_recovery_errors_are_fixed_and_redacted(tmp_path: Path, mismatch: 
             record,
             observation_provenance=replace(record.observation_provenance, entry_point="metadata-recover-live"),
         ),)
-
     with pytest.raises(CampaignStatusError) as caught:
         project_campaign_status(manifest, records, profile)
-
     assert caught.value.reason == "campaign-status-recovery-invalid"
     assert "synthetic" not in repr(caught.value)
+
+
+def test_status_rejects_noncanonical_record_collections_without_order_collapse(tmp_path: Path) -> None:
+    profile, manifest, record = _one_bound(tmp_path)
+    conflicting = replace(record, id_solicitud="synthetic-request-conflict")
+    class RecordSubclass(MetadataRecoveryStateRecord):
+        pass
+    subclass = RecordSubclass(**record.__dict__)
+    invalid = ([record], (object(),), (subclass,), (record, record), (record, conflicting), (conflicting, record))
+    for records in invalid:
+        with pytest.raises(CampaignStatusError) as caught:
+            project_campaign_status(manifest, records, profile)  # type: ignore[arg-type]
+        assert caught.value.reason == "campaign-status-recovery-invalid"
+
+
+def test_status_discards_private_loader_and_projection_exceptions(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    marker = "C:/private/taxpayer/state.json"
+    profile, manifest, record = _one_bound(tmp_path)
+    for owner, loader in ((subject, "load_campaign_manifest"), (subject.recovery_state, "list_metadata_recovery_states")):
+        with monkeypatch.context() as patch:
+            patch.setattr(subject, "load_campaign_manifest", lambda *_args: manifest)
+            patch.setattr(subject.recovery_state, "list_metadata_recovery_states", lambda *_args: (record,))
+            patch.setattr(owner, loader, lambda *_args: (_ for _ in ()).throw(OSError(marker)))
+            _assert_private_exception_discarded(
+                lambda: load_campaign_status(tmp_path, manifest.campaign_ref, profile), marker,
+            )
+    monkeypatch.setattr(
+        subject, "build_metadata_query_for_work",
+        lambda *_args: (_ for _ in ()).throw(OSError(marker)),
+    )
+    _assert_private_exception_discarded(
+        lambda: project_campaign_status(manifest, (record,), profile), marker,
+    )
+
+
+def _assert_private_exception_discarded(call, marker: str) -> None:  # type: ignore[no-untyped-def]
+    with pytest.raises(CampaignStatusError) as caught:
+        call()
+    assert caught.value.__cause__ is None
+    assert marker not in "".join(traceback.format_exception(caught.value))
