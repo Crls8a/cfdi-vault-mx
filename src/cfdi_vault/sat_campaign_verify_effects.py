@@ -9,7 +9,7 @@ from pathlib import Path
 
 from cfdi_vault.ports import SatVerificationPort
 from cfdi_vault.sat_campaign_grant import load_campaign_grant
-from cfdi_vault.sat_campaign_manifest import CampaignWorkItem, CampaignWorkState, SatCampaignManifest
+from cfdi_vault.sat_campaign_manifest import CampaignWorkState
 from cfdi_vault.sat_campaign_manifest_store import load_campaign_manifest
 from cfdi_vault.sat_campaign_recovery_projection import project_persisted_campaign_recovery
 from cfdi_vault.sat_metadata_recovery_runner import MetadataRecoveryAdvanceOutcome, verify_metadata_recovery_once
@@ -51,10 +51,14 @@ class CampaignVerifyEffectsResult:
     events: tuple[CampaignVerifyEffectEvent, ...]
 
 
-_TERMINAL = {CampaignWorkState.NO_DATA: CampaignVerifyEffectAction.NO_DATA,
-    CampaignWorkState.FAILED: CampaignVerifyEffectAction.FAILED, CampaignWorkState.SPLIT: CampaignVerifyEffectAction.SPLIT,
-    CampaignWorkState.THRESHOLD_BLOCKED: CampaignVerifyEffectAction.THRESHOLD_BLOCKED,
-}
+_TERMINAL = {CampaignWorkState.NO_DATA: CampaignVerifyEffectAction.NO_DATA, CampaignWorkState.FAILED: CampaignVerifyEffectAction.FAILED, CampaignWorkState.SPLIT: CampaignVerifyEffectAction.SPLIT, CampaignWorkState.THRESHOLD_BLOCKED: CampaignVerifyEffectAction.THRESHOLD_BLOCKED}
+_VALID_OUTCOMES = frozenset({
+    ("verify_scheduled", 0, False, None, False), ("verify_scheduled", 1, True, None, False),
+    ("verify_scheduled", 1, True, "verify_retryable", False), ("verify_failed", 1, False, "verify_failed", False),
+    ("packages_ready", 0, False, None, False), ("packages_ready", 1, True, None, True),
+    ("no_data", 1, True, None, True), ("pending_after_budget", 0, False, None, False),
+    ("verify_failed", 0, False, "verify_uncertain", False), ("verify_failed", 1, True, "sat_too_many_results", False),
+    ("verify_failed", 1, True, "verify_failed", False)})
 
 
 def execute_metadata_verify_effects_once(
@@ -63,10 +67,8 @@ def execute_metadata_verify_effects_once(
     verifier_factory: Callable[[], SatVerificationPort], now: datetime,
 ) -> CampaignVerifyEffectsResult:
     """Project and run due-only VERIFY for the current two outstanding slots."""
-    manifest = _protect("campaign-verify-manifest-load-failed", lambda: load_campaign_manifest(
-        storage_root, campaign_ref, repo_root=repo_root))
-    grant = _protect("campaign-verify-grant-load-failed", lambda: load_campaign_grant(
-        storage_root, grant_ref, repo_root, now=now))
+    manifest = _protect("campaign-verify-manifest-load-failed", lambda: load_campaign_manifest(storage_root, campaign_ref, repo_root=repo_root))
+    grant = _protect("campaign-verify-grant-load-failed", lambda: load_campaign_grant(storage_root, grant_ref, repo_root, now=now))
     if (type(profile) is not LocalProfile or manifest.profile_id != profile.profile_id
             or grant.campaign_ref != campaign_ref or grant.profile_id != profile.profile_id
             or type(grant.tested_commit) is not str):
@@ -98,8 +100,6 @@ def execute_metadata_verify_effects_once(
             raise CampaignVerifyEffectsError("campaign-verify-runner-failed") from None
         _validate_outcome(outcome)
         attempts += outcome.verify_count
-        if attempts > 2:
-            raise CampaignVerifyEffectsError("campaign-verify-outcome-invalid")
         projected = _project(storage_root, repo_root, campaign_ref, grant_ref, profile, original, now)
         current = _work(projected, original.work_ref)
         if outcome.verify_count == 1 and not outcome.sat_contacted:
@@ -114,8 +114,6 @@ def execute_metadata_verify_effects_once(
 def _protect(reason, operation):  # type: ignore[no-untyped-def]
     try:
         return operation()
-    except CampaignVerifyEffectsError:
-        raise
     except Exception as error:
         raise CampaignVerifyEffectsError(
             reason, retry_safe=getattr(error, "retry_safe", False) is True,
@@ -129,9 +127,9 @@ def _missing_recovery(root: str | Path, repo: str | Path, ref: str) -> bool:
     except MetadataRecoveryStateError as error:
         if error.reason == "recovery-state-not-found":
             return True
-        raise CampaignVerifyEffectsError("campaign-verify-recovery-state-invalid") from None
     except Exception:
-        raise CampaignVerifyEffectsError("campaign-verify-recovery-state-invalid") from None
+        pass
+    raise CampaignVerifyEffectsError("campaign-verify-recovery-state-invalid") from None
 
 
 def _project(root, repo, campaign, grant, profile, work, now):  # type: ignore[no-untyped-def]
@@ -141,7 +139,7 @@ def _project(root, repo, campaign, grant, profile, work, now):  # type: ignore[n
             profile=profile, work_ref=work.work_ref, now=now))
 
 
-def _work(manifest: SatCampaignManifest, ref: str) -> CampaignWorkItem:
+def _work(manifest, ref):  # type: ignore[no-untyped-def]
     matches = tuple(item for item in manifest.items if item.work_ref == ref)
     if len(matches) != 1:
         raise CampaignVerifyEffectsError("campaign-verify-projection-conflict")
@@ -149,23 +147,28 @@ def _work(manifest: SatCampaignManifest, ref: str) -> CampaignWorkItem:
 
 
 def _validate_outcome(outcome: object) -> None:
+    counters = (() if type(outcome) is not MetadataRecoveryAdvanceOutcome else (
+        outcome.verify_contacts_not_before_due, outcome.verify_contacts_before_due, outcome.verify_contacts_due_unknown))
     if (type(outcome) is not MetadataRecoveryAdvanceOutcome
             or type(outcome.recovery) is not dict
             or type(outcome.recovery.get("status")) is not str
             or type(outcome.sat_contacted) is not bool
-            or type(outcome.verify_count) is not int or outcome.verify_count not in {0, 1}
+            or type(outcome.verify_count) is not int or type(outcome.terminal_status_received) is not bool
             or type(outcome.download_attempts) is not int or outcome.download_attempts != 0
-            or (outcome.error_kind is not None and type(outcome.error_kind) is not str)):
+            or outcome.requires_live is not False
+            or any(type(value) is not int or value < 0 for value in counters)
+            or sum(counters) != int(outcome.sat_contacted)
+            or (outcome.recovery["status"], outcome.verify_count, outcome.sat_contacted,
+                outcome.error_kind, outcome.terminal_status_received) not in _VALID_OUTCOMES):
         raise CampaignVerifyEffectsError("campaign-verify-outcome-invalid")
 
 
-def _live_action(work: CampaignWorkItem, outcome: MetadataRecoveryAdvanceOutcome) -> CampaignVerifyEffectAction:
+def _live_action(work, outcome):  # type: ignore[no-untyped-def]
     status = outcome.recovery["status"]
     if work.state is not CampaignWorkState.OUTSTANDING:
         raise CampaignVerifyEffectsError("campaign-verify-projection-conflict")
     if status == "verify_scheduled":
-        return (CampaignVerifyEffectAction.WAITING if outcome.verify_count == 0
-                else CampaignVerifyEffectAction.VERIFY_PENDING)
-    if status == "packages_ready" and outcome.verify_count == 1:
+        return CampaignVerifyEffectAction.WAITING if outcome.verify_count == 0 else CampaignVerifyEffectAction.VERIFY_PENDING
+    if status == "packages_ready":
         return CampaignVerifyEffectAction.PACKAGES_READY
     raise CampaignVerifyEffectsError("campaign-verify-outcome-invalid")
