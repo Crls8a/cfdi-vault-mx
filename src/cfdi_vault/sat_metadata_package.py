@@ -94,23 +94,23 @@ def process_metadata_package(
 
     try:
         _reject_raw_backslash_names(content)
-    except PackageProcessingError as exc:
-        raise MetadataPackageError("backslash ZIP entry rejected") from exc
+    except PackageProcessingError:
+        raise MetadataPackageError("backslash ZIP entry rejected") from None
     try:
         with ZipFile(BytesIO(content)) as package:
             members = _validated_txt_members(package)
     except MetadataPackageError:
         raise
-    except (BadZipFile, LargeZipFile, NotImplementedError, RuntimeError) as exc:
-        raise MetadataPackageError("invalid ZIP package") from exc
+    except (BadZipFile, LargeZipFile, NotImplementedError, RuntimeError):
+        raise MetadataPackageError("invalid ZIP package") from None
 
-    package_write = storage.write_bytes_idempotent(package_key, content)
     try:
         with ZipFile(BytesIO(content)) as package:
             extracted = tuple(package.read(info) for info in members)
-    except (BadZipFile, LargeZipFile, NotImplementedError, RuntimeError) as exc:
-        raise MetadataPackageError("invalid ZIP package") from exc
+    except (BadZipFile, LargeZipFile, NotImplementedError, RuntimeError):
+        raise MetadataPackageError("invalid ZIP package") from None
 
+    package_write = storage.write_bytes_idempotent(package_key, content)
     multiple = len(extracted) > 1
     texts: list[StoredMetadataText] = []
     for entry_ordinal, data in enumerate(extracted, start=1):

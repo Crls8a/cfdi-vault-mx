@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import traceback
 from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
@@ -26,6 +27,16 @@ def _zip(entries: list[tuple[str | ZipInfo, bytes]]) -> bytes:
     for safe_name, raw_name in rewrites:
         data = data.replace(safe_name, raw_name)
     return data
+
+
+def _crc_corrupted_zip(name: str) -> bytes:
+    payload = b"synthetic-crc-content"
+    buffer = BytesIO()
+    with ZipFile(buffer, "w") as package:
+        package.writestr(name, payload)
+    corrupted = bytearray(buffer.getvalue())
+    corrupted[corrupted.index(payload)] ^= 1
+    return bytes(corrupted)
 
 
 def _info(name: str, size: int, compressed: int) -> ZipInfo:
@@ -289,4 +300,15 @@ def test_package_budget_rejection_precedes_zip_parsing_and_storage(monkeypatch) 
     storage = MemoryPackageStorage()
     with pytest.raises(MetadataPackageError, match="download budget"):
         process_metadata_package("run", 1, b"xx", storage)
+    assert storage.objects == {}
+
+
+def test_crc_failure_is_fixed_redacted_and_never_written() -> None:
+    marker = "private-client-marker-209.txt"
+    storage = MemoryPackageStorage()
+    with pytest.raises(MetadataPackageError) as caught:
+        process_metadata_package("run", 1, _crc_corrupted_zip(marker), storage)
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert str(caught.value) == "invalid ZIP package" and caught.value.__cause__ is None
+    assert marker not in rendered and "Bad CRC-32" not in rendered
     assert storage.objects == {}
