@@ -124,6 +124,11 @@ def test_last_event_per_work_drives_redacted_attention_aggregates(monkeypatch, t
         result.status = "completed"
 
 
+def test_zero_attempt_failed_replay_is_valid_attention_required(monkeypatch, tmp_path) -> None:
+    result, *_ = _wire(monkeypatch, tmp_path, (Event("work-a", Action.SUBMISSION_FAILED_REPLAY),), 0)
+    assert result == subject.CampaignRunResult("attention_required", 0, 3, 0, 0, 1, 0, 0, 0)
+
+
 @pytest.mark.parametrize("action", (
     Action.ORPHAN_UNCERTAIN, Action.SUBMISSION_UNCERTAIN,
     Action.ADAPTER_FAILED, Action.SUBMISSION_ERROR,
@@ -140,6 +145,8 @@ def test_uncertain_persisted_effect_requires_reconciliation(monkeypatch, tmp_pat
     (0, (Event("unknown-work", Action.SUBMISSION_ACCEPTED),)),
     (0, (Event("work-a", Action.SUBMISSION_ACCEPTED),)),
     (2, (Event("work-a", Action.SUBMISSION_ACCEPTED),)),
+    (0, (Event("work-a", Action.SUBMISSION_FAILED),)),
+    (1, (Event("work-a", Action.SUBMISSION_FAILED_REPLAY),)),
 ))
 def test_invalid_raw_effect_consistency_requires_reconciliation(
     monkeypatch, tmp_path, attempts, events,

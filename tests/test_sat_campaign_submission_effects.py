@@ -188,7 +188,7 @@ def test_replay_and_no_outstanding_never_construct_adapter(
 @pytest.mark.parametrize(("action", "expected"), [
     (subject.CampaignSubmissionAction.SUBMISSION_DEFERRED, "submission_deferred"),
     (subject.CampaignSubmissionAction.ORPHAN_UNCERTAIN, "orphan_uncertain"),
-    (subject.CampaignSubmissionAction.FAILED_REPLAY, "submission_failed"),
+    (subject.CampaignSubmissionAction.FAILED_REPLAY, "submission_failed_replay"),
 ])
 def test_non_permission_preparation_never_constructs_adapter(
     monkeypatch: pytest.MonkeyPatch, action: subject.CampaignSubmissionAction, expected: str,

@@ -139,7 +139,7 @@ def _aggregate(reservations: tuple[object, ...], queries: Mapping[str, object],
     nonterminal = {
         action_type.RECOVERY_LINKED, action_type.SUBMISSION_DEFERRED,
         action_type.CLAIMED_REPLAY, action_type.ORPHAN_UNCERTAIN,
-        action_type.ADAPTER_FAILED,
+        action_type.ADAPTER_FAILED, action_type.SUBMISSION_FAILED_REPLAY,
     }
     final: dict[str, submission.CampaignSubmissionEffectAction] = {}
     attempt_events = 0
@@ -162,7 +162,9 @@ def _aggregate(reservations: tuple[object, ...], queries: Mapping[str, object],
     if any(action in uncertain for action in actions):
         _reconciliation_required()
     accepted = actions.count(action_type.SUBMISSION_ACCEPTED)
-    failed = actions.count(action_type.SUBMISSION_FAILED)
+    failed = sum(actions.count(action) for action in (
+        action_type.SUBMISSION_FAILED, action_type.SUBMISSION_FAILED_REPLAY,
+    ))
     deferred = actions.count(action_type.SUBMISSION_DEFERRED)
     replay = actions.count(action_type.CLAIMED_REPLAY)
     attention = failed + deferred + replay

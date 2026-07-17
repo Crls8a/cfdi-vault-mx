@@ -36,6 +36,7 @@ class CampaignSubmissionEffectAction(StrEnum):
     ORPHAN_UNCERTAIN = "orphan_uncertain"
     SUBMISSION_ACCEPTED = "submission_accepted"
     SUBMISSION_FAILED = "submission_failed"
+    SUBMISSION_FAILED_REPLAY = "submission_failed_replay"
     SUBMISSION_UNCERTAIN = "submission_uncertain"
     ADAPTER_FAILED = "adapter_failed"
     SUBMISSION_ERROR = "submission_error"
@@ -65,7 +66,7 @@ _PREPARATION_ACTIONS = {
     CampaignSubmissionAction.CLAIMED_REPLAY:
         CampaignSubmissionEffectAction.CLAIMED_REPLAY,
     CampaignSubmissionAction.FAILED_REPLAY:
-        CampaignSubmissionEffectAction.SUBMISSION_FAILED,
+        CampaignSubmissionEffectAction.SUBMISSION_FAILED_REPLAY,
     CampaignSubmissionAction.ORPHAN_UNCERTAIN:
         CampaignSubmissionEffectAction.ORPHAN_UNCERTAIN,
 }
