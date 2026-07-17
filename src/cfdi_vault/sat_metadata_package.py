@@ -15,6 +15,11 @@ from cfdi_vault.storage import sha256_bytes
 _RUN_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
 _DELIMITERS = ("~", "\t", "|", ",")
+_MAX_PACKAGE_BYTES = 512 * 1024**2
+_MAX_TXT_MEMBERS = 32
+_MAX_TXT_FILE_BYTES = 1024**3
+_MAX_TOTAL_TXT_BYTES = 2 * 1024**3
+_MAX_COMPRESSION_RATIO = 200
 
 
 class MetadataPackageError(ValueError):
@@ -80,6 +85,8 @@ def process_metadata_package(
 ) -> ProcessedMetadataPackage:
     """Validate and store a metadata ZIP before storing its TXT members."""
 
+    if len(content) > _MAX_PACKAGE_BYTES:
+        raise MetadataPackageError("metadata ZIP download budget exceeded")
     safe_run_ref = _validate_run_ref(run_ref)
     ordinal = _validate_ordinal(package_ordinal)
     package_sha = sha256_bytes(content)
@@ -144,8 +151,11 @@ def _validated_txt_members(package: ZipFile) -> tuple[ZipInfo, ...]:
     members = package.infolist()
     if not members:
         raise MetadataPackageError("empty ZIP package")
+    if len(members) > _MAX_TXT_MEMBERS:
+        raise MetadataPackageError("metadata TXT member budget exceeded")
 
     names: set[str] = set()
+    total_size = 0
     for info in members:
         name = info.filename
         path = PurePosixPath(name)
@@ -166,6 +176,17 @@ def _validated_txt_members(package: ZipFile) -> tuple[ZipInfo, ...]:
         if duplicate_key in names:
             raise MetadataPackageError("duplicate ZIP entry rejected")
         names.add(duplicate_key)
+        if type(info.file_size) is not int or type(info.compress_size) is not int:
+            raise MetadataPackageError("invalid ZIP size metadata")
+        if info.file_size < 0 or info.compress_size < 0:
+            raise MetadataPackageError("invalid ZIP size metadata")
+        if info.file_size > _MAX_TXT_FILE_BYTES:
+            raise MetadataPackageError("metadata TXT size budget exceeded")
+        total_size += info.file_size
+        if total_size > _MAX_TOTAL_TXT_BYTES:
+            raise MetadataPackageError("metadata TXT total budget exceeded")
+        if info.file_size > info.compress_size * _MAX_COMPRESSION_RATIO:
+            raise MetadataPackageError("metadata TXT compression ratio exceeded")
 
     return tuple(sorted(members, key=lambda info: info.filename.casefold()))
 
