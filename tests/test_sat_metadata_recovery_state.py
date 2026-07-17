@@ -135,6 +135,14 @@ def test_zero_txt_is_rejected_outside_pending_processing() -> None:
         replace(ready, recovery=forged)
 
 
+@pytest.mark.parametrize("status", ("download_failed", None, 1))
+def test_recovery_state_rejects_non_exact_status_types(status: object) -> None:
+    ready = _ready_record()
+    forged = replace(ready.recovery, status=status)  # type: ignore[arg-type]
+    with pytest.raises(subject.MetadataRecoveryStateError, match="recovery-state-invalid"):
+        replace(ready, recovery=forged)
+
+
 @pytest.mark.parametrize(
     ("aggregate", "other_status", "other_zip"),
     (

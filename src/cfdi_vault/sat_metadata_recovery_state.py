@@ -511,6 +511,18 @@ def _validate_recovery(
     recovery: MetadataRecovery, verify_claim: MetadataVerifyClaim | None = None,
 ) -> None:
     """Reject lifecycle values that no public transition can produce."""
+    if (
+        type(recovery) is not MetadataRecovery
+        or type(recovery.status) is not RecoveryStatus
+        or type(recovery.packages) is not tuple
+        or any(
+        type(package) is not PackageRecovery
+        or type(package.status) is not PackageRecoveryStatus
+        or type(package.package_ref) is not str
+        for package in getattr(recovery, "packages", ())
+        )
+    ):
+        raise MetadataRecoveryStateError("recovery-state-invalid")
     try:
         recovery.to_redacted_document()
     except ValueError:
@@ -518,11 +530,6 @@ def _validate_recovery(
     else:
         redaction_invalid = False
     if redaction_invalid:
-        raise MetadataRecoveryStateError("recovery-state-invalid")
-    if type(recovery.status) is not RecoveryStatus or any(
-        type(package) is not PackageRecovery or type(package.status) is not PackageRecoveryStatus
-        for package in recovery.packages
-    ):
         raise MetadataRecoveryStateError("recovery-state-invalid")
     datetimes = (recovery.created_at, recovery.deadline_at, recovery.next_check_at)
     if (

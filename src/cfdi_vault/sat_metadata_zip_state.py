@@ -49,6 +49,8 @@ class MetadataZipReceipt:
             raise MetadataZipReceiptError("zip-receipt-invalid")
 
     def _valid_storage_key(self) -> bool:
+        if type(self.storage_key) is not str:
+            return False
         prefix = f"sat-metadata/{self.campaign_ref}/{self.work_ref}/packages/"
         if not self.storage_key.startswith(prefix) or self.storage_key.count("/") != 4:
             return False
