@@ -8,9 +8,9 @@ from cfdi_vault.queueing import InMemoryQueue
 from cfdi_vault.worker import InMemoryIdempotencyStore, RecoveryWorker
 
 
-def _message(message_id: str) -> QueueMessage:
+def _message(message_id: str, queue: QueueName = QueueName.CFDI_PARSE_XML) -> QueueMessage:
     return QueueMessage(
-        queue=QueueName.CFDI_PARSE_XML,
+        queue=queue,
         tenant_id="synthetic-tenant",
         profile_id="profile-ref-001",
         job_id="job-001",
@@ -59,6 +59,19 @@ def test_worker_process_local_idempotency_suppresses_duplicate_without_exactly_o
     assert duplicate.processed == 0
     assert duplicate.detail == "Duplicate delivery acknowledged; durable idempotency is not configured."
     assert service.calls == 1
+
+
+def test_worker_all_selects_parsing_queues_for_production_consumer() -> None:
+    queue = InMemoryQueue()
+    service = _Service(queue)
+    worker = RecoveryWorker(service)  # type: ignore[arg-type]
+    queue.publish(_message("message-metadata", QueueName.CFDI_PARSE_METADATA))
+
+    report = worker.run_once(queue_name="all")
+
+    assert report.processed == 1
+    assert service.envelopes[0].queue is QueueName.CFDI_PARSE_METADATA
+
 
 
 class _Clock:

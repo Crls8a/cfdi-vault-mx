@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from threading import Event, Thread
-import time
 from uuid import uuid4
 
 from cfdi_vault.cache_contract import CacheKeys, WorkerHeartbeat
@@ -126,6 +126,12 @@ class RecoveryWorker:
 
     def run_once(self, *, queue_name: str = QueueName.SAT_REQUEST.value) -> WorkerReport:
         self._record_heartbeat()
+        if queue_name == "all":
+            for candidate in QueueName:
+                report = self.run_once(queue_name=candidate.value)
+                if report.processed or not report.detail.startswith("No "):
+                    return report
+            return WorkerReport(processed=0, detail="No worker queue message available.")
         consume_reliably = getattr(self.service.queue, "consume_one_reliably", None)
         if consume_reliably is not None:
             outcome = consume_reliably(queue_name, self._handle)
@@ -193,8 +199,10 @@ class RecoveryWorker:
             self.heartbeat_ttl_seconds,
         )
 
-    def run_forever(self, *, poll_seconds: float = 5.0) -> None:
+    def run_forever(
+        self, *, poll_seconds: float = 5.0, queue_name: str = QueueName.SAT_REQUEST.value,
+    ) -> None:
         while True:
-            report = self.run_once()
+            report = self.run_once(queue_name=queue_name)
             print(f"processed={report.processed} detail={report.detail}", flush=True)
             time.sleep(poll_seconds)

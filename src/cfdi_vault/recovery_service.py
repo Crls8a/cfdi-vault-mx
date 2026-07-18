@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+import csv
+import hashlib
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-import csv
-from io import BytesIO
-from io import StringIO
+from io import BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
 from typing import Iterable
-import xml.etree.ElementTree as ET
 from uuid import uuid4
 from zipfile import ZipFile
 
@@ -37,8 +37,8 @@ from cfdi_vault.domain import (
 from cfdi_vault.fake_sat import FakeSatClient
 from cfdi_vault.metadata_parser import InvalidMetadataRow, parse_metadata_bytes
 from cfdi_vault.ports import CachePort, QueuePort, SatClientPort, StoragePort
-from cfdi_vault.queueing import InMemoryQueue
 from cfdi_vault.queue_contract import TerminalQueueError
+from cfdi_vault.queueing import InMemoryQueue
 from cfdi_vault.reconciliation import decide_metadata_state
 from cfdi_vault.recovery_db import (
     CfdiDocument,
@@ -47,12 +47,18 @@ from cfdi_vault.recovery_db import (
     DownloadJob,
     QueueJobEvent,
     ReconciliationEvent,
+    SatArtifactRecord,
+    SatCampaignRecord,
+    SatCampaignWindowRecord,
+    SatMetadataImportRecord,
     SatPackageRecord,
     SatRequestRecord,
     Tenant,
     XmlEvidence,
     init_recovery_schema,
 )
+from cfdi_vault.sat_artifact_store import ArtifactStoreError, write_artifact
+from cfdi_vault.sat_campaign_artifacts import CampaignArtifactError, _validate_package_archive
 from cfdi_vault.storage import LocalStorage, sha256_bytes
 from cfdi_vault.worker_progress import DurableWorkerJobState, WorkerProgressReadModel
 
@@ -346,6 +352,8 @@ class RecoveryService:
     ) -> SyncResult:
         """Hydrate a durable job and correlate transient progress to a worker."""
 
+        if message.queue in {QueueName.CFDI_PARSE_METADATA, QueueName.CFDI_PARSE_XML}:
+            return self._process_campaign_artifact_job(message, worker_ref=worker_ref)
         with self.session_factory() as session:
             job = session.get(DownloadJob, message.job_id)
             if job is None or job.tenant_id != message.tenant_id:
@@ -357,6 +365,105 @@ class RecoveryService:
             query,
             job_id=message.job_id,
             worker_ref=worker_ref,
+        )
+
+    def _process_campaign_artifact_job(
+        self, message: QueueMessage, *, worker_ref: str,
+    ) -> SyncResult:
+        """Consume a campaign artifact reference without putting bytes on RabbitMQ."""
+
+        with self.session_factory() as session:
+            artifact = session.scalar(select(SatArtifactRecord).where(
+                SatArtifactRecord.artifact_ref == message.job_id,
+                SatArtifactRecord.campaign_id.is_not(None),
+            ))
+            if artifact is None:
+                raise TerminalQueueError("artifact_reference_not_found")
+            campaign = session.get(SatCampaignRecord, artifact.campaign_id)
+            window = session.get(SatCampaignWindowRecord, artifact.window_id)
+            tenant = session.get(Tenant, campaign.tenant_id) if campaign is not None else None
+            if campaign is None or window is None or tenant is None or tenant.id != message.tenant_id:
+                raise TerminalQueueError("artifact_reference_invalid")
+            existing_import = session.scalar(select(SatMetadataImportRecord).where(
+                SatMetadataImportRecord.artifact_id == artifact.id,
+            ))
+            if existing_import is not None:
+                return SyncResult(
+                    job_id=message.job_id, request_id="", packages=(),
+                    metadata_count=int(existing_import.record_count),
+                    status=JobStatus.SUCCEEDED.value,
+                )
+            if message.queue is QueueName.CFDI_PARSE_XML and artifact.validation_status == "processed":
+                return SyncResult(
+                    job_id=message.job_id, request_id="", packages=(),
+                    metadata_count=0, status=JobStatus.SUCCEEDED.value,
+                )
+            query = DownloadQuery(
+                tenant_id=tenant.id,
+                requester_rfc=tenant.rfc,
+                direction=DownloadDirection(window.direction),
+                request_type=(
+                    RequestType.METADATA
+                    if message.queue is QueueName.CFDI_PARSE_METADATA
+                    else RequestType.CFDI
+                ),
+                period=DateTimePeriod(
+                    datetime.combine(window.start_date, datetime.min.time(), tzinfo=timezone.utc),
+                    datetime.combine(window.end_date, datetime.max.time(), tzinfo=timezone.utc),
+                ),
+            )
+            path = Path(getattr(self.storage, "root", "storage")) / artifact.storage_key
+            if not path.is_file():
+                raise TerminalQueueError("artifact_storage_not_found")
+            metadata_count = 0
+            eligible_count = 0
+            cancelled_count = 0
+            unknown_count = 0
+            if artifact.kind == "metadata_zip":
+                for name, parsed in _campaign_metadata_batches(path):
+                    if not parsed.header_valid:
+                        raise TerminalQueueError("metadata_header_invalid")
+                    metadata_count += self._upsert_metadata(
+                        session, query, parsed.entries, metadata_sha256=artifact.sha256,
+                    )
+                    eligible, cancelled, unknown = _metadata_status_counts(parsed.entries)
+                    eligible_count += eligible
+                    cancelled_count += cancelled
+                    unknown_count += unknown
+                session.add(SatMetadataImportRecord(
+                    campaign_id=campaign.id,
+                    window_id=window.id,
+                    artifact_id=artifact.id,
+                    encoding="utf-8-sig",
+                    delimiter="~",
+                    header_compatible=True,
+                    record_count=metadata_count,
+                    eligible_count=eligible_count,
+                    cancelled_count=cancelled_count,
+                    unknown_count=unknown_count,
+                    created_at=_now(),
+                ))
+                artifact.validation_status = "processed"
+            elif artifact.kind == "cfdi_zip":
+                metadata_count = self._store_campaign_xml_package(
+                    session,
+                    query,
+                    message.job_id,
+                    path,
+                    campaign_ref=campaign.campaign_ref,
+                    work_ref=window.work_ref,
+                )
+                artifact.validation_status = "processed"
+            else:
+                raise TerminalQueueError("artifact_kind_invalid")
+            self._event(
+                session, message.job_id, message.queue,
+                JobStatus.SUCCEEDED, "campaign artifact processed", {},
+            )
+            session.commit()
+        return SyncResult(
+            job_id=message.job_id, request_id="", packages=(),
+            metadata_count=metadata_count, status=JobStatus.SUCCEEDED.value,
         )
 
     def ingest_metadata_file(
@@ -424,6 +531,12 @@ class RecoveryService:
         state = str(verify_result.get("state", SatRequestState.ERROR.value))
         packages = tuple(str(package_id) for package_id in verify_result.get("packages", ()))
         metadata = tuple(_metadata_from_dict(item) for item in verify_result.get("metadata", ()) if isinstance(item, dict))
+        response_summary = {
+            "state": state,
+            "sat_code": str(verify_result.get("sat_code") or ""),
+            "package_count": len(packages),
+            "metadata_count": len(metadata),
+        }
 
         with self.session_factory() as session:
             metadata_csv = _metadata_csv_bytes(request_id, packages, metadata)
@@ -444,10 +557,10 @@ class RecoveryService:
                 last_verified_at=_now(),
                 metadata_sha256=metadata_file.sha256,
                 metadata_storage_key=str(metadata_file.path),
-                raw_response=dict(verify_result),
+                response_summary=response_summary,
             )
             session.add(request_record)
-            self._event(session, job_id, QueueName.SAT_VERIFY, JobStatus.SUCCEEDED, f"SAT state={state}", dict(verify_result))
+            self._event(session, job_id, QueueName.SAT_VERIFY, JobStatus.SUCCEEDED, f"SAT state={state}", response_summary)
             package_contents: dict[str, bytes] = {}
             for package_id in packages:
                 existing_package = session.scalar(
@@ -919,6 +1032,178 @@ class RecoveryService:
             count += 1
         return count
 
+    def _store_campaign_xml_package(
+        self,
+        session: object,
+        query: DownloadQuery,
+        package_id: str,
+        archive_path: Path,
+        *,
+        campaign_ref: str,
+        work_ref: str,
+    ) -> int:
+        """Parse one campaign ZIP while keeping XML keys opaque.
+
+        Campaign packages are external artifacts and can be much larger than
+        the process memory budget.  The archive is opened from its durable
+        path, each XML member is bounded to the v1.5 limit, and the extracted
+        evidence is written atomically under campaign/work hashes.  UUIDs and
+        taxpayer identifiers remain private database fields only.
+        """
+
+        count = 0
+        detector = CfdiVersionDetector()
+        seen_uuid_hashes: dict[str, str] = {}
+        opaque_campaign = hashlib.sha256(campaign_ref.encode("utf-8")).hexdigest()[:24]
+        opaque_work = hashlib.sha256(work_ref.encode("utf-8")).hexdigest()[:24]
+        relative_dir = f"sat-cfdi/{opaque_campaign}/{opaque_work}/xml"
+        try:
+            _validate_package_archive(archive_path, "cfdi_zip")
+            with ZipFile(archive_path) as archive:
+                infos = sorted(archive.infolist(), key=lambda info: info.filename)
+                for ordinal, info in enumerate(infos, start=1):
+                    with archive.open(info, "r") as member:
+                        xml_bytes = _read_campaign_member(member, 64 * 1024 * 1024)
+                    version = detector.detect(xml_bytes)
+                    parsed = parser_for_version(version).parse(xml_bytes)
+                    concepts = _concept_descriptions(xml_bytes)
+                    uuid = parsed.parsed.uuid.upper()
+                    xml_sha256 = sha256_bytes(xml_bytes)
+                    previous_hash = seen_uuid_hashes.get(uuid)
+                    if previous_hash is None:
+                        previous = session.scalar(select(XmlEvidence.xml_sha256).where(
+                            XmlEvidence.tenant_id == query.tenant_id,
+                            XmlEvidence.uuid == uuid,
+                        ).order_by(XmlEvidence.id.desc()).limit(1))
+                        previous_hash = str(previous) if previous else None
+                    if previous_hash is not None and previous_hash != xml_sha256:
+                        raise TerminalQueueError("xml_uuid_conflict")
+                    if previous_hash == xml_sha256:
+                        count += 1
+                        continue
+                    seen_uuid_hashes[uuid] = xml_sha256
+                    try:
+                        stored_xml = write_artifact(
+                            storage_root=Path(getattr(self.storage, "root", "storage")).resolve(),
+                            relative_dir=relative_dir,
+                            ordinal=ordinal,
+                            suffix=".xml",
+                            chunks=(xml_bytes,),
+                            max_bytes=64 * 1024 * 1024,
+                        )
+                    except ArtifactStoreError as exc:
+                        raise TerminalQueueError("artifact_xml_storage_failed") from exc
+                    raw_payload = {
+                        "version": parsed.version,
+                        "complements": list(parsed.complements),
+                        "concepts": list(concepts),
+                        "source_package_id": package_id,
+                        "xml_sha256": xml_sha256,
+                    }
+                    document = session.scalar(select(CfdiDocument).where(
+                        CfdiDocument.tenant_id == query.tenant_id,
+                        CfdiDocument.uuid == uuid,
+                    ))
+                    if document is None:
+                        document = CfdiDocument(
+                            tenant_id=query.tenant_id,
+                            uuid=uuid,
+                            version=parsed.version,
+                            document_type=parsed.parsed.comprobante_type,
+                            status="vigente",
+                            issue_date=parsed.parsed.issue_date,
+                            certified_at=None,
+                            currency=parsed.parsed.currency,
+                            subtotal=parsed.parsed.subtotal,
+                            discount=None,
+                            total=parsed.parsed.total,
+                            issuer_rfc=parsed.parsed.issuer_rfc,
+                            issuer_name=parsed.parsed.issuer_name,
+                            receiver_rfc=parsed.parsed.receiver_rfc,
+                            receiver_name=parsed.parsed.receiver_name,
+                            payment_method=parsed.parsed.payment_method,
+                            payment_form=parsed.parsed.payment_form,
+                            download_state=ReconciliationState.XML_DOWNLOADED.value,
+                            xml_sha256=xml_sha256,
+                            parser_status=parsed.parser_status,
+                            search_text=_parsed_search_text(parsed.parsed, concepts),
+                            raw_payload=raw_payload,
+                            created_at=_now(),
+                            updated_at=_now(),
+                        )
+                        session.add(document)
+                        session.add_all([
+                            CfdiParty(
+                                tenant_id=query.tenant_id,
+                                rfc=parsed.parsed.issuer_rfc,
+                                name=parsed.parsed.issuer_name,
+                                role="issuer",
+                                document_uuid=uuid,
+                            ),
+                            CfdiParty(
+                                tenant_id=query.tenant_id,
+                                rfc=parsed.parsed.receiver_rfc,
+                                name=parsed.parsed.receiver_name,
+                                role="receiver",
+                                document_uuid=uuid,
+                            ),
+                        ])
+                    else:
+                        document.version = parsed.version
+                        document.document_type = parsed.parsed.comprobante_type
+                        document.issue_date = parsed.parsed.issue_date
+                        document.currency = parsed.parsed.currency
+                        document.subtotal = parsed.parsed.subtotal
+                        document.total = parsed.parsed.total
+                        document.issuer_rfc = parsed.parsed.issuer_rfc
+                        document.issuer_name = parsed.parsed.issuer_name
+                        document.receiver_rfc = parsed.parsed.receiver_rfc
+                        document.receiver_name = parsed.parsed.receiver_name
+                        document.payment_method = parsed.parsed.payment_method
+                        document.payment_form = parsed.parsed.payment_form
+                        document.download_state = ReconciliationState.XML_DOWNLOADED.value
+                        document.xml_sha256 = xml_sha256
+                        document.parser_status = parsed.parser_status
+                        document.search_text = _parsed_search_text(parsed.parsed, concepts)
+                        document.raw_payload = raw_payload
+                        document.updated_at = _now()
+
+                    session.add(XmlEvidence(
+                        tenant_id=query.tenant_id,
+                        uuid=uuid,
+                        source_package_id=package_id,
+                        xml_sha256=xml_sha256,
+                        size_bytes=stored_xml.byte_count,
+                        storage_key=stored_xml.relative_key,
+                        parser_version=f"cfdi-{parsed.version or 'unknown'}",
+                        parser_status=parsed.parser_status,
+                        created_at=_now(),
+                    ))
+                    ledger = session.scalar(select(CfdiMetadataLedger).where(
+                        CfdiMetadataLedger.tenant_id == query.tenant_id,
+                        CfdiMetadataLedger.uuid == uuid,
+                        CfdiMetadataLedger.direction == query.direction.value,
+                    ))
+                    if ledger is not None:
+                        previous_state = ledger.reconciliation_state
+                        ledger.reconciliation_state = ReconciliationState.XML_DOWNLOADED.value
+                        if previous_state != ReconciliationState.XML_DOWNLOADED.value:
+                            session.add(ReconciliationEvent(
+                                tenant_id=query.tenant_id,
+                                uuid=uuid,
+                                previous_state=previous_state,
+                                new_state=ReconciliationState.XML_DOWNLOADED.value,
+                                reason="xml evidence stored",
+                                actor="campaign-worker",
+                                created_at=_now(),
+                            ))
+                    count += 1
+        except TerminalQueueError:
+            raise
+        except (CampaignArtifactError, OSError, ValueError, ET.ParseError) as exc:
+            raise TerminalQueueError("cfdi_archive_invalid") from exc
+        return count
+
     def _store_xml_package(self, session: object, query: DownloadQuery, package_id: str, content: bytes) -> int:
         count = 0
         detector = CfdiVersionDetector()
@@ -1254,6 +1539,90 @@ def _metadata_extension(content: bytes, *, delimiter: str | None) -> str:
     if delimiter in {"|", "\t"} or b"|" in first_line or b"\t" in first_line:
         return "txt"
     return "csv"
+
+
+def _campaign_metadata_batches(path: Path) -> Iterable[tuple[str, object]]:
+    """Parse campaign TXT members in bounded one-megabyte batches."""
+
+    previous_field_limit = csv.field_size_limit()
+    csv.field_size_limit(1024 * 1024)
+    try:
+        _validate_package_archive(path, "metadata_zip")
+        with ZipFile(path) as archive:
+            for info in sorted(archive.infolist(), key=lambda item: item.filename):
+                with archive.open(info, "r") as binary_member:
+                    text = TextIOWrapper(binary_member, encoding="utf-8-sig", newline="")
+                    reader = csv.reader(text, delimiter="~")
+                    try:
+                        header = next(reader)
+                    except StopIteration as exc:
+                        raise TerminalQueueError("metadata_archive_empty") from exc
+                    except csv.Error as exc:
+                        raise TerminalQueueError("metadata_archive_invalid") from exc
+                    rows: list[list[str]] = []
+                    for row in reader:
+                        rows.append(row)
+                        if _csv_batch_size(header, rows) >= 1024 * 1024:
+                            yield info.filename, _parse_metadata_batch(header, rows, info.filename)
+                            rows = []
+                    yield info.filename, _parse_metadata_batch(header, rows, info.filename)
+    except TerminalQueueError:
+        raise
+    except (CampaignArtifactError, OSError, UnicodeError, ValueError, csv.Error) as exc:
+        raise TerminalQueueError("metadata_archive_invalid") from exc
+    finally:
+        csv.field_size_limit(previous_field_limit)
+
+
+def _csv_batch_size(header: list[str], rows: list[list[str]]) -> int:
+    buffer = StringIO()
+    writer = csv.writer(buffer, delimiter="~", lineterminator="\n")
+    writer.writerow(header)
+    writer.writerows(rows)
+    return len(buffer.getvalue().encode("utf-8"))
+
+
+def _parse_metadata_batch(header: list[str], rows: list[list[str]], source_package_id: str):
+    buffer = StringIO()
+    writer = csv.writer(buffer, delimiter="~", lineterminator="\n")
+    writer.writerow(header)
+    writer.writerows(rows)
+    return parse_metadata_bytes(
+        buffer.getvalue().encode("utf-8"),
+        delimiter="~",
+        source_package_id=source_package_id,
+    )
+
+
+def _metadata_status_counts(entries: Iterable[MetadataEntry]) -> tuple[int, int, int]:
+    eligible = cancelled = unknown = 0
+    for entry in entries:
+        status = entry.status.casefold()
+        if status in {"vigente", "activo", "active"}:
+            eligible += 1
+        elif status in {"cancelado", "cancelled", "canceled"}:
+            cancelled += 1
+        else:
+            unknown += 1
+    return eligible, cancelled, unknown
+
+
+def _read_campaign_member(member: object, limit: int) -> bytes:
+    """Read one ZIP member with a hard decompressed-size bound."""
+
+    if type(limit) is not int or limit <= 0:
+        raise TerminalQueueError("campaign_member_limit_invalid")
+    output = BytesIO()
+    consumed = 0
+    while consumed <= limit:
+        chunk = member.read(min(1024 * 1024, limit + 1 - consumed))  # type: ignore[attr-defined]
+        if not chunk:
+            break
+        consumed += len(chunk)
+        if consumed > limit:
+            raise TerminalQueueError("campaign_member_too_large")
+        output.write(chunk)
+    return output.getvalue()
 
 
 def _has_xml_evidence(session: object, tenant_id: str, uuid: str) -> bool:
