@@ -38,6 +38,9 @@ class CampaignStatusResult:
     package_count: int
     zip_valid_count: int
     txt_count: int
+    verify_history_count: int = 0
+    last_verify_result: str | None = None
+    service_window_state: str = "legacy"
 
 
 def load_campaign_status(storage_root: str | Path, campaign_ref: str, profile: LocalProfile) -> CampaignStatusResult:
@@ -79,6 +82,20 @@ def project_campaign_status(manifest: campaign.SatCampaignManifest,
         states = (campaign.CampaignWorkState.PLANNED, campaign.CampaignWorkState.COMPLETED,
                   campaign.CampaignWorkState.NO_DATA, campaign.CampaignWorkState.FAILED,
                   campaign.CampaignWorkState.THRESHOLD_BLOCKED)
+        selected_records = selected
+        history = tuple(
+            item for record in selected_records for item in record.verify_history
+        )
+        last_result = history[-1].result.value if history else None
+        service_window_state = (
+            "exceeded" if any(
+                record.recovery.status.value == "service_window_exceeded"
+                for record in selected_records
+            ) else "active" if any(
+                record.recovery.service_window_expires_at is not None
+                for record in selected_records
+            ) else "legacy"
+        )
         return CampaignStatusResult(
             int(summary["baseCount"]), int(summary["splitCount"]),
             int(summary["leafCount"]), int(summary["totalCount"]),
@@ -89,6 +106,7 @@ def project_campaign_status(manifest: campaign.SatCampaignManifest,
             sum(len(record.recovery.packages) for record in selected),
             sum(package.zip_valid is True for record in selected for package in record.recovery.packages),
             sum(record.recovery.txt_count for record in selected),
+            len(history), last_result, service_window_state,
         )
     except CampaignStatusError as error:
         raise CampaignStatusError(error.reason) from None

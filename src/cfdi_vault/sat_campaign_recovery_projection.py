@@ -93,6 +93,7 @@ def project_persisted_campaign_recovery(
     except Exception:
         _deny("campaign-recovery-projection-recovery-invalid")
     status = _validate_state(record)
+    kind = record.last_verify_error_kind
     if status in {RecoveryStatus.VERIFY_SCHEDULED, RecoveryStatus.PACKAGES_READY}:
         _require_manifest_state(work, recovery_ref, CampaignWorkState.OUTSTANDING)
         return manifest
@@ -103,7 +104,12 @@ def project_persisted_campaign_recovery(
         return _write(lambda: record_campaign_manifest_result(
             storage_root, campaign_ref, work_ref, CampaignWorkState.NO_DATA,
             recovery_ref, repo_root=repo_root))
-    kind = record.last_verify_error_kind
+    if status is RecoveryStatus.SERVICE_WINDOW_EXCEEDED:
+        if kind is not None:
+            _deny("campaign-recovery-projection-state-invalid")
+        return _write(lambda: project_campaign_manifest_submission_failure(
+            storage_root, campaign_ref, work_ref, recovery_ref, status.value,
+            repo_root=repo_root))
     category = status.value
     if status is RecoveryStatus.VERIFY_FAILED:
         if type(kind) is not MetadataVerifyErrorKind:
@@ -146,9 +152,12 @@ def _validate_state(record: MetadataRecoveryStateRecord) -> RecoveryStatus:
         RecoveryStatus.NO_DATA: {None},
         RecoveryStatus.PENDING_AFTER_BUDGET: {None, MetadataVerifyErrorKind.VERIFY_RETRYABLE,
                                               MetadataVerifyErrorKind.VERIFY_UNCERTAIN},
+        RecoveryStatus.SERVICE_WINDOW_EXCEEDED: {None},
         RecoveryStatus.VERIFY_FAILED: {MetadataVerifyErrorKind.SAT_TOO_MANY_RESULTS,
                                        MetadataVerifyErrorKind.VERIFY_FAILED,
-                                       MetadataVerifyErrorKind.VERIFY_UNCERTAIN},
+                                       MetadataVerifyErrorKind.VERIFY_UNCERTAIN,
+                                       MetadataVerifyErrorKind.DUPLICATE_ACTIVE_REQUEST,
+                                       MetadataVerifyErrorKind.SAT_EXPIRED},
     }
     if status not in allowed or kind not in allowed[status]:
         _deny("campaign-recovery-projection-state-invalid")

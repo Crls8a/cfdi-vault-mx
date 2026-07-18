@@ -12,6 +12,8 @@ import cfdi_vault.sat_campaign_grant as grants
 import cfdi_vault.sat_campaign_preflight as preflight
 import cfdi_vault.sat_campaign_submission_effects as submission
 import cfdi_vault.sat_campaign_verify_effects as verification
+import cfdi_vault.sat_metadata_recovery_scheduler as recovery_scheduler
+import cfdi_vault.sat_metadata_recovery_state as recovery_state
 from cfdi_vault.sat_campaign_adapter import build_campaign_metadata_request_factory
 from cfdi_vault.sat_campaign_manifest import CampaignWorkState, SatCampaignManifest
 from cfdi_vault.sat_campaign_manifest_store import load_campaign_manifest
@@ -89,64 +91,69 @@ def run_metadata_campaign_once(
         ) from None
 
     try:
-        adapter_factory = build_campaign_metadata_request_factory(
-            storage_root=storage_root,
-            repo_root=repo_root,
-            manifest=manifest,
-            grant_ref=grant_ref,
-            evidence=evidence,
-            environ=environ,
-            provider_selector=provider_factory,
-            now=lambda: current,
-        )
-        verify_effects = verification.execute_metadata_verify_effects_once(
-            storage_root=storage_root,
-            repo_root=repo_root,
-            campaign_ref=campaign_ref,
-            grant_ref=grant_ref,
-            profile=profile,
-            verifier_factory=adapter_factory,
-            now=current,
-        )
-        _validate_verify_effects(manifest, verify_effects)
-        zip_candidate = _first_zip_candidate(verify_effects)
-        if zip_candidate is not None:
-            ready_work, ready = zip_candidate
-            zip_result = download.execute_campaign_metadata_zip_download_once(
+        with recovery_scheduler.campaign_monitor_lock(storage_root, repo_root=repo_root):
+            adapter_factory = build_campaign_metadata_request_factory(
+                storage_root=storage_root,
+                repo_root=repo_root,
+                manifest=manifest,
+                grant_ref=grant_ref,
+                evidence=evidence,
+                environ=environ,
+                provider_selector=provider_factory,
+                now=lambda: current,
+            )
+            verify_effects = verification.execute_metadata_verify_effects_once(
                 storage_root=storage_root,
                 repo_root=repo_root,
                 campaign_ref=campaign_ref,
-                work_ref=ready_work,
-                downloader_factory=adapter_factory,
+                grant_ref=grant_ref,
+                profile=profile,
+                verifier_factory=adapter_factory,
+                now=current,
             )
-            _validate_zip_effect(zip_result)
-            if ready or zip_result.status != "no-pending-package":
-                return _zip_aggregate(verify_effects, zip_result)
-        capacity = reserve_metadata_campaign_capacity_once(
-            storage_root=storage_root,
-            repo_root=repo_root,
-            campaign_ref=campaign_ref,
-            grant_ref=grant_ref,
-            profile_id=profile_id,
-            max_reservations=1,
-            now=current,
-        )
-        current_manifest = load_campaign_manifest(
-            storage_root, campaign_ref, repo_root=repo_root,
-        )
-        queries = build_outstanding_metadata_queries(current_manifest, profile)
-        effects = submission.execute_metadata_submission_effects_once(
-            storage_root=storage_root,
-            repo_root=repo_root,
-            campaign_ref=campaign_ref,
-            grant_ref=grant_ref,
-            profile_id=profile_id,
-            queries_by_work=queries,
-            adapter_factory=adapter_factory,
-            now=current,
-            invocation_ref=capacity.invocation_ref,
-        )
-        return _aggregate(capacity.actions, queries, effects)
+            _validate_verify_effects(manifest, verify_effects)
+            zip_candidate = _first_zip_candidate(verify_effects)
+            if zip_candidate is not None:
+                ready_work, ready = zip_candidate
+                zip_result = download.execute_campaign_metadata_zip_download_once(
+                    storage_root=storage_root,
+                    repo_root=repo_root,
+                    campaign_ref=campaign_ref,
+                    work_ref=ready_work,
+                    downloader_factory=adapter_factory,
+                )
+                _validate_zip_effect(zip_result)
+                if ready or zip_result.status != "no-pending-package":
+                    return _zip_aggregate(verify_effects, zip_result)
+            capacity = reserve_metadata_campaign_capacity_once(
+                storage_root=storage_root,
+                repo_root=repo_root,
+                campaign_ref=campaign_ref,
+                grant_ref=grant_ref,
+                profile_id=profile_id,
+                max_reservations=1,
+                now=current,
+            )
+            current_manifest = load_campaign_manifest(
+                storage_root, campaign_ref, repo_root=repo_root,
+            )
+            queries = build_outstanding_metadata_queries(current_manifest, profile)
+            effects = submission.execute_metadata_submission_effects_once(
+                storage_root=storage_root,
+                repo_root=repo_root,
+                campaign_ref=campaign_ref,
+                grant_ref=grant_ref,
+                profile_id=profile_id,
+                queries_by_work=queries,
+                adapter_factory=adapter_factory,
+                now=current,
+                invocation_ref=capacity.invocation_ref,
+            )
+            return _aggregate(capacity.actions, queries, effects)
+    except recovery_state.MetadataRecoveryStateError as exc:
+        if exc.reason == "recovery-state-busy":
+            raise CampaignRunError("campaign-monitor-busy", retry_safe=True) from None
+        raise CampaignRunError("campaign-run-state-failed", retry_safe=True) from None
     except CampaignRunError:
         raise
     except Exception:

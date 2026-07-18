@@ -59,7 +59,11 @@ _VALID_OUTCOMES = frozenset({
     ("packages_ready", 0, False, None, False), ("packages_ready", 1, True, None, True),
     ("no_data", 1, True, None, True), ("pending_after_budget", 0, False, None, False),
     ("verify_failed", 0, False, "verify_uncertain", False), ("verify_failed", 1, True, "sat_too_many_results", False),
-    ("verify_failed", 1, True, "verify_failed", False)})
+    ("verify_failed", 1, True, "verify_failed", False),
+    ("verify_failed", 1, True, "duplicate_active_request", False),
+    ("verify_failed", 1, True, "sat_expired", False),
+    ("service_window_exceeded", 0, False, None, False),
+})
 
 
 def execute_metadata_verify_effects_once(

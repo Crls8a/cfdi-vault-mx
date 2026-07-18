@@ -22,7 +22,12 @@ _FALSE_CI_VALUES = frozenset({"", "0", "false", "no", "off"})
 _ENDPOINT_OVERRIDES = (
     "CFDI_VAULT_SAT_AUTH_ENDPOINT", "CFDI_VAULT_SAT_REQUEST_ENDPOINT",
     "CFDI_VAULT_SAT_VERIFY_ENDPOINT", "CFDI_VAULT_SAT_DOWNLOAD_ENDPOINT")
-_SUPPORTED_PROVIDER_SCHEMES = frozenset({"windows-credential-manager"})
+_SUPPORTED_PROVIDER_SCHEMES = frozenset({
+    "windows-credential-manager",
+    "macos-keychain",
+    "linux-secret-service",
+    "linux-kwallet",
+})
 _EVIDENCE_SEAL = object()
 
 

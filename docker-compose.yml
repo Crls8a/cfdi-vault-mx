@@ -8,7 +8,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://cfdi_vault:cfdi_vault@postgres:5432/cfdi_vault}
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cfdi_vault:cfdi_vault@rabbitmq:5672/}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      CFDI_STORAGE_ROOT: ${CFDI_STORAGE_ROOT:-/app/storage}
+      CFDI_STORAGE_ROOT: ${CFDI_STORAGE_ROOT:-/var/lib/cfdi-vault/storage}
     depends_on:
       postgres:
         condition: service_healthy
@@ -19,7 +19,7 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./storage:/app/storage
+      - ${CFDI_STORAGE_MOUNT:-sat_artifacts_data}:/var/lib/cfdi-vault/storage
       - ./logs:/app/logs
     command: ["doctor"]
 
@@ -32,7 +32,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://cfdi_vault:cfdi_vault@postgres:5432/cfdi_vault}
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cfdi_vault:cfdi_vault@rabbitmq:5672/}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      CFDI_STORAGE_ROOT: ${CFDI_STORAGE_ROOT:-/app/storage}
+      CFDI_STORAGE_ROOT: ${CFDI_STORAGE_ROOT:-/var/lib/cfdi-vault/storage}
     depends_on:
       postgres:
         condition: service_healthy
@@ -43,9 +43,46 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./storage:/app/storage
+      - ${CFDI_STORAGE_MOUNT:-sat_artifacts_data}:/var/lib/cfdi-vault/storage
       - ./logs:/app/logs
-    command: ["worker", "run", "--loop"]
+    command: ["worker", "run", "--loop", "--queue", "all"]
+
+  sat-monitor:
+    build: .
+    entrypoint: ["python"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://cfdi_vault:cfdi_vault@postgres:5432/cfdi_vault}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cfdi_vault:cfdi_vault@rabbitmq:5672/}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CFDI_STORAGE_ROOT: ${CFDI_STORAGE_ROOT:-/var/lib/cfdi-vault/storage}
+      SAT_MONITOR_ENABLED: ${SAT_MONITOR_ENABLED:-0}
+      CFDI_VAULT_LIVE_WORKER_ENABLED: ${CFDI_VAULT_LIVE_WORKER_ENABLED:-0}
+      CFDI_VAULT_COMMIT_REF: ${CFDI_VAULT_COMMIT_REF:-}
+      SAT_CAMPAIGN_PROFILE: ${SAT_CAMPAIGN_PROFILE:-}
+      SAT_CAMPAIGN_REF: ${SAT_CAMPAIGN_REF:-}
+      SAT_CAMPAIGN_GRANT: ${SAT_CAMPAIGN_GRANT:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ${CFDI_STORAGE_MOUNT:-sat_artifacts_data}:/var/lib/cfdi-vault/storage
+      - ./logs:/app/logs
+    command: ["-m", "cfdi_vault.sat_monitor_service"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import cfdi_vault.sat_monitor_service as m; m.healthcheck()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   postgres:
     image: postgres:16-alpine
@@ -138,6 +175,7 @@ services:
         mc mb --ignore-existing "local/$$MINIO_BUCKET"
 
 volumes:
+  sat_artifacts_data:
   postgres_data:
   rabbitmq_data:
   redis_data:
