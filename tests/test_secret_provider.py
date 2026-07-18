@@ -97,6 +97,16 @@ def test_audit_log_payload_excludes_resolved_value(caplog: pytest.LogCaptureFixt
     assert CredentialAccessOutcome.GRANTED.value in caplog.text
 
 
+def test_dummy_provider_redacts_untrusted_audit_purpose() -> None:
+    reference = _reference(CredentialKind.PHRASE)
+    provider = DummySecretProvider({reference.uri: "SYNTHETIC-DUMMY-VALUE"})
+
+    provider.resolve(reference, purpose="SYNTHETIC-AUDIT-VALUE\nforged-field")
+
+    assert provider.audit_events[-1].purpose == "<redacted-purpose>"
+    assert "SYNTHETIC-AUDIT-VALUE" not in json.dumps(provider.audit_log_records(), sort_keys=True)
+
+
 def test_config_logs_and_storage_do_not_persist_resolved_value(tmp_path) -> None:
     payload = "SYNTHETIC_STORAGE_GUARD_VALUE"
     certificate_ref = _reference(CredentialKind.CERTIFICATE)

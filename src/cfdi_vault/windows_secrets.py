@@ -7,18 +7,18 @@ credentials are created, read, or deleted.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import os
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from cfdi_vault.secrets import (
     CredentialAccessAction,
     CredentialAccessAuditEvent,
     CredentialAccessOutcome,
-    CredentialKind,
     CredentialProviderError,
     CredentialReference,
     SecretValue,
+    sanitize_credential_purpose,
 )
 
 
@@ -222,7 +222,7 @@ class WindowsCredentialManagerSecretProvider:
                 provider=self.provider_scheme,
                 reference_uri=reference.uri,
                 kind=reference.kind,
-                purpose=purpose,
+                purpose=sanitize_credential_purpose(purpose),
                 action=action,
                 outcome=outcome,
                 reason=reason,

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import ctypes
 import json
 import logging
-import ctypes
 from datetime import date
 
 import pytest
@@ -104,6 +104,18 @@ def test_windows_provider_audit_logs_do_not_expose_resolved_value(caplog) -> Non
     assert stored_value not in caplog.text
     assert reference.uri in caplog.text
     assert CredentialAccessAction.READ.value in caplog.text
+
+
+def test_windows_provider_redacts_untrusted_audit_purpose() -> None:
+    reference = _windows_reference(CredentialKind.PHRASE)
+    provider = WindowsCredentialManagerSecretProvider(InMemoryWindowsCredentialBackend())
+
+    provider.store(reference, "SYNTHETIC-PURPOSE-VALUE", purpose="safe-purpose")
+    provider.resolve(reference, purpose="SYNTHETIC-AUDIT-VALUE\nforged-field")
+
+    assert provider.audit_events[0].purpose == "safe-purpose"
+    assert provider.audit_events[1].purpose == "<redacted-purpose>"
+    assert "SYNTHETIC-AUDIT-VALUE" not in json.dumps(provider.audit_log_records(), sort_keys=True)
 
 
 def test_windows_provider_keeps_config_and_storage_reference_only(tmp_path) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -39,6 +40,17 @@ class CredentialAccessAction(StrEnum):
 
 class CredentialProviderError(LookupError):
     """Raised when a credential reference cannot be resolved safely."""
+
+
+_SAFE_PURPOSE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$")
+
+
+def sanitize_credential_purpose(value: str) -> str:
+    """Return a bounded audit purpose without arbitrary log content."""
+
+    if isinstance(value, str) and _SAFE_PURPOSE.fullmatch(value):
+        return value
+    return "<redacted-purpose>"
 
 
 @dataclass(frozen=True)
@@ -223,7 +235,7 @@ class DummySecretProvider:
                 provider=self.provider_scheme,
                 reference_uri=reference.uri,
                 kind=reference.kind,
-                purpose=purpose,
+                purpose=sanitize_credential_purpose(purpose),
                 action=action,
                 outcome=outcome,
                 reason=reason,
