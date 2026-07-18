@@ -1,6 +1,16 @@
 """Setup CLI commands."""
 
+# CLI family shims intentionally import the shared command namespace.
+# ruff: noqa: F403, F405
+
 from __future__ import annotations
+
+from pathlib import Path
+
+from cfdi_vault.local_preflight import default_local_probes, run_local_preflight
+from cfdi_vault.runtime_settings import RuntimeSettings, RuntimeSettingsError
+from cfdi_vault.secrets import CredentialProviderError
+from cfdi_vault.setup_core import SetupError, find_repo_root, load_profile
 
 from .common import *
 
@@ -262,6 +272,55 @@ def doctor(
         raise typer.Exit(code=1)
 
 
+def preflight(
+    database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL; defaults to DATABASE_URL."),
+    storage: Path | None = typer.Option(None, "--storage", help="External artifact root; defaults to CFDI_STORAGE_ROOT."),
+    rabbitmq_url: str | None = typer.Option(None, "--rabbitmq-url", help="RabbitMQ URL; defaults to RABBITMQ_URL."),
+    redis_url: str | None = typer.Option(None, "--redis-url", help="Redis URL; defaults to REDIS_URL."),
+    commit_ref: str | None = typer.Option(None, "--commit-ref", help="Opaque commit reference; defaults to CFDI_VAULT_COMMIT_REF."),
+    profile_id: str = typer.Option("default", "--profile-id", help="Local setup profile id."),
+) -> None:
+    """Validate local profile, secret reference, storage, and services without SAT I/O."""
+
+    cli_values = {
+        key: value
+        for key, value in {
+            "DATABASE_URL": database_url,
+            "CFDI_STORAGE_ROOT": str(storage) if storage is not None else None,
+            "RABBITMQ_URL": rabbitmq_url,
+            "REDIS_URL": redis_url,
+            "CFDI_VAULT_COMMIT_REF": commit_ref,
+        }.items()
+        if value is not None
+    }
+    repository_root = find_repo_root(Path.cwd()) or Path.cwd()
+    try:
+        settings = RuntimeSettings.resolve(
+            cli=cli_values,
+            dotenv_path=repository_root / ".env",
+            repository_root=repository_root,
+        )
+        profile = load_profile(profile_id)
+        provider = _setup_provider(profile_id)
+        report = run_local_preflight(
+            settings,
+            profile,
+            provider,
+            probes=default_local_probes(settings),
+            repository_root=repository_root,
+        )
+    except (RuntimeSettingsError, SetupError, CredentialProviderError):
+        typer.echo("ready=false")
+        typer.echo("preflight=failed reason=local-configuration-invalid")
+        raise typer.Exit(code=1) from None
+
+    typer.echo(f"ready={str(report.ready).lower()}")
+    for check in report.sanitized()["checks"]:
+        typer.echo(f"check={check['name']} status={check['status']} reason={check['reason']}")
+    if not report.ready:
+        raise typer.Exit(code=1)
+
+
 def register(config_app: typer.Typer, app: typer.Typer) -> None:
     """Register setup commands."""
 
@@ -274,3 +333,5 @@ def register(config_app: typer.Typer, app: typer.Typer) -> None:
     app.command("status")(setup_status)
 
     app.command("doctor")(doctor)
+
+    app.command("preflight")(preflight)

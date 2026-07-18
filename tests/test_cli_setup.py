@@ -6,8 +6,10 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from cfdi_vault import setup as setup_flow
 from cfdi_vault.adapters.cli import setup as setup_cli
 from cfdi_vault.cli import app
+from cfdi_vault.secrets import CredentialKind, CredentialReference
 from cfdi_vault.windows_secrets import InMemoryWindowsCredentialBackend, WindowsCredentialManagerSecretProvider
 
 
@@ -130,6 +132,58 @@ def test_status_cli_reports_missing_profile_with_redaction(tmp_path: Path) -> No
     assert "Setup profile: dummy-profile" in result.output
     assert "Status: missing" in result.output
     assert str(appdata_root) not in result.output
+
+
+def test_preflight_cli_reports_only_sanitized_local_checks(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    appdata_root = tmp_path / "appdata"
+    paths = setup_flow.build_profile_paths("dummy-profile", env={"LOCALAPPDATA": str(appdata_root)}, platform="win32")
+    setup_flow.ensure_profile_layout(paths)
+    certificate = paths.credentials_dir / "certificate.cer"
+    private_key = paths.credentials_dir / "private-key.key"
+    certificate.write_bytes(b"SYNTHETIC-CERTIFICATE")
+    private_key.write_bytes(b"SYNTHETIC-KEY")
+    profile = setup_flow.LocalProfile(
+        profile_id="dummy-profile",
+        rfc="XAXX010101000",
+        storage_root=paths.storage_root,
+        credential_mode=setup_flow.CredentialMode.COPIED,
+        certificate_path=certificate,
+        private_key_path=private_key,
+        phrase_ref=setup_flow.default_phrase_reference("dummy-profile", platform="win32"),
+        status=setup_flow.LocalProfileStatus.READY,
+        certificate_fingerprint="a" * 64,
+    )
+    setup_flow.write_profile(profile, paths.profile_json)
+    provider = WindowsCredentialManagerSecretProvider(InMemoryWindowsCredentialBackend())
+    provider.store(
+        CredentialReference(profile.phrase_ref, CredentialKind.PHRASE),
+        "SYNTHETIC-PHRASE",
+        purpose="test",
+    )
+    monkeypatch.setattr(setup_cli, "_setup_provider", lambda _profile_id: provider)
+    monkeypatch.setattr(
+        setup_cli,
+        "default_local_probes",
+        lambda _settings: {name: (lambda: True) for name in ("postgresql", "flyway", "rabbitmq", "redis")},
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["preflight", "--profile-id", "dummy-profile", "--storage", str(paths.storage_root)],
+        env={
+            "LOCALAPPDATA": str(appdata_root),
+            "DATABASE_URL": "postgresql+psycopg://user:password@localhost:5432/vault",
+            "RABBITMQ_URL": "amqp://localhost:5672/",
+            "REDIS_URL": "redis://localhost:6379/0",
+            "CFDI_VAULT_COMMIT_REF": "synthetic-commit",
+        },
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "ready=true" in result.output
+    assert str(tmp_path) not in result.output
+    assert "SYNTHETIC-PHRASE" not in result.output
+    assert "password" not in result.output
 
 
 @pytest.mark.integration
