@@ -2,10 +2,26 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    Numeric,
+    SmallInteger,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -67,6 +83,92 @@ class DownloadJob(Base):
     )
 
 
+class SatCampaignRecord(Base):
+    """Durable SAT campaign identity and execution budget."""
+
+    __tablename__ = "sat_campaigns"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    campaign_ref: Mapped[str] = mapped_column(String(96), unique=True, nullable=False)
+    tenant_id: Mapped[str] = mapped_column(String(64), ForeignKey("tenants.id"), nullable=False)
+    profile_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    manifest_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    commit_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(64), nullable=False)
+    max_open_operations: Mapped[int] = mapped_column(SmallInteger, default=2, nullable=False)
+    budget: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_sat_campaigns_tenant_id"),
+        UniqueConstraint("id", "profile_ref", "manifest_sha256", "commit_ref", name="uq_sat_campaigns_identity"),
+    )
+
+
+class SatCampaignWindowRecord(Base):
+    """A bounded SAT campaign window, including one permitted split."""
+
+    __tablename__ = "sat_campaign_windows"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    campaign_id: Mapped[int] = mapped_column(Integer, ForeignKey("sat_campaigns.id"), nullable=False)
+    work_ref: Mapped[str] = mapped_column(String(96), unique=True, nullable=False)
+    parent_window_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("sat_campaign_windows.id"), nullable=True
+    )
+    direction: Mapped[str] = mapped_column(String(16), nullable=False)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    split_depth: Mapped[int] = mapped_column(SmallInteger, default=0, nullable=False)
+    recovery_ref: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    status: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "direction", "start_date", "end_date", name="uq_sat_campaign_windows_period"),
+        UniqueConstraint("campaign_id", "id", name="uq_sat_campaign_windows_campaign_id"),
+        ForeignKeyConstraint(
+            ["campaign_id", "parent_window_id"],
+            ["sat_campaign_windows.campaign_id", "sat_campaign_windows.id"],
+            name="fk_sat_campaign_windows_parent_campaign",
+        ),
+        CheckConstraint("split_depth = 0 OR parent_window_id IS NOT NULL",
+                        name="ck_sat_campaign_windows_split_parent"),
+        Index("ix_sat_campaign_windows_campaign_status_date", "campaign_id", "status", "start_date"),
+    )
+
+
+class SatGrantRecord(Base):
+    """One exact authorization grant bound to a campaign revision."""
+
+    __tablename__ = "sat_grants"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    campaign_id: Mapped[int] = mapped_column(Integer, ForeignKey("sat_campaigns.id"), nullable=False)
+    grant_ref: Mapped[str] = mapped_column(String(96), unique=True, nullable=False)
+    phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    manifest_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    commit_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    profile_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    reason: Mapped[str] = mapped_column(String(512), nullable=False)
+    budget: Mapped[int] = mapped_column(Integer, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "grant_ref", name="uq_sat_grants_campaign_ref"),
+        ForeignKeyConstraint(
+            ["campaign_id", "profile_ref", "manifest_sha256", "commit_ref"],
+            ["sat_campaigns.id", "sat_campaigns.profile_ref", "sat_campaigns.manifest_sha256", "sat_campaigns.commit_ref"],
+            name="fk_sat_grants_campaign_identity",
+        ),
+        Index("ix_sat_grants_campaign_expires", "campaign_id", "expires_at"),
+    )
+
+
 class SatRequestRecord(Base):
     """Lifecycle of a SAT request."""
 
@@ -87,6 +189,44 @@ class SatRequestRecord(Base):
     metadata_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     metadata_storage_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     raw_response: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, nullable=False)
+    campaign_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("sat_campaigns.id"), nullable=True)
+    window_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("sat_campaign_windows.id"), nullable=True)
+    work_ref: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    recovery_ref: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    grant_ref: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    next_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    service_window_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    verify_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    status: Mapped[str] = mapped_column(String(64), default="submitted", nullable=False)
+    response_summary: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "campaign_id"],
+            ["sat_campaigns.tenant_id", "sat_campaigns.id"],
+            name="fk_sat_requests_campaign_tenant",
+        ),
+        UniqueConstraint("campaign_id", "work_ref", "request_type", name="uq_sat_requests_campaign_work_type"),
+        UniqueConstraint("campaign_id", "id", name="uq_sat_requests_campaign_id"),
+        ForeignKeyConstraint(
+            ["campaign_id", "window_id"],
+            ["sat_campaign_windows.campaign_id", "sat_campaign_windows.id"],
+            name="fk_sat_requests_campaign_window",
+        ),
+        ForeignKeyConstraint(
+            ["campaign_id", "grant_ref"],
+            ["sat_grants.campaign_id", "sat_grants.grant_ref"],
+            name="fk_sat_requests_campaign_grant",
+        ),
+        Index("ix_sat_requests_campaign_status", "campaign_id", "status"),
+        Index("ix_sat_requests_due_verify", "status", "next_check_at", postgresql_where=text("next_check_at IS NOT NULL")),
+        Index(
+            "ix_sat_requests_service_window",
+            "status",
+            "service_window_expires_at",
+            postgresql_where=text("service_window_expires_at IS NOT NULL"),
+        ),
+    )
 
 
 class SatPackageRecord(Base):
@@ -108,6 +248,184 @@ class SatPackageRecord(Base):
     last_error: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    campaign_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("sat_campaigns.id"), nullable=True)
+    window_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("sat_campaign_windows.id"), nullable=True)
+    artifact_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("sat_artifacts.id"), nullable=True)
+    claim_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("sat_claims.id"), nullable=True)
+    ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    download_state: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    validation_status: Mapped[str] = mapped_column(String(32), default="unvalidated", nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "campaign_id"],
+            ["sat_campaigns.tenant_id", "sat_campaigns.id"],
+            name="fk_sat_packages_campaign_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["campaign_id", "window_id"],
+            ["sat_campaign_windows.campaign_id", "sat_campaign_windows.id"],
+            name="fk_sat_packages_campaign_window",
+        ),
+        ForeignKeyConstraint(
+            ["campaign_id", "artifact_id"],
+            ["sat_artifacts.campaign_id", "sat_artifacts.id"],
+            name="fk_sat_packages_campaign_artifact",
+        ),
+        ForeignKeyConstraint(
+            ["campaign_id", "claim_id"],
+            ["sat_claims.campaign_id", "sat_claims.id"],
+            name="fk_sat_packages_campaign_claim",
+        ),
+        Index("ix_sat_packages_campaign_state", "campaign_id", "download_state"),
+        Index("ix_sat_packages_request_status", "id_solicitud", "status"),
+    )
+
+
+class SatArtifactRecord(Base):
+    """External ZIP/TXT/XML artifact metadata; payload bytes stay out of PostgreSQL."""
+
+    __tablename__ = "sat_artifacts"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    campaign_id: Mapped[int] = mapped_column(Integer, ForeignKey("sat_campaigns.id"), nullable=False)
+    window_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("sat_campaign_windows.id"), nullable=True)
+    artifact_scope: Mapped[str] = mapped_column(String(16), default="window", nullable=False)
+    artifact_ref: Mapped[str] = mapped_column(String(96), unique=True, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    validation_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    counts: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "kind", "sha256", name="uq_sat_artifacts_content"),
+        UniqueConstraint("campaign_id", "id", name="uq_sat_artifacts_campaign_id"),
+        ForeignKeyConstraint(
+            ["campaign_id", "window_id"],
+            ["sat_campaign_windows.campaign_id", "sat_campaign_windows.id"],
+            name="fk_sat_artifacts_campaign_window",
+        ),
+        Index("ix_sat_artifacts_campaign_kind", "campaign_id", "kind"),
+    )
+
+
+class SatClaimRecord(Base):
+    """Idempotency claim reserved before an external SAT effect."""
+
+    __tablename__ = "sat_claims"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    claim_ref: Mapped[str] = mapped_column(String(96), unique=True, nullable=False)
+    grant_ref: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    campaign_id: Mapped[int] = mapped_column(Integer, ForeignKey("sat_campaigns.id"), nullable=False)
+    window_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("sat_campaign_windows.id"), nullable=True)
+    request_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("sat_requests.id"), nullable=True)
+    operation_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(192), nullable=False)
+    operation_slot: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    worker_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lease_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    result: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    result_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "idempotency_key", name="uq_sat_claims_idempotency"),
+        UniqueConstraint("campaign_id", "id", name="uq_sat_claims_campaign_id"),
+        ForeignKeyConstraint(
+            ["campaign_id", "window_id"],
+            ["sat_campaign_windows.campaign_id", "sat_campaign_windows.id"],
+            name="fk_sat_claims_campaign_window",
+        ),
+        ForeignKeyConstraint(
+            ["campaign_id", "request_id"],
+            ["sat_requests.campaign_id", "sat_requests.id"],
+            name="fk_sat_claims_campaign_request",
+        ),
+        ForeignKeyConstraint(
+            ["campaign_id", "grant_ref"],
+            ["sat_grants.campaign_id", "sat_grants.grant_ref"],
+            name="fk_sat_claims_campaign_grant",
+        ),
+        Index("ix_sat_claims_campaign_open_slot", "campaign_id", "operation_slot", unique=True, postgresql_where=text("active")),
+        Index("ix_sat_claims_lease", "lease_until", postgresql_where=text("active")),
+    )
+
+
+class SatVerifyAttemptRecord(Base):
+    """Append-only SAT VERIFY history linked to a verify claim."""
+
+    __tablename__ = "sat_verify_attempts"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    campaign_id: Mapped[int] = mapped_column(Integer, ForeignKey("sat_campaigns.id"), nullable=False)
+    request_id: Mapped[int] = mapped_column(Integer, ForeignKey("sat_requests.id"), nullable=False)
+    claim_id: Mapped[int] = mapped_column(Integer, ForeignKey("sat_claims.id"), nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    contacted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    result: Mapped[str] = mapped_column(String(32), nullable=False)
+    result_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    next_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claim_ref: Mapped[str] = mapped_column(String(96), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("request_id", "attempt", name="uq_sat_verify_attempts_number"),
+        UniqueConstraint("claim_ref", name="uq_sat_verify_attempts_claim"),
+        ForeignKeyConstraint(
+            ["campaign_id", "request_id"],
+            ["sat_requests.campaign_id", "sat_requests.id"],
+            name="fk_sat_verify_attempts_campaign_request",
+        ),
+        ForeignKeyConstraint(
+            ["campaign_id", "claim_id"],
+            ["sat_claims.campaign_id", "sat_claims.id"],
+            name="fk_sat_verify_attempts_campaign_claim",
+        ),
+        Index("ix_sat_verify_attempts_request_created", "request_id", "created_at"),
+    )
+
+
+class SatMetadataImportRecord(Base):
+    """Sanitized structural and aggregate results for one metadata TXT import."""
+
+    __tablename__ = "sat_metadata_imports"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    campaign_id: Mapped[int] = mapped_column(Integer, ForeignKey("sat_campaigns.id"), nullable=False)
+    window_id: Mapped[int] = mapped_column(Integer, ForeignKey("sat_campaign_windows.id"), nullable=False)
+    artifact_id: Mapped[int] = mapped_column(Integer, ForeignKey("sat_artifacts.id"), nullable=False)
+    encoding: Mapped[str] = mapped_column(String(32), nullable=False)
+    delimiter: Mapped[str] = mapped_column(String(4), nullable=False)
+    header_compatible: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    record_count: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    eligible_count: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    cancelled_count: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    duplicate_count: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    conflict_count: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    unknown_count: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["campaign_id", "window_id"],
+            ["sat_campaign_windows.campaign_id", "sat_campaign_windows.id"],
+            name="fk_sat_metadata_imports_campaign_window",
+        ),
+        ForeignKeyConstraint(
+            ["campaign_id", "artifact_id"],
+            ["sat_artifacts.campaign_id", "sat_artifacts.id"],
+            name="fk_sat_metadata_imports_campaign_artifact",
+        ),
+        Index("ix_sat_metadata_imports_window", "window_id", "created_at"),
+    )
 
 
 class QueueJobEvent(Base):
