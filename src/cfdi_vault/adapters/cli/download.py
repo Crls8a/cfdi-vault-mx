@@ -70,6 +70,7 @@ def queue_status(
 def worker_run(
     loop: bool = typer.Option(False, "--loop", help="Keep polling the configured queue instead of running once."),
     poll_seconds: float = typer.Option(5.0, "--poll-seconds", min=0.5, help="Polling interval when --loop is used."),
+    queue_name: str = typer.Option("all", "--queue", help="Queue name or all campaign/recovery queues."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
@@ -77,9 +78,9 @@ def worker_run(
 
     worker = RecoveryWorker(_service(database_url, storage))
     if loop:
-        worker.run_forever(poll_seconds=poll_seconds)
+        worker.run_forever(poll_seconds=poll_seconds, queue_name=queue_name)
         return
-    report = worker.run_once()
+    report = worker.run_once(queue_name=queue_name)
     typer.echo(f"processed={report.processed} detail={report.detail}")
 
 def sync_metadata(
@@ -88,12 +89,11 @@ def sync_metadata(
     start: str = typer.Option(..., "--start", help="Start date/datetime, e.g. 2024-01-01."),
     end: str = typer.Option(..., "--end", help="End date/datetime, e.g. 2024-01-31."),
     direction: DownloadDirection = typer.Option(DownloadDirection.RECEIVED, "--direction", help="Download direction."),
-    live: bool = typer.Option(False, "--live", help="Use live SAT SOAP. Not implemented in this slice."),
     enqueue: bool = typer.Option(False, "--enqueue", help="Publish the job for a worker instead of processing synchronously."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
-    """Submit a metadata sync. Fake SAT is used unless --live is passed."""
+    """Run an offline metadata sync; live SAT is available only through ``sat campaign``."""
 
     query = build_default_query(
         tenant_id=tenant_id,
@@ -104,7 +104,7 @@ def sync_metadata(
         end=_parse_cli_datetime(end, end_of_day=True),
     )
     _require_queue_for_enqueue(enqueue)
-    result = _service(database_url, storage).sync_metadata(query, live=live, enqueue=enqueue)
+    result = _service(database_url, storage).sync_metadata(query, enqueue=enqueue)
     typer.echo(f"job_id={result.job_id}")
     typer.echo(f"request_id={result.request_id}")
     typer.echo(f"status={result.status}")
@@ -117,12 +117,11 @@ def sync_xml(
     start: str = typer.Option(..., "--start", help="Start date/datetime, e.g. 2024-01-01."),
     end: str = typer.Option(..., "--end", help="End date/datetime, e.g. 2024-01-31."),
     direction: DownloadDirection = typer.Option(DownloadDirection.RECEIVED, "--direction", help="Download direction."),
-    live: bool = typer.Option(False, "--live", help="Use live SAT SOAP. Not implemented in this slice."),
     enqueue: bool = typer.Option(False, "--enqueue", help="Publish the job for a worker instead of processing synchronously."),
     database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
     storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
 ) -> None:
-    """Submit an XML/package sync. Fake mode stores packages and extracted XML evidence."""
+    """Run an offline XML/package sync; live SAT is available only through ``sat campaign``."""
 
     query = build_default_query(
         tenant_id=tenant_id,
@@ -133,7 +132,7 @@ def sync_xml(
         end=_parse_cli_datetime(end, end_of_day=True),
     )
     _require_queue_for_enqueue(enqueue)
-    result = _service(database_url, storage).sync_metadata(query, live=live, enqueue=enqueue)
+    result = _service(database_url, storage).sync_metadata(query, enqueue=enqueue)
     typer.echo(f"job_id={result.job_id}")
     typer.echo(f"request_id={result.request_id}")
     typer.echo(f"status={result.status}")
@@ -301,7 +300,5 @@ def register(queue_app: typer.Typer, worker_app: typer.Typer, sync_app: typer.Ty
     download_app.command("request")(download_request)
 
     download_app.command("sync")(download_sync)
-
-    download_app.command("live-smoke")(download_live_smoke)
 
     download_app.command("status")(download_status)

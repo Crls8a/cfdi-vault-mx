@@ -69,6 +69,7 @@ def sat_verify_due_runner(
 
 def render_windows_task(
     profile: str = typer.Option("default", "--profile", help="Local setup profile id embedded in the XML template."),
+    campaign_ref: str = typer.Option("CAMPAIGN_REF", "--campaign-ref", help="Opaque campaign reference embedded in the template."),
     working_directory: str = typer.Option(
         ...,
         "--working-directory",
@@ -78,7 +79,10 @@ def render_windows_task(
     """Print deterministic Task Scheduler XML; never register a task."""
 
     try:
-        document = render_windows_task_xml(profile_id=profile, working_directory=working_directory)
+        document = render_windows_task_xml(
+            profile_id=profile, campaign_ref=campaign_ref,
+            working_directory=working_directory,
+        )
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
     typer.echo(document, nl=False)

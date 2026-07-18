@@ -2,29 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
-from dataclasses import asdict
-from typing import cast
 
 import typer
 
-from cfdi_vault.sat_campaign_manifest import (
-    CampaignManifestError,
-    CampaignWorkState,
-    SatCampaignManifest,
-    build_campaign_manifest,
-    campaign_redacted_summary,
-)
-from cfdi_vault.sat_campaign_manifest_store import (
-    CampaignManifestStoreError,
-    initialize_campaign_manifest,
-    load_campaign_manifest,
-)
-from cfdi_vault.sat_campaign_status import (
-    CampaignStatusError,
-    CampaignStatusResult,
-    load_campaign_status,
-)
+from cfdi_vault.sat_campaign_db_cli import CampaignDatabaseError
+from cfdi_vault.sat_campaign_db_cli import campaign_status as db_campaign_status
+from cfdi_vault.sat_campaign_db_cli import create_campaign as db_create_campaign
 from cfdi_vault.setup_core import LocalProfile, SetupError, load_profile
 
 from .sat_campaign_authorize import campaign_authorize
@@ -40,55 +25,46 @@ class _CampaignCliError(ValueError):
 def campaign_create(
     profile: str = typer.Option(..., "--profile", help="Exact local profile identifier."),
 ) -> None:
-    """Create the fixed 2026 Metadata campaign idempotently in private storage."""
+    """Create the fixed 2026 Metadata campaign idempotently in PostgreSQL."""
 
-    def operation() -> SatCampaignManifest:
+    _require_database()
+    try:
         loaded = _load_exact_profile(profile)
-        manifest = build_campaign_manifest(profile)
-        return _load_or_initialize(loaded, manifest)
-
-    _run(operation)
+    except SetupError:
+        _fail("campaign-profile-invalid")
+    except _CampaignCliError as error:
+        _fail(error.reason)
+    _run_db(lambda: db_create_campaign(profile, tenant_rfc=loaded.rfc))
 
 
 def campaign_status(
     profile: str = typer.Option(..., "--profile", help="Exact local profile identifier."),
     campaign_ref: str = typer.Option(..., "--campaign-ref", help="Opaque campaign reference."),
 ) -> None:
-    """Show only persisted campaign and bound recovery aggregates."""
+    """Show only PostgreSQL-persisted campaign and recovery aggregates."""
 
-    def operation() -> CampaignStatusResult:
-        loaded = _load_exact_profile(profile)
-        return load_campaign_status(loaded.storage_root, campaign_ref, loaded)
-
-    _run_status(campaign_ref, operation)
+    _require_database()
+    _run_db_status(campaign_ref, lambda: db_campaign_status(profile, campaign_ref))
 
 
-def _run(operation: Callable[[], SatCampaignManifest]) -> None:
-    try:
-        manifest = operation()
-    except SetupError:
-        _fail("campaign-profile-invalid")
-    except OSError:
-        _fail("campaign-profile-unavailable")
-    except (CampaignManifestError, CampaignManifestStoreError, _CampaignCliError) as error:
-        _fail(error.reason)
-    except Exception:
-        _fail("campaign-operation-failed")
-    _print_summary(manifest)
-
-
-def _run_status(campaign_ref: str, operation: Callable[[], CampaignStatusResult]) -> None:
+def _run_db(operation: Callable[[], dict[str, object]]) -> None:
     try:
         result = operation()
-    except SetupError:
-        _fail("campaign-profile-invalid")
-    except OSError:
-        _fail("campaign-profile-unavailable")
-    except (CampaignManifestError, CampaignManifestStoreError, CampaignStatusError, _CampaignCliError) as error:
+    except CampaignDatabaseError as error:
         _fail(error.reason)
     except Exception:
-        _fail("campaign-operation-failed")
-    _print_status(campaign_ref, result)
+        _fail("campaign-database-operation-failed")
+    _print_db_summary(result)
+
+
+def _run_db_status(campaign_ref: str, operation: Callable[[], dict[str, object]]) -> None:
+    try:
+        result = operation()
+    except CampaignDatabaseError as error:
+        _fail(error.reason)
+    except Exception:
+        _fail("campaign-database-operation-failed")
+    _print_db_status(campaign_ref, result)
 
 
 def _load_exact_profile(profile_id: str) -> LocalProfile:
@@ -98,61 +74,35 @@ def _load_exact_profile(profile_id: str) -> LocalProfile:
     return loaded
 
 
-def _load_or_initialize(profile: LocalProfile, expected: SatCampaignManifest) -> SatCampaignManifest:
-    try:
-        return _require_profile(
-            load_campaign_manifest(profile.storage_root, expected.campaign_ref), profile.profile_id,
-        )
-    except CampaignManifestStoreError as error:
-        if error.reason != "campaign-state-not-found":
-            raise
-    try:
-        return initialize_campaign_manifest(profile.storage_root, expected)
-    except CampaignManifestStoreError as error:
-        if error.reason != "campaign-state-conflict":
-            raise
-        return _require_profile(
-            load_campaign_manifest(profile.storage_root, expected.campaign_ref), profile.profile_id,
-        )
+def _print_db_summary(result: dict[str, object]) -> None:
+    for key in (
+        "campaign_ref", "base_count", "split_count", "leaf_count", "total_count", "outstanding_count",
+        "terminal_count", "planned_count", "completed_count", "no_data_count", "failed_count",
+        "threshold_blocked_count",
+    ):
+        typer.echo(f"{key}={result.get(key)}")
 
 
-def _require_profile(manifest: SatCampaignManifest, profile_id: str) -> SatCampaignManifest:
-    if manifest.profile_id != profile_id:
-        raise _CampaignCliError("campaign-profile-mismatch")
-    return manifest
-
-
-def _print_summary(manifest: SatCampaignManifest) -> None:
-    summary = campaign_redacted_summary(manifest)
-    counts = cast(dict[str, int], summary["stateCounts"])
-    output = {
-        "campaign_ref": summary["campaignRef"],
-        "base_count": summary["baseCount"],
-        "split_count": summary["splitCount"],
-        "leaf_count": summary["leafCount"],
-        "total_count": summary["totalCount"],
-        "outstanding_count": summary["outstandingCount"],
-        "terminal_count": summary["terminalCount"],
-        "planned_count": counts[CampaignWorkState.PLANNED.value],
-        "completed_count": counts[CampaignWorkState.COMPLETED.value],
-        "no_data_count": counts[CampaignWorkState.NO_DATA.value],
-        "failed_count": counts[CampaignWorkState.FAILED.value],
-        "threshold_blocked_count": counts[CampaignWorkState.THRESHOLD_BLOCKED.value],
-    }
-    for key, value in output.items():
-        typer.echo(f"{key}={value}")
-
-
-def _print_status(campaign_ref: str, result: CampaignStatusResult) -> None:
-    output = {"campaign_ref": campaign_ref, **asdict(result)}
-    for key, value in output.items():
-        typer.echo(f"{key}={value}")
+def _print_db_status(campaign_ref: str, result: dict[str, object]) -> None:
+    del campaign_ref
+    for key in (
+        "campaign_ref", "base_count", "split_count", "leaf_count", "total_count", "outstanding_count",
+        "terminal_count", "planned_count", "completed_count", "no_data_count", "failed_count",
+        "threshold_blocked_count", "verify_attempts", "next_check_at", "package_count", "zip_valid_count",
+        "txt_count", "verify_history_count", "last_verify_result", "service_window_state",
+    ):
+        typer.echo(f"{key}={result.get(key)}")
 
 
 def _fail(reason: str) -> None:
     typer.echo("error=sat_campaign_failed", err=True)
     typer.echo(f"reason={reason}", err=True)
     raise typer.Exit(code=1)
+
+
+def _require_database() -> None:
+    if not os.getenv("DATABASE_URL", "").strip():
+        _fail("campaign-database-required")
 
 
 def register(campaign_app: typer.Typer) -> None:

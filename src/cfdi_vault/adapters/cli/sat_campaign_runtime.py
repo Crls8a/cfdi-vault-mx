@@ -1,4 +1,4 @@
-"""Compose the Windows-only local runtime for productive SAT campaigns."""
+"""Compose a native local runtime for productive SAT campaigns."""
 from __future__ import annotations
 
 import os
@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from cfdi_vault.os_secret_providers import native_provider_for_reference
 from cfdi_vault.sat_campaign_preflight import (
     CampaignPreflightCheck,
     CampaignPreflightCheckResult,
@@ -23,12 +24,13 @@ from cfdi_vault.setup_core import ExistenceProvider, LocalProfile, LocalProfileS
 from cfdi_vault.setup_status import inspect_profile
 from cfdi_vault.windows_secrets import WindowsCredentialManagerSecretProvider
 
-_SCHEME = "windows-credential-manager"
 _SCANNERS = ("scan_sensitive_fixtures.py", "scan_sat_context.py")
 _COMMIT = re.compile(r"[0-9a-fA-F]{40}")
+_SUBPROCESS_TIMEOUT_SECONDS = 30
 Inspector = Callable[..., object]
 SubprocessRunner = Callable[..., object]
 ProviderConstructor = Callable[[], ExistenceProvider]
+NativeProviderConstructor = Callable[[CredentialReference, str], ExistenceProvider]
 
 
 class CampaignRuntimeError(ValueError):
@@ -52,25 +54,28 @@ class SatCampaignRuntime:
         return "SatCampaignRuntime(<redacted>)"
 
 
-def compose_sat_campaign_windows_runtime(
+def compose_sat_campaign_runtime(
     repo_root: Path,
     *,
-    os_name: str = os.name,
-    provider_constructor: ProviderConstructor = WindowsCredentialManagerSecretProvider,
+    platform: str | None = None,
+    provider_constructor: NativeProviderConstructor | None = None,
     inspector: Inspector = inspect_profile,
     subprocess_runner: SubprocessRunner = subprocess.run,
 ) -> SatCampaignRuntime:
-    """Return fail-closed Windows factories without contacting SAT or credentials."""
-    root = _canonical_root(repo_root, os_name)
+    """Return fail-closed native factories without contacting SAT or credentials."""
+    root = _canonical_root_native(repo_root)
+    selected_platform = (platform or sys.platform).strip().lower()
 
     def provider_factory(profile: LocalProfile) -> ExistenceProvider:
         try:
-            if os_name != "nt" or type(profile) is not LocalProfile:
+            if type(profile) is not LocalProfile:
                 raise TypeError
             reference = CredentialReference(profile.phrase_ref, CredentialKind.PHRASE)
-            if reference.provider_scheme != _SCHEME:
-                raise ValueError
-            provider = provider_constructor()
+            provider = (
+                provider_constructor(reference, selected_platform)
+                if provider_constructor is not None
+                else native_provider_for_reference(reference, platform=selected_platform)
+            )
             if (getattr(provider, "provider_scheme", None) != reference.provider_scheme
                     or not callable(getattr(provider, "exists", None))):
                 raise TypeError
@@ -102,9 +107,9 @@ def compose_sat_campaign_windows_runtime(
 
         def provider_runtime(_target: CampaignPreflightTarget) -> bool:
             return (
-                os_name == "nt" and provider is not None
-                and CredentialReference(profile.phrase_ref, CredentialKind.PHRASE).provider_scheme == _SCHEME
-                and getattr(provider, "provider_scheme", None) == _SCHEME
+                provider is not None
+                and CredentialReference(profile.phrase_ref, CredentialKind.PHRASE).provider_scheme
+                == getattr(provider, "provider_scheme", None)
                 and callable(getattr(provider, "exists", None))
             )
 
@@ -122,7 +127,8 @@ def compose_sat_campaign_windows_runtime(
                 script = root / "scripts" / name
                 if not script.is_file():
                     return False
-                completed = subprocess_runner(
+                completed = _run_bounded_subprocess(
+                    subprocess_runner,
                     [sys.executable, str(script), "--root", str(root)],
                     cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     check=False,
@@ -140,7 +146,10 @@ def compose_sat_campaign_windows_runtime(
             exact = (
                 type(target) is CampaignPreflightTarget
                 and target.repo_root == root and target.profile_id == profile_id
-                and target.storage_root == storage_root and target.provider_scheme == _SCHEME
+                and target.storage_root == storage_root
+                and target.provider_scheme == CredentialReference(
+                    profile.phrase_ref, CredentialKind.PHRASE,
+                ).provider_scheme
             )
             if not exact:
                 return False
@@ -163,6 +172,27 @@ def compose_sat_campaign_windows_runtime(
     return SatCampaignRuntime(provider_factory, checks_factory)
 
 
+def compose_sat_campaign_windows_runtime(
+    repo_root: Path,
+    *,
+    os_name: str = os.name,
+    provider_constructor: ProviderConstructor = WindowsCredentialManagerSecretProvider,
+    inspector: Inspector = inspect_profile,
+    subprocess_runner: SubprocessRunner = subprocess.run,
+) -> SatCampaignRuntime:
+    """Backward-compatible Windows-only wrapper around the native runtime."""
+
+    if os_name != "nt":
+        raise CampaignRuntimeError()
+    return compose_sat_campaign_runtime(
+        repo_root,
+        platform="win32",
+        provider_constructor=lambda _reference, _platform: provider_constructor(),
+        inspector=inspector,
+        subprocess_runner=subprocess_runner,
+    )
+
+
 def _canonical_root(repo_root: Path, os_name: str) -> Path:
     try:
         if os_name != "nt" or not isinstance(repo_root, Path):
@@ -175,8 +205,34 @@ def _canonical_root(repo_root: Path, os_name: str) -> Path:
         raise CampaignRuntimeError() from None
 
 
+def _canonical_root_native(repo_root: Path) -> Path:
+    """Resolve a repository root on any supported host without external I/O."""
+
+    try:
+        if not isinstance(repo_root, Path):
+            raise TypeError
+        root = repo_root.resolve(strict=True)
+        if not (root / ".git").exists():
+            raise ValueError
+        return root
+    except Exception:
+        raise CampaignRuntimeError() from None
+
+
 def _git(runner: SubprocessRunner, root: Path, *arguments: str) -> Any:
-    return runner(
+    return _run_bounded_subprocess(
+        runner,
         ["git", *arguments], cwd=root, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, text=True, check=False,
     )
+
+
+def _run_bounded_subprocess(
+    runner: SubprocessRunner, command: list[str], **kwargs: Any,
+) -> Any | None:
+    """Run one local preflight command with a bounded, redacted failure path."""
+
+    try:
+        return runner(command, timeout=_SUBPROCESS_TIMEOUT_SECONDS, **kwargs)
+    except Exception:
+        return None

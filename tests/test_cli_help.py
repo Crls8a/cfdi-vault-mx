@@ -1,30 +1,26 @@
+import pytest
 from typer.testing import CliRunner
 
 from cfdi_vault.cli import app
 
 
-def test_help_command_lists_recovery_flow() -> None:
+def test_help_command_lists_productive_recovery_flow() -> None:
     result = CliRunner().invoke(app, ["help"])
 
     assert result.exit_code == 0
     assert "Recommended recovery flow" in result.output
-    assert "sync metadata" in result.output
-    assert "sync xml" in result.output
-    assert "download sync" in result.output
-    assert "download status" in result.output
-    assert "download live-smoke" in result.output
-    assert "sat auth-smoke" in result.output
-    assert "sat metadata-recover-live" in result.output
-    assert "sat metadata-recovery-status" in result.output
-    assert "sat metadata-recovery-runner" in result.output
-    assert "sat metadata-window-plan" in result.output
-    assert "sat verify-live-gate" in result.output
-    assert "sat inspect-auth-contract" in result.output
-    assert "sat lint-auth-envelope" in result.output
-    assert "sat diagnose-live" in result.output
-    assert "sat probe-transport" in result.output
-    assert "sat probe-verify-post" in result.output
-    assert "sat probe-auth-matrix" in result.output
+    for command in (
+        "sat campaign create",
+        "sat campaign authorize",
+        "sat campaign run",
+        "sat campaign status",
+        "sync metadata",
+        "sync xml",
+        "download sync",
+        "download status",
+        "worker run",
+    ):
+        assert command in result.output
     assert "Command catalog" in result.output
 
 
@@ -33,8 +29,20 @@ def test_help_command_explains_one_topic() -> None:
 
     assert result.exit_code == 0
     assert "sync xml" in result.output
+    assert "fake/offline" in result.output
+    assert "live SAT recovery belongs to sat campaign" in result.output
     assert "register local file paths" in result.output
     assert "Example:" in result.output
+
+
+@pytest.mark.parametrize("command", ("metadata", "xml"))
+def test_offline_sync_help_does_not_expose_live_option(command: str) -> None:
+    result = CliRunner().invoke(app, ["sync", command, "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--live" not in result.output
+    assert "live SAT is available" in result.output
+    assert "campaign" in result.output
 
 
 def test_help_command_fails_for_unknown_topic() -> None:
@@ -44,7 +52,7 @@ def test_help_command_fails_for_unknown_topic() -> None:
     assert "Unknown help topic" in result.output
 
 
-def test_cli_subcommand_help_builds_for_setup_and_worker() -> None:
+def test_cli_subcommand_help_builds_for_productive_commands() -> None:
     for args in (
         ["--help"],
         ["setup", "--help"],
@@ -54,19 +62,10 @@ def test_cli_subcommand_help_builds_for_setup_and_worker() -> None:
         ["download", "request", "--help"],
         ["download", "sync", "--help"],
         ["download", "status", "--help"],
-        ["download", "live-smoke", "--help"],
-        ["sat", "auth-smoke", "--help"],
-        ["sat", "metadata-recover-live", "--help"],
-        ["sat", "metadata-recovery-status", "--help"],
-        ["sat", "metadata-recovery-runner", "--help"],
-        ["sat", "metadata-window-plan", "--help"],
-        ["sat", "verify-live-gate", "--help"],
-        ["sat", "inspect-auth-contract", "--help"],
-        ["sat", "lint-auth-envelope", "--help"],
-        ["sat", "diagnose-live", "--help"],
-        ["sat", "probe-transport", "--help"],
-        ["sat", "probe-verify-post", "--help"],
-        ["sat", "probe-auth-matrix", "--help"],
+        ["sat", "campaign", "create", "--help"],
+        ["sat", "campaign", "authorize", "--help"],
+        ["sat", "campaign", "run", "--help"],
+        ["sat", "campaign", "status", "--help"],
         ["worker", "run", "--help"],
     ):
         result = CliRunner().invoke(app, args)
@@ -88,31 +87,44 @@ def test_setup_help_exposes_only_credential_check_naming() -> None:
     assert "smoke" not in catalog.output.lower()
 
 
-def test_metadata_recovery_help_documents_required_options_and_safe_output() -> None:
+def test_retired_sat_commands_are_absent_from_help_and_fail_closed() -> None:
     runner = CliRunner()
+    catalog = runner.invoke(app, ["help"])
+    assert catalog.exit_code == 0, catalog.output
 
-    recover = runner.invoke(app, ["sat", "metadata-recover-live", "--help"])
-    status = runner.invoke(app, ["sat", "metadata-recovery-status", "--help"])
+    retired_commands = (
+        ("download", "live-smoke"),
+        ("sat", "auth-smoke"),
+        ("sat", "metadata-request-smoke"),
+        ("sat", "metadata-request-state"),
+        ("sat", "metadata-recover-live"),
+        ("sat", "metadata-recovery-status"),
+        ("sat", "metadata-recovery-runner"),
+        ("sat", "metadata-window-plan"),
+        ("sat", "backfill", "plan"),
+        ("sat", "backfill", "submit"),
+        ("sat", "verify-due"),
+        ("sat", "verify-due-runner"),
+        ("sat", "scheduler", "render-windows-task"),
+        ("sat", "package-download-smoke"),
+        ("sat", "metadata-verify-smoke"),
+        ("sat", "verify-live-gate"),
+        ("sat", "download-live-gate"),
+        ("sat", "inspect-auth-contract"),
+        ("sat", "lint-auth-envelope"),
+        ("sat", "oracle-auth-fingerprint"),
+        ("sat", "diff-auth-oracle"),
+        ("sat", "diagnose-live"),
+        ("sat", "probe-transport"),
+        ("sat", "probe-auth-post"),
+        ("sat", "probe-verify-post"),
+        ("sat", "probe-auth-matrix"),
+        ("live", "permit", "create"),
+    )
 
-    assert recover.exit_code == 0, recover.output
-    for option in ("--profile", "--direction", "--from", "--to", "--authorization"):
-        assert option in recover.output
-    assert "local state" in recover.output
-    assert "sanitized aggregate output" in recover.output
-    assert "opaque local recovery reference" in recover.output
-    assert "canonical SAT" in recover.output and "non-CI" in recover.output
-
-    assert status.exit_code == 0, status.output
-    for option in ("--profile", "--recovery-ref"):
-        assert option in status.output
-    assert "local persisted recovery state" in status.output
-    assert "sanitized aggregates" in status.output
-    assert "opaque local recovery reference" in status.output
-
-    runner_help = runner.invoke(app, ["sat", "metadata-recovery-runner", "--help"])
-    assert runner_help.exit_code == 0, runner_help.output
-    assert "--profile" in runner_help.output
-    assert "opaque local recovery reference" in runner_help.output
-    assert "canonical SAT" in runner_help.output and "non-CI" in runner_help.output
-    for forbidden in ("--authorization", "--recovery-ref", "--direction", "--from", "--to"):
-        assert forbidden not in runner_help.output
+    for args in retired_commands:
+        command = " ".join(args)
+        assert command not in catalog.output
+        result = runner.invoke(app, list(args))
+        assert result.exit_code == 2, f"{command}: {result.output}"
+        assert "no such command" in result.output.lower()
