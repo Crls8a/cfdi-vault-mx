@@ -120,6 +120,7 @@ class LiveSatGuardInput:
     scanner_passed: bool = False
     repo_clean: bool = False
     metadata_only: bool = False
+    request_type: str = "metadata"
     range_within_limit: bool = False
     live_permit_verified: bool = False
     live_permit_allows_real_credentials: bool = False
@@ -167,8 +168,12 @@ def validate_live_sat_guard(input: LiveSatGuardInput) -> None:
         reasons.append("scanner-not-passed")
     if not input.repo_clean:
         reasons.append("repo-dirty")
-    if not input.metadata_only:
+    if input.request_type not in {"metadata", "cfdi"}:
+        reasons.append("request-type-invalid")
+    elif input.request_type == "metadata" and not input.metadata_only:
         reasons.append("metadata-only-required")
+    elif input.request_type == "cfdi" and input.metadata_only:
+        reasons.append("cfdi-lane-mismatch")
     if not input.range_within_limit:
         reasons.append("range-too-wide")
     if reasons:

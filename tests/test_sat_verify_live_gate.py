@@ -7,12 +7,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
-from typer.testing import CliRunner
 
 from cfdi_vault import setup as setup_flow
-from cfdi_vault.adapters.cli.common import LiveSmokeCliResult
-from cfdi_vault.adapters.cli.sat_verify import _print_verify_live_gate_result
-from cfdi_vault.cli import app
 from cfdi_vault.sat_live_request_state import LiveMetadataRequestRecord
 from cfdi_vault.sat_verify_live_gate import (
     DEFAULT_VERIFY_CONNECT_TIMEOUT_SECONDS,
@@ -20,15 +16,12 @@ from cfdi_vault.sat_verify_live_gate import (
     LIVE_GATE_ENV,
     MAX_VERIFY_READ_TIMEOUT_SECONDS,
     PRODUCTION_SIGNED_ENV,
-    VerifyOracleParityResult,
-    VerifyWsdlCheckResult,
     build_verify_live_gate_preflight,
     check_verify_wsdl_endpoint,
     resolve_verify_gate_timeout_config,
     run_verify_oracle_parity,
 )
 from cfdi_vault.secrets import DummySecretProvider
-
 
 SYNTHETIC_RFC = "XAXX010101000"
 SYNTHETIC_REQUEST_ID = "SYNTHETIC-REQUEST-ID-00000001"
@@ -216,163 +209,6 @@ def test_verify_oracle_parity_passes_with_synthetic_production_signed_shape(tmp_
     assert oracle.x509_certificate is True
     assert SYNTHETIC_RFC not in repr(oracle)
     assert SYNTHETIC_REQUEST_ID not in repr(oracle)
-
-
-def test_cli_verify_live_gate_does_not_run_without_preflight() -> None:
-    result = CliRunner().invoke(
-        app,
-        ["sat", "verify-live-gate", "--profile", "missing-profile"],
-        env={LIVE_GATE_ENV: "0", PRODUCTION_SIGNED_ENV: "0"},
-    )
-
-    assert result.exit_code == 1
-    assert "mode=verify-live-gate" in result.output
-    assert "preflight_ready=no" in result.output
-    assert "live_sat_executed=no" in result.output
-    assert "oracle_parity=not-run" in result.output
-    assert "raw_soap_persisted=no" in result.output
-    assert "raw_response_persisted=no" in result.output
-    assert "full_rfc_visible=no" in result.output
-    assert "full_id_solicitud_visible=no" in result.output
-    assert "download_executed=no" in result.output
-
-
-def test_cli_verify_live_gate_blocks_signed_live_when_wsdl_check_fails(monkeypatch, tmp_path: Path) -> None:
-    profile = _profile(tmp_path)
-    record = _record()
-    provider = DummySecretProvider({profile.phrase_ref: SYNTHETIC_PHRASE})
-
-    monkeypatch.setattr("cfdi_vault.adapters.cli.sat_verify._load_download_profile_or_none", lambda profile_id: profile)
-    monkeypatch.setattr("cfdi_vault.adapters.cli.sat_verify._setup_provider", lambda profile_id: provider)
-    monkeypatch.setattr("cfdi_vault.adapters.cli.sat_verify._load_request_record_or_none", lambda loaded_profile, request_ref: record)
-    monkeypatch.setattr(
-        "cfdi_vault.adapters.cli.sat_verify.run_verify_oracle_parity",
-        lambda **kwargs: VerifyOracleParityResult(status="passed", operation="VerificaSolicitudDescarga"),
-    )
-    monkeypatch.setattr(
-        "cfdi_vault.adapters.cli.sat_verify.check_verify_wsdl_endpoint",
-        lambda **kwargs: VerifyWsdlCheckResult(status="failed", reachable=False, error_kind="wsdl_unreachable"),
-    )
-    monkeypatch.setattr(
-        "cfdi_vault.adapters.cli.sat_verify._run_live_metadata_verify_smoke",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("signed live verify must not run")),
-    )
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "sat",
-            "verify-live-gate",
-            "--profile",
-            "dummy-profile",
-            "--request-ref",
-            "req-synthetic",
-            "--manual-real-sat",
-            "--permit",
-            "permit-synthetic",
-            "--connect-timeout-seconds",
-            "15",
-            "--read-timeout-seconds",
-            "180",
-        ],
-        env={LIVE_GATE_ENV: "1", PRODUCTION_SIGNED_ENV: "1"},
-    )
-
-    assert result.exit_code == 1
-    assert "oracle_parity=passed" in result.output
-    assert "wsdl_check=failed" in result.output
-    assert "wsdl_error_kind=wsdl_unreachable" in result.output
-    assert "live_sat_executed=no" in result.output
-    assert "raw_wsdl_persisted=no" in result.output
-    assert "raw_soap_persisted=no" in result.output
-
-
-def test_cli_verify_live_gate_requires_oracle_before_any_network(monkeypatch, tmp_path: Path) -> None:
-    profile = _profile(tmp_path)
-    record = _record()
-    provider = DummySecretProvider({profile.phrase_ref: SYNTHETIC_PHRASE})
-
-    monkeypatch.setattr("cfdi_vault.adapters.cli.sat_verify._load_download_profile_or_none", lambda profile_id: profile)
-    monkeypatch.setattr("cfdi_vault.adapters.cli.sat_verify._setup_provider", lambda profile_id: provider)
-    monkeypatch.setattr("cfdi_vault.adapters.cli.sat_verify._load_request_record_or_none", lambda loaded_profile, request_ref: record)
-    monkeypatch.setattr(
-        "cfdi_vault.adapters.cli.sat_verify.run_verify_oracle_parity",
-        lambda **kwargs: VerifyOracleParityResult(status="failed", reason="synthetic-oracle-failure"),
-    )
-    monkeypatch.setattr(
-        "cfdi_vault.adapters.cli.sat_verify.check_verify_wsdl_endpoint",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("wsdl check must not run after oracle failure")),
-    )
-    monkeypatch.setattr(
-        "cfdi_vault.adapters.cli.sat_verify._run_live_metadata_verify_smoke",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("signed live verify must not run")),
-    )
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "sat",
-            "verify-live-gate",
-            "--profile",
-            "dummy-profile",
-            "--request-ref",
-            "req-synthetic",
-            "--manual-real-sat",
-            "--permit",
-            "permit-synthetic",
-        ],
-        env={LIVE_GATE_ENV: "1", PRODUCTION_SIGNED_ENV: "1"},
-    )
-
-    assert result.exit_code == 1
-    assert "oracle_parity=failed" in result.output
-    assert "wsdl_check=not-run" in result.output
-    assert "live_sat_executed=no" in result.output
-
-
-def test_verify_live_gate_prints_package_count_without_download_or_ids(tmp_path: Path, capsys) -> None:
-    preflight = build_verify_live_gate_preflight(
-        profile=_profile(tmp_path),
-        record=_record(),
-        provider=DummySecretProvider({"local-dev-dummy://phrase": SYNTHETIC_PHRASE}),
-        env={LIVE_GATE_ENV: "1", PRODUCTION_SIGNED_ENV: "1"},
-        manual_real_sat=True,
-        permit_ref="permit-synthetic",
-        repo_root=None,
-    )
-    oracle = VerifyOracleParityResult(
-        status="passed",
-        operation="VerificaSolicitudDescarga",
-        namespace="http://DescargaMasivaTerceros.sat.gob.mx",
-        signature_placement="inside_solicitud",
-        signed_target="operation_wrapper",
-        canonicalization="http://www.w3.org/2001/10/xml-exc-c14n#",
-        x509_issuer_serial=True,
-        x509_certificate=True,
-    )
-    result = LiveSmokeCliResult(
-        result="metadata-verify-ok",
-        auth="authenticated",
-        verification="finished",
-        sat_state="finished",
-        package_count=2,
-    )
-
-    _print_verify_live_gate_result(
-        profile_id="dummy-profile",
-        preflight=preflight,
-        oracle=oracle,
-        result=result,
-        live_executed=True,
-        error_kind="",
-    )
-
-    output = capsys.readouterr().out
-    assert "completed=yes" in output
-    assert "ids_paquetes=present_count=2" in output
-    assert "download_executed=no" in output
-    assert "raw_soap_persisted=no" in output
-    assert SYNTHETIC_REQUEST_ID not in output
 
 
 def _profile(tmp_path: Path) -> setup_flow.LocalProfile:

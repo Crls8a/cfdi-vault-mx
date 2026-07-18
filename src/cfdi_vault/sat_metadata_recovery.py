@@ -13,7 +13,8 @@ from enum import StrEnum
 
 _RECOVERY_REF_RE = re.compile(r"run-[0-9a-f]{12}")
 _PACKAGE_REF_RE = re.compile(r"pkg-[0-9a-f]{12}")
-_DEADLINE = timedelta(days=7)
+_SERVICE_WINDOW = timedelta(hours=48)
+_LEGACY_DEADLINE = timedelta(days=7)
 _AFTER_ATTEMPT = (
     timedelta(minutes=15), timedelta(minutes=30), timedelta(hours=1), timedelta(hours=2), timedelta(hours=4)
 )
@@ -37,6 +38,7 @@ class RecoveryStatus(StrEnum):
     ZIP_DOWNLOADED_PENDING_PROCESSING = "zip_downloaded_pending_processing"
     COMPLETED = "completed"
     NO_DATA = "no_data"
+    SERVICE_WINDOW_EXCEEDED = "service_window_exceeded"
     PENDING_AFTER_BUDGET = "pending_after_budget"
     VERIFY_FAILED = "verify_failed"
     DOWNLOAD_UNCERTAIN = "download_uncertain"
@@ -55,7 +57,8 @@ class PackageRecoveryStatus(StrEnum):
 
 
 _TERMINAL_STATUSES = frozenset({
-    RecoveryStatus.COMPLETED, RecoveryStatus.NO_DATA, RecoveryStatus.PENDING_AFTER_BUDGET,
+    RecoveryStatus.COMPLETED, RecoveryStatus.NO_DATA, RecoveryStatus.SERVICE_WINDOW_EXCEEDED,
+    RecoveryStatus.PENDING_AFTER_BUDGET,
     RecoveryStatus.VERIFY_FAILED, RecoveryStatus.DOWNLOAD_UNCERTAIN, RecoveryStatus.DOWNLOAD_FAILED,
     RecoveryStatus.ZIP_DOWNLOADED_PENDING_PROCESSING,
 })
@@ -81,6 +84,7 @@ class MetadataRecovery:
     status: RecoveryStatus
     verify_attempts: int
     next_check_at: datetime | None
+    service_window_expires_at: datetime | None = None
     record_count: int | None = None
     packages: tuple[PackageRecovery, ...] = ()
 
@@ -105,6 +109,10 @@ class MetadataRecovery:
             "status": self.status.value,
             "createdAt": _format_dt(self.created_at),
             "deadlineAt": _format_dt(self.deadline_at),
+            "serviceWindowExpiresAt": (
+                _format_dt(self.service_window_expires_at)
+                if self.service_window_expires_at is not None else ""
+            ),
             "verifyAttempts": self.verify_attempts,
             "nextCheckAt": _format_dt(self.next_check_at) if self.next_check_at else "",
             "recordCount": "not_reported" if self.record_count is None else self.record_count,
@@ -124,27 +132,38 @@ class MetadataRecovery:
         }
 
 
-def start_metadata_recovery(recovery_ref: str, *, created_at: datetime) -> MetadataRecovery:
+def start_metadata_recovery(
+    recovery_ref: str, *, created_at: datetime,
+    service_window: timedelta = _SERVICE_WINDOW,
+) -> MetadataRecovery:
     """Create one recovery with its first verification due in five minutes."""
 
     if not _RECOVERY_REF_RE.fullmatch(recovery_ref):
         raise MetadataRecoveryError("recovery-ref-invalid")
     created = _normalize_dt(created_at)
+    if type(service_window) is not timedelta or not timedelta(0) < service_window <= _LEGACY_DEADLINE:
+        raise MetadataRecoveryError("service-window-invalid")
     return MetadataRecovery(
         recovery_ref=recovery_ref,
         created_at=created,
-        deadline_at=created + _DEADLINE,
+        deadline_at=created + service_window,
         status=RecoveryStatus.VERIFY_SCHEDULED,
         verify_attempts=0,
         next_check_at=created + timedelta(minutes=5),
+        service_window_expires_at=created + service_window,
     )
 
 
 def apply_recovery_deadline(recovery: MetadataRecovery, *, now: datetime) -> MetadataRecovery:
-    """Close a still-pending request when its local seven-day budget ends."""
+    """Close a still-pending request when its local service window ends."""
 
     if recovery.status is RecoveryStatus.VERIFY_SCHEDULED and _normalize_dt(now) >= recovery.deadline_at:
-        return replace(recovery, status=RecoveryStatus.PENDING_AFTER_BUDGET, next_check_at=None)
+        status = (
+            RecoveryStatus.SERVICE_WINDOW_EXCEEDED
+            if recovery.service_window_expires_at is not None
+            else RecoveryStatus.PENDING_AFTER_BUDGET
+        )
+        return replace(recovery, status=status, next_check_at=None)
     return recovery
 
 
@@ -159,7 +178,7 @@ def record_pending_verification(
     _require_active(recovery, RecoveryStatus.VERIFY_SCHEDULED)
     checked = _normalize_dt(checked_at)
     expired = apply_recovery_deadline(recovery, now=checked)
-    if expired.status is RecoveryStatus.PENDING_AFTER_BUDGET:
+    if expired.status in {RecoveryStatus.PENDING_AFTER_BUDGET, RecoveryStatus.SERVICE_WINDOW_EXCEEDED}:
         return expired
     attempts = recovery.verify_attempts + 1
     delay = _AFTER_ATTEMPT[attempts - 1] if attempts <= len(_AFTER_ATTEMPT) else timedelta(hours=8)
@@ -178,7 +197,7 @@ def record_verification_failure(
     _require_active(recovery, RecoveryStatus.VERIFY_SCHEDULED)
     checked = _normalize_dt(checked_at)
     expired = apply_recovery_deadline(recovery, now=checked)
-    if expired.status is RecoveryStatus.PENDING_AFTER_BUDGET:
+    if expired.status in {RecoveryStatus.PENDING_AFTER_BUDGET, RecoveryStatus.SERVICE_WINDOW_EXCEEDED}:
         return expired
     if recovery.next_check_at is None or checked < recovery.next_check_at:
         raise MetadataRecoveryError("verification-not-due")
@@ -201,7 +220,7 @@ def record_finished_verification(
 
     _require_active(recovery, RecoveryStatus.VERIFY_SCHEDULED)
     expired = apply_recovery_deadline(recovery, now=checked_at)
-    if expired.status is RecoveryStatus.PENDING_AFTER_BUDGET:
+    if expired.status in {RecoveryStatus.PENDING_AFTER_BUDGET, RecoveryStatus.SERVICE_WINDOW_EXCEEDED}:
         return expired
     if record_count is not None and (type(record_count) is not int or record_count < 0):
         raise MetadataRecoveryError("record-count-invalid")

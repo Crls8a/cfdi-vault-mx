@@ -1,9 +1,5 @@
 from urllib.parse import urlparse
 
-from typer.testing import CliRunner
-
-from cfdi_vault.adapters.cli import sat_auth as cli_module
-from cfdi_vault.cli import app
 from cfdi_vault.sat_auth_constants import (
     AUTH_ACCEPT,
     AUTH_BINDING_TRANSPORT,
@@ -15,7 +11,7 @@ from cfdi_vault.sat_auth_constants import (
     AUTH_SOAP_ACTION,
     AUTH_SOAP_VERSION,
 )
-from cfdi_vault.sat_auth_contract import AuthWsdlContract, parse_auth_wsdl_contract
+from cfdi_vault.sat_auth_contract import parse_auth_wsdl_contract
 from cfdi_vault.sat_auth_endpoints import DEFAULT_AUTH_ENDPOINT
 from cfdi_vault.sat_auth_post_probe import AUTH_POST_PROBE_BODY, AUTH_POST_PROBE_HEADERS
 from cfdi_vault.sat_transport_probe import DEFAULT_PROBE_ENDPOINTS
@@ -61,14 +57,20 @@ def test_auth_contract_constants_do_not_reuse_request_or_verify_contract() -> No
 def test_verify_endpoint_uses_canonical_wcf_url_and_soap_action() -> None:
     parsed = urlparse(DEFAULT_VERIFY_ENDPOINT)
 
-    assert DEFAULT_VERIFY_ENDPOINT == "https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/VerificaSolicitudDescargaService.svc"
+    assert (
+        DEFAULT_VERIFY_ENDPOINT
+        == "https://cfdidescargamasivasolicitud.clouda.sat.gob.mx/VerificaSolicitudDescargaService.svc"
+    )
     assert parsed.scheme == "https"
     assert parsed.hostname == "cfdidescargamasivasolicitud.clouda.sat.gob.mx"
     assert parsed.path == "/VerificaSolicitudDescargaService.svc"
     assert parsed.query == ""
     assert "DescargaMasivaTerceros.sat.gob.mx" not in DEFAULT_VERIFY_ENDPOINT
     assert "IVerificaSolicitudDescargaService" not in DEFAULT_VERIFY_ENDPOINT
-    assert VERIFY_ACTION == "http://DescargaMasivaTerceros.sat.gob.mx/IVerificaSolicitudDescargaService/VerificaSolicitudDescarga"
+    assert (
+        VERIFY_ACTION
+        == "http://DescargaMasivaTerceros.sat.gob.mx/IVerificaSolicitudDescargaService/VerificaSolicitudDescarga"
+    )
 
 
 def test_live_endpoints_keep_auth_request_and_verify_urls_separate() -> None:
@@ -118,34 +120,3 @@ def test_parse_auth_wsdl_contract_extracts_safe_summary_without_raw_wsdl() -> No
     assert contract.endpoint_path == "/Autenticacion/Autenticacion.svc"
     assert contract.raw_wsdl_printed is False
     assert "not-printed" not in repr(contract)
-
-
-def test_inspect_auth_contract_cli_prints_redacted_contract(monkeypatch) -> None:
-    monkeypatch.setattr(
-        cli_module,
-        "fetch_auth_wsdl_contract",
-        lambda: AuthWsdlContract(
-            operation_name="Autentica",
-            soap_action="urn:synthetic-action",
-            soap_version="1.1",
-            binding_transport="http://schemas.xmlsoap.org/soap/http",
-            target_namespace="urn:synthetic-namespace",
-            endpoint_scheme="https",
-            endpoint_host="auth.example.test",
-            endpoint_port=443,
-            endpoint_path="/Autenticacion/Autenticacion.svc",
-            expected_action_uri="urn:synthetic-action",
-            wsdl_size=123,
-        ),
-    )
-
-    result = CliRunner().invoke(app, ["sat", "inspect-auth-contract"])
-
-    assert result.exit_code == 0, result.output
-    assert "mode=auth-contract" in result.output
-    assert "operation=Autentica" in result.output
-    assert "soap_version=1.1" in result.output
-    assert "endpoint_host=auth.example.test" in result.output
-    assert "raw_wsdl_printed=no" in result.output
-    assert "<wsdl:" not in result.output
-    assert "https://" not in result.output

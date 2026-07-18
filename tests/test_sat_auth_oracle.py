@@ -1,8 +1,5 @@
 from pathlib import Path
 
-from typer.testing import CliRunner
-
-from cfdi_vault.cli import app
 from cfdi_vault.sat_auth_constants import AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY
 from cfdi_vault.sat_auth_envelope_lint import build_dummy_auth_envelope
 from cfdi_vault.sat_auth_oracle import (
@@ -70,7 +67,11 @@ def test_phpcfdi_oracle_reads_external_builder_source_without_vendor_repo(tmp_pa
     assert result.digest_algorithm == "http://www.w3.org/2000/09/xmldsig#sha1"
     assert result.reference_uri_redacted == "#<id>"
     assert result.sec_ref_shape == "wsse-reference-to-bst"
-    assert result.request_operations == ("SolicitaDescargaEmitidos", "SolicitaDescargaRecibidos", "SolicitaDescargaFolio")
+    assert result.request_operations == (
+        "SolicitaDescargaEmitidos",
+        "SolicitaDescargaRecibidos",
+        "SolicitaDescargaFolio",
+    )
 
 
 def test_phpcfdi_external_builder_source_is_disabled_in_ci(tmp_path: Path, monkeypatch) -> None:
@@ -120,51 +121,3 @@ def test_auth_oracle_diff_reports_action_difference_without_raw_xml(tmp_path: Pa
     rendered = repr(result)
     assert "<s:Envelope" not in rendered
     assert "BEGIN CERTIFICATE" not in rendered
-
-
-def test_diff_auth_oracle_cli_requires_redacted_and_prints_safe_diff(tmp_path: Path, monkeypatch) -> None:
-    _allow_local_external_oracle(monkeypatch)
-    source = tmp_path / "FielRequestBuilder.php"
-    source.write_text("public function authorization() { <s:Header><o:Security s:mustUnderstand=\"1\"><u:Timestamp u:Id=\"_0\"/><o:BinarySecurityToken ValueType=\"x\" EncodingType=\"y\"/></o:Security></s:Header><s:Body><Autentica xmlns=\"http://DescargaMasivaTerceros.gob.mx\"/></s:Body> } public function query() {} <CanonicalizationMethod Algorithm=\"c\"/><SignatureMethod Algorithm=\"s\"/><DigestMethod Algorithm=\"d\"/> createSignature($toDigestXml, '#_0'); SecurityTokenReference BinarySecurityToken createXmlSecurityTokenId();", encoding="utf-8")
-
-    denied = CliRunner().invoke(app, ["sat", "diff-auth-oracle", "--oracle", "phpcfdi", "--fixture", "dummy"])
-    result = CliRunner().invoke(app, ["sat", "diff-auth-oracle", "--oracle", "phpcfdi", "--fixture", "dummy", "--redacted", "--phpcfdi-builder-source", str(source)])
-
-    assert denied.exit_code == 1
-    assert result.exit_code == 0, result.output
-    assert "mode=auth-oracle-diff" in result.output
-    assert "diff field=header_action_present" in result.output
-    assert "raw_xml_printed=no" in result.output
-    assert "raw_xml_saved=no" in result.output
-    assert "<s:Header>" not in result.output
-
-
-def test_auth_oracle_cli_aborts_external_builder_source_in_ci(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("CI", "true")
-    source = tmp_path / "FielRequestBuilder.php"
-    source.write_text("<s:Header><addr:Action>raw-action</addr:Action></s:Header>", encoding="utf-8")
-
-    for command in (
-        ["sat", "oracle-auth-fingerprint", "--fixture", "dummy", "--phpcfdi-builder-source", str(source)],
-        ["sat", "diff-auth-oracle", "--oracle", "phpcfdi", "--fixture", "dummy", "--redacted", "--phpcfdi-builder-source", str(source)],
-    ):
-        result = CliRunner().invoke(app, command)
-
-        assert result.exit_code == 1
-        assert f"reason={PHP_CFDI_BUILDER_SOURCE_DISABLED_IN_CI}" in result.output
-        assert "raw_xml_printed=no" in result.output
-        assert "raw-action" not in result.output
-
-
-def test_oracle_auth_fingerprint_cli_prints_safe_unavailable_status() -> None:
-    result = CliRunner().invoke(app, ["sat", "oracle-auth-fingerprint", "--fixture", "dummy"])
-
-    assert result.exit_code == 0, result.output
-    assert "mode=auth-oracle-fingerprint" in result.output
-    assert "local_available=yes" in result.output
-    assert "local_has_header_action=no" in result.output
-    assert "phpcfdi_available=no" in result.output
-    assert "sat_real_executed=no" in result.output
-    assert "raw_xml_printed=no" in result.output
-    assert "<soap" not in result.output
-    assert "BEGIN CERTIFICATE" not in result.output

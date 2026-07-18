@@ -20,7 +20,7 @@ from cryptography.hazmat.primitives.serialization import load_der_private_key, l
 from lxml import etree
 
 import cfdi_vault.sat_v15_envelopes as sat_v15_envelopes
-from cfdi_vault.domain import DownloadDirection, DownloadQuery
+from cfdi_vault.domain import DownloadDirection, DownloadQuery, RequestType
 from cfdi_vault.sat_auth_constants import (
     AUTH_ACCEPT,
     AUTH_CONTENT_TYPE,
@@ -83,7 +83,7 @@ PARSE_HINT = "check SAT response shape with redacted diagnostics only"
 MATERIAL_HINT = "check local profile readiness and e.firma material without printing paths or values"
 BUILD_HINT = "check envelope construction and XML signature inputs without printing SOAP"
 READINESS_HINT = "check auth SOAPAction, content-type, namespace, WS-Security, signature, and non-empty signed body"
-DIAGNOSTIC_STAGES = ("preflight", "profile_load", "secret_resolve", "credential_load", "certificate_parse", "private_key_load", "xmlsig_sign", "auth_envelope_build", "auth_request_readiness", "auth_transport", "auth_response_parse", "token_extract", "metadata_request_build", "metadata_request_transport", "metadata_request_parse", "verify_request_build", "verify_request_readiness", "verify_transport", "verify_response_parse", "package_download", "package_process")
+DIAGNOSTIC_STAGES = ("preflight", "profile_load", "secret_resolve", "credential_load", "certificate_parse", "private_key_load", "xmlsig_sign", "auth_envelope_build", "auth_request_readiness", "auth_transport", "auth_response_parse", "token_extract", "metadata_request_build", "metadata_request_transport", "metadata_request_parse", "cfdi_request_build", "cfdi_request_transport", "cfdi_request_parse", "verify_request_build", "verify_request_readiness", "verify_transport", "verify_response_parse", "package_download", "package_process")
 LIVE_ERROR_KINDS = ("guard_failed", "profile_not_ready", "secret_unavailable", "credential_load_failed", "certificate_parse_failed", "private_key_load_failed", "xmlsig_failed", "envelope_build_failed", "transport_tls_failed", "tls_handshake_failed", "certificate_verify_failed", "client_cert_rejected", "connect_timeout", "proxy_connect_failed", "connection_reset", "connection_reset_during_post", "remote_closed_connection", "timeout", "verify_read_timeout", "transport_timeout", "transport_http_error", "http_status_error", "soap_fault", "token_missing", "token_parse_failed", "sat_status_error", "sat_duplicate_request", "sat_unauthorized", "sat_no_data", "sat_retryable", "sat_permanent", "unexpected_response", "unexpected_http_response", "client_configuration_error", "redaction_failure", "unknown_live_adapter_failure")
 @dataclass(frozen=True)
 class SatV15DiagnosticEntry:
@@ -351,7 +351,7 @@ def _redact_identifier(value: str) -> str:
         return "<redacted>"
     return f"{value[:4]}...{value[-4:]}"
 class SatV15Adapter:
-    """Internal real SAT v1.5 metadata adapter for request, verify, and download ports."""
+    """Internal SAT v1.5 adapter for one guarded Metadata or CFDI lane."""
 
     def __init__(
         self,
@@ -367,6 +367,7 @@ class SatV15Adapter:
         auth_envelope_variant: str = DEFAULT_AUTH_ENVELOPE_VARIANT,
         wcf_action_header_enabled: bool = True,
         max_range_days: int = 1,
+        request_type: RequestType = RequestType.METADATA,
         _credential_purpose: str = "sat-metadata-recovery",
     ) -> None:
         self._profile = profile
@@ -385,12 +386,15 @@ class SatV15Adapter:
         self._auth_envelope_variant = _validated_auth_envelope_variant(auth_envelope_variant)
         self._wcf_action_header_enabled = wcf_action_header_enabled
         self._max_range_days = max_range_days
+        if type(request_type) is not RequestType:
+            raise ValueError("invalid-sat-request-type")
+        self._request_type = request_type
         self._credential_purpose = _credential_purpose
 
     def submit_request(self, query: DownloadQuery) -> SatRequestResult:
-        """Authenticate and submit exactly one metadata request."""
+        """Authenticate and submit exactly one request in the configured lane."""
 
-        self._require_metadata_only(query)
+        self._require_request_type(query)
         authorization = self._authenticate()
         return self._send_request(authorization, query).result
 
@@ -449,8 +453,9 @@ class SatV15Adapter:
             ) from None
     def _send_request(self, authorization: str, query: DownloadQuery) -> SatV15RequestAttempt:
         operation = resolve_v15_request_operation(query)
+        request_stage = self._request_stage
         body = _build_stage(
-            "metadata_request_build",
+            request_stage("build"),
             lambda: sat_v15_envelopes._build_request_envelope(
                 operation,
                 _request_attrs(query, operation),
@@ -464,8 +469,8 @@ class SatV15Adapter:
             v15_request_soap_action(operation),
             body,
             authorization=authorization,
-            stage="metadata_request_transport",
-            endpoint_label="metadata_request",
+            stage=request_stage("transport"),
+            endpoint_label=f"{self._request_type.value}_request",
             operation=operation.value,
         )
         started = time.perf_counter()
@@ -480,7 +485,7 @@ class SatV15Adapter:
         except (SatSoapParseError, ValueError):
             raise SatV15AdapterError(
                 "SAT request response could not be parsed",
-                stage="metadata_request_parse",
+                stage=request_stage("parse"),
                 error_kind=_response_error_kind(response),
                 effect_unknown=_response_effect_unknown(response),
                 safe_hint=PARSE_HINT,
@@ -679,17 +684,41 @@ class SatV15Adapter:
         return self._material
 
     def _require_metadata_only(self, query: DownloadQuery, *, max_range_days: int | None = None) -> None:
-        if query.request_type.value != "metadata":
+        """Require the metadata lane; retained for the legacy internal wrapper."""
+
+        if query.request_type is not RequestType.METADATA:
             raise SatV15AdapterError(
                 "live SAT adapter requires metadata-only query",
                 stage="preflight",
                 error_kind="guard_failed",
                 safe_hint="metadata-only live request is required",
             )
-        _validate_v15_live_metadata_query(
+        _validate_v15_live_query(
             query,
             max_range_days=self._max_range_days if max_range_days is None else max_range_days,
+            request_type=RequestType.METADATA,
         )
+
+    def _require_request_type(self, query: DownloadQuery, *, max_range_days: int | None = None) -> None:
+        """Fail closed when a query crosses the adapter's authorized lane."""
+
+        if query.request_type is not self._request_type:
+            lane = self._request_type.value
+            raise SatV15AdapterError(
+                f"live SAT adapter requires {lane} query",
+                stage="preflight",
+                error_kind="guard_failed",
+                safe_hint=f"{lane}-only live request is required",
+            )
+        _validate_v15_live_query(
+            query,
+            max_range_days=self._max_range_days if max_range_days is None else max_range_days,
+            request_type=self._request_type,
+        )
+
+    def _request_stage(self, suffix: str) -> str:
+        prefix = "metadata_request" if self._request_type is RequestType.METADATA else "cfdi_request"
+        return f"{prefix}_{suffix}"
 
 
 class SatLiveMetadataSmokeAdapter(SatV15Adapter):
@@ -854,23 +883,32 @@ def resolve_v15_request_operation(query: DownloadQuery) -> SatV15RequestOperatio
     )
 
 
-def _validate_v15_live_metadata_query(query: DownloadQuery, *, max_range_days: int = 1) -> None:
+def _validate_v15_live_query(
+    query: DownloadQuery,
+    *,
+    request_type: RequestType = RequestType.METADATA,
+    max_range_days: int = 1,
+) -> None:
+    """Validate one bounded v1.5 query for its authorized request lane."""
+
     if max_range_days < 1:
-        raise _v15_guard_error("live metadata smoke max range must be positive", "invalid-max-range-days")
+        raise _v15_guard_error("live SAT request max range must be positive", "invalid-max-range-days")
     operation = resolve_v15_request_operation(query)
     if operation == SatV15RequestOperation.FOLIO:
+        if request_type is RequestType.CFDI:
+            raise _v15_guard_error("CFDI proof requires a date range", "cfdi-date-range-required")
         if not query.uuid:
             raise _v15_guard_error("folio request requires uuid", "uuid-required-for-folio-request")
         return
     if query.period is None:
-        raise _v15_guard_error("live metadata smoke requires a date range", "date-range-required")
+        raise _v15_guard_error("live SAT request requires a date range", "date-range-required")
     elapsed_seconds = (query.period.end - query.period.start).total_seconds()
     if elapsed_seconds <= 0:
         raise _v15_guard_error("FechaInicial must be before FechaFinal", "fecha-inicial-must-be-before-fecha-final")
     if elapsed_seconds < 2:
-        raise _v15_guard_error("v1.5 metadata smoke requires at least 2 seconds", "minimum-two-second-range-required")
+        raise _v15_guard_error("v1.5 request requires at least 2 seconds", "minimum-two-second-range-required")
     if elapsed_seconds > 86_400 * max_range_days:
-        raise _v15_guard_error(f"live metadata smoke range must be at most {max_range_days} day(s)", "range-too-wide")
+        raise _v15_guard_error(f"live SAT request range must be at most {max_range_days} day(s)", "range-too-wide")
 
 
 def _v15_guard_error(message: str, hint: str) -> SatV15AdapterError:
@@ -889,12 +927,12 @@ def _request_attrs(query: DownloadQuery, operation: SatV15RequestOperation) -> d
             raise _v15_guard_error("folio request requires uuid", "uuid-required-for-folio-request")
         return {"Folio": query.uuid, "RfcSolicitante": requester_rfc}
     if query.period is None:
-        raise _v15_guard_error("live metadata smoke requires a date range", "date-range-required")
+        raise _v15_guard_error("live SAT request requires a date range", "date-range-required")
     attrs = {
         "FechaInicial": _sat_dt(query.period.start),
         "FechaFinal": _sat_dt(query.period.end),
         "RfcSolicitante": requester_rfc,
-        "TipoSolicitud": "Metadata",
+        "TipoSolicitud": "CFDI" if query.request_type is RequestType.CFDI else "Metadata",
     }
     if operation == SatV15RequestOperation.ISSUED:
         attrs["RfcEmisor"] = requester_rfc

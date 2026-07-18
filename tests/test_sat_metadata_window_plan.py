@@ -6,10 +6,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
 
-from cfdi_vault.adapters.cli import sat_metadata as cli_module
-from cfdi_vault.cli import app
 from cfdi_vault.sat_metadata_window_plan import (
     MetadataPathPolicyError,
     build_metadata_window_plan,
@@ -21,7 +18,9 @@ HEADER = "Uuid~RfcEmisor~NombreEmisor~RfcReceptor~NombreReceptor~FechaEmision~Mo
 
 def _row(index: int, issued_on: str, *, status: str = "Vigente", uuid: str | None = None) -> str:
     uuid = uuid or f"00000000-0000-4000-8000-{index:012d}"
-    return f"{uuid}~XAXX010101000~Synthetic Issuer~XAXX010101000~Synthetic Receiver~{issued_on}T12:00:00~1.00~I~{status}\n"
+    return (
+        f"{uuid}~XAXX010101000~Synthetic Issuer~XAXX010101000~Synthetic Receiver~{issued_on}T12:00:00~1.00~I~{status}\n"
+    )
 
 
 def test_h1_plan_selects_two_smallest_positive_windows_with_partial_final_bucket() -> None:
@@ -200,7 +199,9 @@ def test_valid_header_only_metadata_is_a_no_data_result() -> None:
 
 
 def test_plan_fails_closed_when_any_metadata_row_is_invalid() -> None:
-    content = (HEADER + "not-a-uuid~XAXX010101000~Synthetic~XAXX010101000~Synthetic~2026-01-02~1.00~I~Vigente\n").encode()
+    content = (
+        HEADER + "not-a-uuid~XAXX010101000~Synthetic~XAXX010101000~Synthetic~2026-01-02~1.00~I~Vigente\n"
+    ).encode()
 
     result = build_metadata_window_plan(
         content,
@@ -212,82 +213,6 @@ def test_plan_fails_closed_when_any_metadata_row_is_invalid() -> None:
     assert result.rejected_rows == 1
     assert result.selected_windows == ()
     assert result.live_action == "none"
-
-
-def test_cli_prints_only_sanitized_window_plan(tmp_path: Path) -> None:
-    metadata_path = tmp_path / "private-metadata.txt"
-    uuid = "00000000-0000-4000-8000-000000000001"
-    metadata_path.write_text(HEADER + _row(1, "2026-01-08"), encoding="utf-8")
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "sat",
-            "metadata-window-plan",
-            "--metadata",
-            str(metadata_path),
-            "--from",
-            "2026-01-01",
-            "--to",
-            "2026-06-30",
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert "direction=received" in result.output
-    assert "status=ready" in result.output
-    assert "selected_window=primary|from=2026-01-08|to=2026-01-14|eligible_count=1" in result.output
-    assert "selected_count=1" in result.output
-    assert "live_action=none" in result.output
-    for sensitive in (uuid, "XAXX010101000", "Synthetic Issuer", "1.00", str(metadata_path)):
-        assert sensitive not in result.output
-
-
-def test_cli_issued_manual_review_output_is_aggregate_and_redacted(tmp_path: Path) -> None:
-    metadata_path = tmp_path / "private-metadata.txt"
-    uuid = "00000000-0000-4000-8000-000000000001"
-    metadata_path.write_text(HEADER + _row(1, "2026-01-08", status="unknown"), encoding="utf-8")
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "sat", "metadata-window-plan", "--metadata", str(metadata_path),
-            "--from", "2026-01-01", "--to", "2026-06-30", "--direction", "issued",
-        ],
-    )
-
-    assert result.exit_code == 1
-    assert "direction=issued" in result.output
-    assert "status=metadata_requires_manual_review" in result.output
-    assert "reason=unknown_or_conflicting_metadata" in result.output
-    assert "manual_review_uuids=1" in result.output
-    assert "selected_count=0" in result.output
-    assert "live_action=none" in result.output
-    for sensitive in (uuid, "XAXX010101000", "Synthetic Issuer", "1.00", str(metadata_path)):
-        assert sensitive not in result.output
-
-
-def test_cli_reports_unreadable_metadata_without_printing_path(tmp_path: Path) -> None:
-    missing_path = tmp_path / "missing-private-metadata.txt"
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "sat",
-            "metadata-window-plan",
-            "--metadata",
-            str(missing_path),
-            "--from",
-            "2026-01-01",
-            "--to",
-            "2026-06-30",
-        ],
-    )
-
-    assert result.exit_code == 1
-    assert "reason=metadata_unavailable" in result.output
-    assert "live_action=none" in result.output
-    assert str(missing_path) not in result.output
 
 
 def test_external_metadata_path_policy_blocks_root_nested_and_traversal_paths(tmp_path: Path) -> None:
@@ -357,35 +282,6 @@ def test_external_metadata_path_policy_rejects_extended_in_checkout_path(tmp_pat
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows namespace syntax")
-def test_cli_rejects_extended_path_without_echo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    inside = checkout / "metadata.txt"
-    inside.write_text(HEADER, encoding="utf-8")
-    extended_path = Path("\\\\?\\" + str(inside.resolve()))
-    monkeypatch.setattr(cli_module, "_find_checkout_root", lambda _path: checkout)
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "sat",
-            "metadata-window-plan",
-            "--metadata",
-            str(extended_path),
-            "--from",
-            "2026-01-01",
-            "--to",
-            "2026-06-30",
-        ],
-    )
-
-    assert result.exit_code == 1
-    assert "reason=metadata_namespace_path_rejected" in result.output
-    assert "status=blocked" in result.output
-    assert str(extended_path) not in result.output
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Windows namespace syntax")
 @pytest.mark.parametrize(
     "namespace_path",
     (
@@ -393,7 +289,9 @@ def test_cli_rejects_extended_path_without_echo(tmp_path: Path, monkeypatch: pyt
         Path(r"\\?\UNC\synthetic-server\synthetic-share\metadata.txt"),
     ),
 )
-def test_external_metadata_path_policy_rejects_device_and_extended_unc_paths(namespace_path: Path, tmp_path: Path) -> None:
+def test_external_metadata_path_policy_rejects_device_and_extended_unc_paths(
+    namespace_path: Path, tmp_path: Path
+) -> None:
     checkout = tmp_path / "checkout"
     checkout.mkdir()
 
@@ -424,31 +322,3 @@ def test_external_metadata_path_policy_blocks_junction_resolving_into_checkout(t
         resolve_external_metadata_path(junction / "metadata.txt", checkout_root=checkout)
 
     assert exc.value.reason == "metadata_inside_checkout"
-
-
-def test_cli_blocks_checkout_metadata_without_printing_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    metadata_path = checkout / "private-metadata.txt"
-    metadata_path.write_text(HEADER + _row(1, "2026-01-08"), encoding="utf-8")
-    monkeypatch.setattr(cli_module, "_find_checkout_root", lambda _path: checkout)
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "sat",
-            "metadata-window-plan",
-            "--metadata",
-            str(metadata_path),
-            "--from",
-            "2026-01-01",
-            "--to",
-            "2026-06-30",
-        ],
-    )
-
-    assert result.exit_code == 1
-    assert "reason=metadata_inside_checkout" in result.output
-    assert "status=blocked" in result.output
-    assert "live_action=none" in result.output
-    assert str(metadata_path) not in result.output

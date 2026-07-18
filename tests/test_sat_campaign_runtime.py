@@ -25,6 +25,10 @@ from cfdi_vault.setup_core import CredentialMode, LocalProfile, LocalProfileStat
 class Provider:
     provider_scheme = "windows-credential-manager"
 
+    def __init__(self, scheme: str | None = None) -> None:
+        if scheme is not None:
+            self.provider_scheme = scheme
+
     def exists(self, _reference, *, purpose):
         return purpose == "setup-status"
 
@@ -39,6 +43,15 @@ class Runner:
             return SimpleNamespace(returncode=self.scanner, stdout=None)
         output = self.status if command[1:3] == ["status", "--short"] else self.commit + "\n"
         return SimpleNamespace(returncode=0, stdout=output)
+
+
+class HungRunner:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def __call__(self, command, **kwargs):
+        self.calls.append((command, kwargs))
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -102,6 +115,34 @@ def test_runtime_builds_actual_windows_provider_and_all_exact_checks(tmp_path) -
     assert "profile-synthetic" not in repr(runtime) and str(root) not in repr(runtime)
 
 
+@pytest.mark.parametrize(("platform", "scheme"), (
+    ("linux", "linux-secret-service"),
+    ("darwin", "macos-keychain"),
+))
+def test_runtime_uses_explicit_native_platform_provider(tmp_path, platform, scheme) -> None:
+    root, profile, runner = _repo(tmp_path), _profile(tmp_path, scheme=scheme), Runner()
+    calls = []
+
+    def provider_constructor(reference, selected_platform):
+        calls.append((reference.provider_scheme, selected_platform))
+        return Provider(scheme)
+
+    runtime = subject.compose_sat_campaign_runtime(
+        root,
+        platform=platform,
+        provider_constructor=provider_constructor,
+        inspector=lambda profile_id, *, provider: _inspection(profile),
+        subprocess_runner=runner,
+    )
+    provider = runtime.provider_factory(profile)
+    target = CampaignPreflightTarget(profile.profile_id, root, profile.storage_root, scheme)
+    results = {kind: check(target) for kind, check in runtime.checks_factory(profile).items()}
+
+    assert provider.provider_scheme == scheme
+    assert calls == [(scheme, platform), (scheme, platform)]
+    assert all(result.outcome is Outcome.PASSED for result in results.values())
+
+
 @pytest.mark.parametrize(("change", "failed"), (
     ("doctor", Check.DOCTOR), ("scanner", Check.SCANNER),
     ("checkout", Check.CHECKOUT), ("commit", Check.IDENTITY),
@@ -127,6 +168,27 @@ def test_each_offline_failure_is_typed_and_redacted(tmp_path, change, failed) ->
     assert results[failed].outcome is Outcome.FAILED
     assert all(str(value) not in repr(results[failed]) for value in (
         root, profile.storage_root, profile.profile_id, profile.phrase_ref))
+
+
+def test_hung_preflight_subprocess_is_bounded_and_sanitized(tmp_path) -> None:
+    root, profile, runner = _repo(tmp_path), _profile(tmp_path), HungRunner()
+    runtime = subject.compose_sat_campaign_windows_runtime(
+        root, os_name="nt", provider_constructor=Provider,
+        inspector=lambda *_a, **_k: _inspection(profile),
+        subprocess_runner=runner,
+    )
+    target = CampaignPreflightTarget(
+        profile.profile_id, root, profile.storage_root, Provider.provider_scheme,
+    )
+    results = {kind: check(target) for kind, check in runtime.checks_factory(profile).items()}
+
+    assert results[Check.SCANNER].outcome is Outcome.FAILED
+    assert results[Check.CHECKOUT].outcome is Outcome.FAILED
+    assert results[Check.IDENTITY].outcome is Outcome.FAILED
+    assert runner.calls and all(
+        call[1]["timeout"] == subject._SUBPROCESS_TIMEOUT_SECONDS for call in runner.calls
+    )
+    assert "TimeoutExpired" not in repr(results[Check.SCANNER])
 
 
 @pytest.mark.parametrize("case", ("os", "scheme", "repo"))

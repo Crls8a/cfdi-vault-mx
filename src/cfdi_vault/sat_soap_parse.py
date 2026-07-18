@@ -93,6 +93,9 @@ def parse_verification_response(xml: XmlInput) -> SatVerificationResult:
     message = _value(result, "Mensaje", "Message", "StatusMessage") or ""
     request_id = _value(result, "IdSolicitud", "RequestId", "SolicitudId") or ""
     package_ids = tuple(_texts(root, "IdPaquete", "IdsPaquetes", "PackageId"))
+    next_check_at = _optional_datetime(
+        _value(result, "NextCheckAt", "FechaProximaConsulta", "NextCheck"),
+    )
 
     classification = classify_sat_outcome(SatOperation.VERIFY, sat_code=sat_code, state=state)
     return SatVerificationResult(
@@ -107,6 +110,7 @@ def parse_verification_response(xml: XmlInput) -> SatVerificationResult:
             "state": state.value,
             "package_count": len(package_ids),
         },
+        next_check_at=next_check_at,
     )
 
 
@@ -221,6 +225,18 @@ def _value(element: ET.Element, *names: str) -> str | None:
             if text:
                 return text
     return None
+
+
+def _optional_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SatSoapParseError("next check timestamp is invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise SatSoapParseError("next check timestamp must be timezone-aware")
+    return parsed
 
 
 def _texts(element: ET.Element, *names: str) -> list[str]:

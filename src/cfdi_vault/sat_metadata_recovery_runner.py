@@ -22,9 +22,11 @@ from cfdi_vault.sat_contract import (
 from cfdi_vault.sat_metadata_artifact_state import MetadataPackageArtifactState
 from cfdi_vault.sat_metadata_package import process_metadata_package
 from cfdi_vault.sat_metadata_recovery import PackageRecoveryStatus, RecoveryStatus
+from cfdi_vault.sat_metadata_recovery_state import MetadataVerifyResult
 
 _TERMINAL = frozenset({
-    RecoveryStatus.COMPLETED, RecoveryStatus.NO_DATA, RecoveryStatus.PENDING_AFTER_BUDGET,
+    RecoveryStatus.COMPLETED, RecoveryStatus.NO_DATA,
+    RecoveryStatus.SERVICE_WINDOW_EXCEEDED, RecoveryStatus.PENDING_AFTER_BUDGET,
     RecoveryStatus.VERIFY_FAILED, RecoveryStatus.DOWNLOAD_UNCERTAIN, RecoveryStatus.DOWNLOAD_FAILED,
 })
 _VERIFIED_TERMINAL = frozenset({RecoveryStatus.PACKAGES_READY, RecoveryStatus.NO_DATA})
@@ -245,12 +247,13 @@ def _settle_record(root, record, now, tested_commit, entry_point, repo_root):
     recovery = record.recovery
     if record.verify_claim is not None:
         base = _verification_base(record)
+        claim = record.verify_claim
         recovery = lifecycle.record_verification_failure(
             base.recovery, checked_at=record.verify_claim.claimed_at,
         )
         record = _resolve_verification_claim(
             base, recovery, state.MetadataVerifyErrorKind.VERIFY_UNCERTAIN,
-            tested_commit, entry_point, now,
+            tested_commit, entry_point, now, claim=claim,
         )
         state.save_metadata_recovery_state(root, record, repo_root=repo_root)
         return record, "verify_uncertain", False
@@ -260,8 +263,13 @@ def _settle_record(root, record, now, tested_commit, entry_point, repo_root):
         return record, None, False
     expired = lifecycle.apply_recovery_deadline(recovery, now=now)
     if expired != recovery:
+        last_error = (
+            None if expired.status is RecoveryStatus.SERVICE_WINDOW_EXCEEDED
+            else record.last_verify_error_kind
+        )
         record = _with_provenance(
-            replace(record, recovery=expired), tested_commit, entry_point, now,
+            replace(record, recovery=expired, last_verify_error_kind=last_error),
+            tested_commit, entry_point, now,
         )
         state.save_metadata_recovery_state(root, record, repo_root=repo_root)
         return record, None, False
@@ -285,6 +293,7 @@ def _run_due_verification(
     claimed = _claim_verification(record, tested_commit, entry_point, now, due_at)
     state.save_metadata_recovery_state(root, claimed, repo_root=repo_root)
     audit.verify_count += 1
+    claim = claimed.verify_claim
     base = _verification_base(claimed)
     verifier_ready = False
     try:
@@ -305,6 +314,7 @@ def _run_due_verification(
             kind = state.MetadataVerifyErrorKind.VERIFY_FAILED
         record = _resolve_verification_claim(
             base, recovery, kind, tested_commit, entry_point, now, bucket,
+            claim=claim,
         )
     else:
         audit.sat_contacted = True
@@ -312,6 +322,7 @@ def _run_due_verification(
         record, error, kind = _apply_verification(base, result, now)
         record = _resolve_verification_claim(
             record, record.recovery, kind, tested_commit, entry_point, now, bucket,
+            claim=claim,
         )
         audit.terminal_status_received = record.recovery.status in _VERIFIED_TERMINAL
     state.save_metadata_recovery_state(root, record, repo_root=repo_root)
@@ -319,10 +330,14 @@ def _run_due_verification(
 
 
 def _resolve_verification_claim(
-    base, recovery, kind, tested_commit, entry_point, now, bucket=None,
+    base, recovery, kind, tested_commit, entry_point, now, bucket=None, *, claim=None,
 ):
+    history = base.verify_history
+    if claim is not None:
+        history = (*history, _history_entry(claim, recovery, kind, now))
     resolved = replace(
         base, recovery=recovery, verify_claim=None, last_verify_error_kind=kind,
+        verify_history=history,
     )
     return _with_provenance(resolved, tested_commit, entry_point, now, bucket)
 
@@ -338,6 +353,10 @@ def _apply_verification(record, result, now):
         and type(result.state) is SatRequestState
         and type(result.sat_code) is str and result.sat_code == result.sat_code.strip()
         and bool(result.sat_code) and type(result.message) is str and ids_valid
+        and (result.next_check_at is None or (
+            type(result.next_check_at) is datetime and result.next_check_at.tzinfo is not None
+            and result.next_check_at.utcoffset() is not None
+        ))
         and type(result.action) is SatOutcomeAction
     )
     failure = valid and not result.package_ids and result.state is SatRequestState.ERROR \
@@ -352,6 +371,22 @@ def _apply_verification(record, result, now):
             "sat_too_many_results",
             state.MetadataVerifyErrorKind.SAT_TOO_MANY_RESULTS,
         )
+    if valid and result.sat_code == "5005":
+        failed = lifecycle.record_verification_failure(recovery, checked_at=now)
+        return (
+            replace(record, recovery=failed),
+            "duplicate_active_request",
+            state.MetadataVerifyErrorKind.DUPLICATE_ACTIVE_REQUEST,
+        )
+    if valid and (
+        result.state is SatRequestState.EXPIRED or result.action is SatOutcomeAction.EXPIRED
+    ):
+        failed = lifecycle.record_verification_failure(recovery, checked_at=now)
+        return (
+            replace(record, recovery=failed),
+            "sat_expired",
+            state.MetadataVerifyErrorKind.SAT_EXPIRED,
+        )
     if valid and result.sat_code in {"5003", "5004"}:
         valid = False
     pending = valid and result.sat_code == "5000" and not result.package_ids \
@@ -359,7 +394,8 @@ def _apply_verification(record, result, now):
         and result.action in {SatOutcomeAction.ACCEPTED, SatOutcomeAction.IN_PROGRESS, SatOutcomeAction.RETRY}
     if pending:
         return replace(record, recovery=lifecycle.record_pending_verification(
-            recovery, checked_at=now)), None, state.MetadataVerifyErrorKind.VERIFY_RETRYABLE
+            recovery, checked_at=now, sat_next_check_at=result.next_check_at)), None, \
+            state.MetadataVerifyErrorKind.VERIFY_RETRYABLE
     ids = result.package_ids if valid else ()
     refs = tuple(state.package_ref(item) for item in ids)
     finished = (valid and result.sat_code == "5000" and result.state is SatRequestState.FINISHED
@@ -387,11 +423,43 @@ def _claim_verification(record, tested_commit, entry_point, now, due_at):  # typ
         verify_contacts_not_before_due=counts[0], verify_contacts_before_due=counts[1],
         verify_contacts_due_unknown=counts[2],
     )
+    claim_ref = state.verify_claim_ref(record.recovery.recovery_ref, attempt, due_at, now)
     return replace(
         record,
         recovery=replace(record.recovery, verify_attempts=attempt),
         observation_provenance=provenance,
-        verify_claim=state.MetadataVerifyClaim(attempt, due_at, now),
+        verify_claim=state.MetadataVerifyClaim(attempt, due_at, now, claim_ref),
+    )
+
+
+def _history_entry(claim, recovery, kind, contacted_at):  # type: ignore[no-untyped-def]
+    if recovery.status is RecoveryStatus.PACKAGES_READY:
+        result = MetadataVerifyResult.PACKAGE
+    elif recovery.status is RecoveryStatus.NO_DATA:
+        result = MetadataVerifyResult.NO_DATA
+    elif recovery.status is RecoveryStatus.VERIFY_SCHEDULED:
+        result = MetadataVerifyResult.PENDING
+    elif (
+        recovery.status is RecoveryStatus.SERVICE_WINDOW_EXCEEDED
+        or kind is state.MetadataVerifyErrorKind.SAT_EXPIRED
+    ):
+        result = MetadataVerifyResult.EXPIRED
+    else:
+        result = MetadataVerifyResult.ERROR
+    return state.MetadataVerifyHistoryEntry(
+        attempt=claim.attempt,
+        scheduled_at=claim.due_at,
+        contacted_at=contacted_at,
+        category=result,
+        next_check_at=recovery.next_check_at,
+        result=result,
+        error_kind=kind,
+        claim_ref=(
+            claim.claim_ref
+            or state.verify_claim_ref(
+                recovery.recovery_ref, claim.attempt, claim.due_at, claim.claimed_at,
+            )
+        ),
     )
 
 

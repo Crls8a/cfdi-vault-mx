@@ -37,15 +37,29 @@ def test_sat_next_check_never_shortens_local_schedule() -> None:
     assert recovery.next_check_at == sat_due + timedelta(minutes=30)
 
 
-def test_seven_day_deadline_closes_pending_without_replacement() -> None:
-    recovery = subject.apply_recovery_deadline(_start(), now=START + timedelta(days=7))
-    assert recovery.status is subject.RecoveryStatus.PENDING_AFTER_BUDGET
+def test_new_48_hour_window_closes_pending_without_replacement() -> None:
+    recovery = subject.apply_recovery_deadline(_start(), now=START + timedelta(days=2))
+    assert recovery.status is subject.RecoveryStatus.SERVICE_WINDOW_EXCEEDED
     assert recovery.next_check_at is None
     document = recovery.to_redacted_document()
+    assert document["serviceWindowExpiresAt"] == "2026-07-02T00:00:00Z"
     assert "replacementRequest" not in document
     assert "retryRequest" not in document
     with pytest.raises(subject.MetadataRecoveryError, match="recovery-terminal"):
-        subject.record_pending_verification(recovery, checked_at=START + timedelta(days=7))
+        subject.record_pending_verification(recovery, checked_at=START + timedelta(days=2))
+
+
+def test_legacy_deadline_remains_pending_after_budget() -> None:
+    legacy = subject.MetadataRecovery(
+        RUN_REF, START, START + timedelta(days=7),
+        subject.RecoveryStatus.VERIFY_SCHEDULED, 0,
+        START + timedelta(minutes=5), None,
+    )
+
+    expired = subject.apply_recovery_deadline(legacy, now=START + timedelta(days=7))
+
+    assert expired.status is subject.RecoveryStatus.PENDING_AFTER_BUDGET
+    assert expired.to_redacted_document()["serviceWindowExpiresAt"] == ""
 
 
 def test_verification_failure_requires_due_check_and_is_terminal() -> None:
@@ -66,11 +80,11 @@ def test_verification_failure_requires_due_check_and_is_terminal() -> None:
         subject.record_verification_failure(failed, checked_at=due)
 
 
-@pytest.mark.parametrize("elapsed", (timedelta(days=7), timedelta(days=8)))
+@pytest.mark.parametrize("elapsed", (timedelta(days=2), timedelta(days=3)))
 def test_deadline_wins_over_verification_failure(elapsed: timedelta) -> None:
     recovery = subject.record_verification_failure(_start(), checked_at=START + elapsed)
 
-    assert recovery.status is subject.RecoveryStatus.PENDING_AFTER_BUDGET
+    assert recovery.status is subject.RecoveryStatus.SERVICE_WINDOW_EXCEEDED
     assert recovery.verify_attempts == 0
     assert recovery.next_check_at is None
 
@@ -170,7 +184,7 @@ def test_redacted_document_has_only_safe_references_and_aggregates() -> None:
     document = _ready().to_redacted_document()
     assert document["recoveryRef"] == RUN_REF
     assert document["status"] == "packages_ready"
-    assert document["deadlineAt"] == "2026-07-07T00:00:00Z"
+    assert document["deadlineAt"] == "2026-07-02T00:00:00Z"
     assert document["packageCount"] == 2
     assert document["packages"] == [
         {"packageRef": PACKAGE_A, "status": "pending", "zipValid": None, "txtCount": 0},

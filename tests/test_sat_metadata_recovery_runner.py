@@ -87,9 +87,13 @@ def _zip() -> bytes:
 
 
 def _verification(*, packages: tuple[str, ...] = (), action=SatOutcomeAction.FINISHED,
-                  request_id: str = REQUEST, sat_code: str = "5000") -> SatVerificationResult:
+                  request_id: str = REQUEST, sat_code: str = "5000",
+                  next_check_at: datetime | None = None) -> SatVerificationResult:
     state_value = SatRequestState.FINISHED if action is SatOutcomeAction.FINISHED else SatRequestState.IN_PROCESS
-    return SatVerificationResult(request_id, state_value, sat_code, "Synthetic", packages, action)
+    return SatVerificationResult(
+        request_id, state_value, sat_code, "Synthetic", packages, action,
+        next_check_at=next_check_at,
+    )
 
 
 def _download(package_id: str, content: bytes | None = None) -> SatDownloadResult:
@@ -138,7 +142,7 @@ def test_verify_only_signature_excludes_download_capabilities() -> None:
 @pytest.mark.parametrize(
     ("now", "expected"),
     ((NOW + timedelta(minutes=4), "verify_scheduled"),
-     (NOW + timedelta(days=7), "pending_after_budget")),
+     (NOW + timedelta(days=7), "service_window_exceeded")),
 )
 def test_verify_only_skips_before_due_and_at_deadline(tmp_path, now, expected) -> None:  # type: ignore[no-untyped-def]
     _saved(tmp_path)
@@ -151,6 +155,87 @@ def test_verify_only_skips_before_due_and_at_deadline(tmp_path, now, expected) -
     assert (outcome.sat_contacted, outcome.verify_count, outcome.download_attempts) == (False, 0, 0)
     assert verifier.calls == factory_calls == []
     assert state.load_metadata_recovery_state(tmp_path, RUN_REF).verify_claim is None
+
+
+def test_pending_verify_appends_history_and_honors_later_sat_due(tmp_path) -> None:
+    _saved(tmp_path)
+    verifier = _Verifier(_verification(
+        action=SatOutcomeAction.IN_PROGRESS,
+        next_check_at=NOW + timedelta(hours=2),
+    ))
+
+    outcome = _verify_once(tmp_path, verifier, NOW + timedelta(minutes=5))
+    loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
+
+    assert outcome.error_kind is None
+    assert outcome.recovery["status"] == "verify_scheduled"
+    assert loaded.recovery.next_check_at == NOW + timedelta(hours=2)
+    assert len(loaded.verify_history) == 1
+    entry = loaded.verify_history[0]
+    assert (entry.attempt, entry.result, entry.category) == (
+        1, state.MetadataVerifyResult.PENDING, state.MetadataVerifyResult.PENDING,
+    )
+    assert entry.next_check_at == NOW + timedelta(hours=2)
+    assert entry.error_kind is state.MetadataVerifyErrorKind.VERIFY_RETRYABLE
+    assert entry.claim_ref.startswith("vfy-")
+
+
+def test_service_window_expiry_closes_pending_without_contact_or_error_kind(tmp_path) -> None:
+    _saved(tmp_path)
+    verifier = _Verifier(_verification(action=SatOutcomeAction.IN_PROGRESS))
+    pending = _verify_once(tmp_path, verifier, NOW + timedelta(minutes=5))
+    assert pending.recovery["status"] == "verify_scheduled"
+    verifier.calls.clear()
+
+    outcome = _verify_once(tmp_path, verifier, NOW + timedelta(hours=48))
+    loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
+
+    assert outcome.recovery["status"] == "service_window_exceeded"
+    assert outcome.sat_contacted is False
+    assert verifier.calls == []
+    assert loaded.last_verify_error_kind is None
+    assert loaded.verify_history[-1].result is state.MetadataVerifyResult.PENDING
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_status", "expected_error", "expected_result"),
+    (
+        (
+            replace(
+                _verification(
+                    action=SatOutcomeAction.PERMANENT_FAILURE,
+                    sat_code="5004",
+                ), state=SatRequestState.ERROR,
+            ),
+            "no_data", None, state.MetadataVerifyResult.NO_DATA,
+        ),
+        (
+            _verification(
+                action=SatOutcomeAction.DUPLICATE,
+                sat_code="5005",
+            ),
+            "verify_failed", "duplicate_active_request", state.MetadataVerifyResult.ERROR,
+        ),
+        (
+            SatVerificationResult(
+                REQUEST, SatRequestState.EXPIRED, "5000", "Synthetic", (),
+                SatOutcomeAction.EXPIRED,
+            ),
+            "verify_failed", "sat_expired", state.MetadataVerifyResult.EXPIRED,
+        ),
+    ),
+)
+def test_terminal_sat_mapping_is_recorded_in_verify_history(
+    tmp_path, result, expected_status, expected_error, expected_result,
+) -> None:  # type: ignore[no-untyped-def]
+    _saved(tmp_path)
+    outcome = _verify_once(tmp_path, _Verifier(result), NOW + timedelta(minutes=5))
+    loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
+
+    assert outcome.recovery["status"] == expected_status
+    assert outcome.error_kind == expected_error
+    assert len(loaded.verify_history) == 1
+    assert loaded.verify_history[0].result is expected_result
 
 
 @pytest.mark.parametrize("terminal", ("no_data", "packages_ready"))
@@ -340,7 +425,7 @@ def test_verify_only_lock_allows_exactly_one_due_call(tmp_path) -> None:
 @pytest.mark.parametrize(
     ("now", "expected"),
     [(NOW + timedelta(minutes=4), "verify_scheduled"),
-     (NOW + timedelta(days=7), "pending_after_budget")],
+     (NOW + timedelta(days=7), "service_window_exceeded")],
 )
 def test_not_due_and_deadline_make_no_sat_calls(tmp_path, now, expected) -> None:  # type: ignore[no-untyped-def]
     _saved(tmp_path)
@@ -360,9 +445,9 @@ def test_local_settlement_persists_deadline_without_live_dependencies(tmp_path) 
     )
 
     assert outcome.requires_live is False
-    assert outcome.recovery["status"] == "pending_after_budget"
+    assert outcome.recovery["status"] == "service_window_exceeded"
     loaded = state.load_metadata_recovery_state(tmp_path, RUN_REF)
-    assert loaded.recovery.status.value == "pending_after_budget"
+    assert loaded.recovery.status.value == "service_window_exceeded"
     assert loaded.observation_provenance.tested_commit == CURRENT_COMMIT
 
 
@@ -685,7 +770,7 @@ def test_invalid_commit_and_legacy_state_stop_before_verify(tmp_path) -> None:
         tested_commit=CURRENT_COMMIT, entry_point="metadata-recovery-runner",
     )
     loaded = state.load_metadata_recovery_state(legacy_root, RUN_REF)
-    assert settled.recovery["status"] == "pending_after_budget"
+    assert settled.recovery["status"] == "service_window_exceeded"
     assert loaded.observation_provenance is not None
     assert subject._provenance_counters(loaded) == (0, 0, 0)
 

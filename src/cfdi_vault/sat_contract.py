@@ -7,10 +7,10 @@ or contact live SAT services.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-import re
 from typing import Any
 
 from cfdi_vault.domain import CfdiStatusOutcome, SatRequestState
@@ -230,6 +230,7 @@ class SatVerificationResult:
     package_ids: tuple[str, ...] = ()
     action: SatOutcomeAction = SatOutcomeAction.IN_PROGRESS
     raw_response: dict[str, Any] = field(default_factory=dict)
+    next_check_at: datetime | None = None
 
     def __repr__(self) -> str:
         """Return a safe representation with ids and raw response redacted."""

@@ -657,6 +657,87 @@ def test_v15_request_builder_emits_operation_specific_payloads() -> None:
         assert payload.find(f"{{{DS_NS}}}Signature") is not None
 
 
+def test_v15_request_builder_emits_cfdi_type_for_the_cfdi_lane() -> None:
+    query = DownloadQuery(
+        "default",
+        "XAXX010101000",
+        DownloadDirection.RECEIVED,
+        RequestType.CFDI,
+        DateTimePeriod(
+            datetime(2024, 1, 1, tzinfo=timezone.utc),
+            datetime(2024, 1, 1, 0, 0, 2, tzinfo=timezone.utc),
+        ),
+        document_status="Vigente",
+    )
+    operation = resolve_v15_request_operation(query)
+    envelope = _build_request_envelope(operation, _request_attrs(query, operation), _material())
+    root = etree.fromstring(envelope)
+    payload = root.find(f".//{{{SAT_REQUEST_NS}}}solicitud")
+
+    assert operation is SatV15RequestOperation.RECEIVED
+    assert payload is not None
+    assert payload.attrib["TipoSolicitud"] == "CFDI"
+    assert payload.attrib["EstadoComprobante"] == "Vigente"
+
+
+def test_v15_metadata_lane_rejects_cfdi_before_transport(tmp_path: Path) -> None:
+    query = DownloadQuery(
+        "default",
+        "XAXX010101000",
+        DownloadDirection.RECEIVED,
+        RequestType.CFDI,
+        DateTimePeriod(
+            datetime(2024, 1, 1, tzinfo=timezone.utc),
+            datetime(2024, 1, 1, 0, 0, 2, tzinfo=timezone.utc),
+        ),
+    )
+    transport = FakeSoapTransport([])
+    adapter = _neutral_adapter(tmp_path, transport, material=_material())
+
+    with pytest.raises(SatV15AdapterError, match="metadata query") as exc:
+        adapter.submit_request(query)
+
+    assert exc.value.error_kind == "guard_failed"
+    assert transport.requests == []
+
+
+def test_v15_cfdi_lane_submits_received_operation_without_live_contact_in_tests(tmp_path: Path) -> None:
+    query = DownloadQuery(
+        "default",
+        "XAXX010101000",
+        DownloadDirection.RECEIVED,
+        RequestType.CFDI,
+        DateTimePeriod(
+            datetime(2024, 1, 1, tzinfo=timezone.utc),
+            datetime(2024, 1, 1, 0, 0, 2, tzinfo=timezone.utc),
+        ),
+    )
+    transport = FakeSoapTransport([
+        _auth_response(),
+        SoapTransportResponse(
+            200,
+            body=_soap(
+                '<sat:SolicitaDescargaRecibidosResult IdSolicitud="SYN-REQ-CFDI" '
+                'CodEstatus="5000" Mensaje="Accepted" />',
+            ),
+        ),
+    ])
+    adapter = SatV15Adapter(
+        profile=_profile(tmp_path),
+        provider=DummySecretProvider(),
+        transport=transport,
+        material=_material(),
+        endpoints=_test_endpoints(),
+        request_type=RequestType.CFDI,
+    )
+
+    result = adapter.submit_request(query)
+
+    assert result.request_id == "SYN-REQ-CFDI"
+    assert transport.requests[1].headers["SOAPAction"].endswith("/SolicitaDescargaRecibidos\"")
+    assert b'TipoSolicitud="CFDI"' in transport.requests[1].body
+
+
 @pytest.mark.parametrize(
     ("start", "end", "safe_hint"),
     [

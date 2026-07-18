@@ -89,6 +89,30 @@ def test_parse_verification_response_maps_state_and_packages() -> None:
     assert processing.action == SatOutcomeAction.IN_PROGRESS
 
 
+def test_parse_verification_response_preserves_sat_next_check_without_raw_payload() -> None:
+    result = parse_verification_response(
+        _soap(
+            '<sat:VerificaSolicitudDescargaResult IdSolicitud="SYN-REQ-002" '
+            'CodEstatus="5000" EstadoSolicitud="2" '
+            'FechaProximaConsulta="2026-07-01T03:00:00Z" Mensaje="Working" />'
+        )
+    )
+
+    assert result.next_check_at == datetime(2026, 7, 1, 3, tzinfo=timezone.utc)
+    assert "FechaProximaConsulta" not in repr(result)
+
+
+def test_parse_verification_response_rejects_naive_sat_next_check() -> None:
+    with pytest.raises(SatSoapParseError, match="next check timestamp must be timezone-aware"):
+        parse_verification_response(
+            _soap(
+                '<sat:VerificaSolicitudDescargaResult IdSolicitud="SYN-REQ-002" '
+                'CodEstatus="5000" EstadoSolicitud="2" '
+                'NextCheckAt="2026-07-01T03:00:00" />'
+            )
+        )
+
+
 def test_parse_package_download_response_decodes_content_and_classifies_errors() -> None:
     payload = base64.b64encode(b"SYNTHETIC-PACKAGE::SYN-PKG-001\n").decode("ascii")
     downloaded = parse_package_download_response(

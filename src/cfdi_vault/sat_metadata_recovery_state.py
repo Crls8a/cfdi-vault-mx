@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
-from enum import Enum
+from enum import Enum, StrEnum
 from pathlib import Path
 
 import cfdi_vault.sat_metadata_recovery as lifecycle
@@ -32,7 +32,8 @@ from cfdi_vault.sat_metadata_zip_state import (
     MetadataZipReceiptError,
 )
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
+_ZIP_RECEIPT_SCHEMA_VERSION = 6
 _LEGACY_SCHEMA_VERSION = 3
 _PROVENANCE_SCHEMA_VERSION = 4
 _VERIFY_CLAIM_SCHEMA_VERSION = 5
@@ -43,24 +44,31 @@ _LEGACY_RECORD_KEYS = {
 }
 _PROVENANCE_RECORD_KEYS = _LEGACY_RECORD_KEYS | {"observationProvenance"}
 _VERIFY_CLAIM_RECORD_KEYS = _PROVENANCE_RECORD_KEYS | {"verifyClaim"}
-_RECORD_KEYS = _VERIFY_CLAIM_RECORD_KEYS | {"lastVerifyErrorKind"}
+_PREVIOUS_CURRENT_RECORD_KEYS = _VERIFY_CLAIM_RECORD_KEYS | {"lastVerifyErrorKind"}
+_RECORD_KEYS = _PREVIOUS_CURRENT_RECORD_KEYS | {"verifyHistory"}
 _ZIP_RECEIPTS_KEY = "zipReceipts"
 _ZIP_RECEIPT_KEYS = {
     "recoveryRef", "packageRef", "campaignRef", "workRef", "sha256", "byteCount",
     "zipValid", "storageKey",
 }
 _VERIFY_CLAIM_KEYS = {"attempt", "dueAt", "claimedAt"}
+_VERIFY_CLAIM_CURRENT_KEYS = _VERIFY_CLAIM_KEYS | {"claimRef"}
+_VERIFY_HISTORY_KEYS = {
+    "attempt", "scheduledAt", "contactedAt", "category", "nextCheckAt",
+    "result", "errorKind", "claimRef",
+}
 _PROVENANCE_KEYS = {
     "projectionVersion", "testedCommit", "observedAt", "entryPoint",
     "verifyContactsNotBeforeDue", "verifyContactsBeforeDue", "verifyContactsDueUnknown",
 }
 _RECOVERY_KEYS = {
     "schemaVersion", "recoveryRef", "status", "createdAt", "deadlineAt", "verifyAttempts",
-    "nextCheckAt", "recordCount", "packageCount", "downloadedPackageCount", "zipValidCount",
+    "serviceWindowExpiresAt", "nextCheckAt", "recordCount", "packageCount", "downloadedPackageCount", "zipValidCount",
     "txtCount", "packages",
 }
 _HASH_RE = re.compile(r"[0-9a-f]{64}")
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
+_VERIFY_CLAIM_REF_RE = re.compile(r"vfy-[0-9a-f]{12}")
 _OBSERVATION_ENTRY_POINTS = {
     "metadata-recover-live", "metadata-recovery-runner", "sat-campaign",
 }
@@ -81,6 +89,18 @@ class MetadataVerifyErrorKind(str, Enum):
     SAT_TOO_MANY_RESULTS = "sat_too_many_results"
     VERIFY_FAILED = "verify_failed"
     VERIFY_UNCERTAIN = "verify_uncertain"
+    DUPLICATE_ACTIVE_REQUEST = "duplicate_active_request"
+    SAT_EXPIRED = "sat_expired"
+
+
+class MetadataVerifyResult(StrEnum):
+    """Allowlisted result categories for one private VERIFY attempt."""
+
+    PENDING = "pending"
+    PACKAGE = "package"
+    NO_DATA = "no_data"
+    ERROR = "error"
+    EXPIRED = "expired"
 
 
 @dataclass(frozen=True, repr=False)
@@ -108,6 +128,21 @@ class MetadataVerifyClaim:
     attempt: int
     due_at: datetime
     claimed_at: datetime
+    claim_ref: str = ""
+
+
+@dataclass(frozen=True, repr=False)
+class MetadataVerifyHistoryEntry:
+    """Append-only private audit record for one SAT VERIFY contact."""
+
+    attempt: int
+    scheduled_at: datetime
+    contacted_at: datetime
+    category: MetadataVerifyResult
+    next_check_at: datetime | None
+    result: MetadataVerifyResult
+    error_kind: MetadataVerifyErrorKind | None
+    claim_ref: str
 
 
 def new_metadata_observation_provenance(
@@ -142,6 +177,7 @@ class MetadataRecoveryStateRecord:
     verify_claim: MetadataVerifyClaim | None = None
     last_verify_error_kind: MetadataVerifyErrorKind | None = None
     zip_receipts: tuple[MetadataZipReceipt, ...] = ()
+    verify_history: tuple[MetadataVerifyHistoryEntry, ...] = ()
 
     def __post_init__(self) -> None:
         _validate_record(self)
@@ -152,6 +188,15 @@ class MetadataRecoveryStateRecord:
         document["artifacts"] = [item.to_redacted_document() for item in self.artifact_bindings]
         document["lastVerifyErrorKind"] = (
             self.last_verify_error_kind.value if self.last_verify_error_kind is not None else None
+        )
+        document["verifyHistoryCount"] = len(self.verify_history)
+        document["lastVerifyResult"] = (
+            self.verify_history[-1].result.value if self.verify_history else None
+        )
+        document["serviceWindowState"] = (
+            "exceeded" if self.recovery.status is RecoveryStatus.SERVICE_WINDOW_EXCEEDED
+            else "active" if self.recovery.service_window_expires_at is not None
+            else "legacy"
         )
         document[_ZIP_RECEIPTS_KEY] = [item.to_redacted_document() for item in self.zip_receipts]
         return document
@@ -173,6 +218,7 @@ class MetadataRecoveryStateRecord:
             self.last_verify_error_kind.value if self.last_verify_error_kind is not None else None
         )
         document[_ZIP_RECEIPTS_KEY] = [item.to_private_document() for item in self.zip_receipts]
+        document["verifyHistory"] = [_verify_history_document(item) for item in self.verify_history]
         return document
 
 
@@ -201,6 +247,18 @@ def campaign_metadata_recovery_ref(profile_id: str, criteria_hash: str) -> str:
 def package_ref(id_paquete: str) -> str:
     """Derive a non-reversible reference for one SAT package identifier."""
     return f"pkg-{hashlib.sha256(str(id_paquete).encode()).hexdigest()[:12]}"
+
+
+def verify_claim_ref(
+    recovery_ref_value: str, attempt: int, due_at: datetime, claimed_at: datetime,
+) -> str:
+    """Derive an opaque idempotency reference for one VERIFY claim."""
+    payload = "|".join((recovery_ref_value, str(attempt), _format_dt(due_at), _format_dt(claimed_at)))
+    return f"vfy-{hashlib.sha256(payload.encode()).hexdigest()[:12]}"
+
+
+def _format_dt(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def new_metadata_recovery_state(
@@ -275,6 +333,18 @@ def save_metadata_recovery_state(
         _write_state(path, records)
 
 
+def append_verify_history(
+    record: MetadataRecoveryStateRecord,
+    entry: MetadataVerifyHistoryEntry,
+) -> MetadataRecoveryStateRecord:
+    """Append exactly one private VERIFY outcome without permitting rewrites."""
+    if type(entry) is not MetadataVerifyHistoryEntry:
+        raise MetadataRecoveryStateError("verify-history-invalid")
+    if record.verify_history and entry.attempt <= record.verify_history[-1].attempt:
+        raise MetadataRecoveryStateError("verify-history-regression")
+    return replace(record, verify_history=(*record.verify_history, entry))
+
+
 def list_metadata_recovery_states(
     storage_root: str | Path, *, repo_root: str | Path | None = None,
 ) -> tuple[MetadataRecoveryStateRecord, ...]:
@@ -316,6 +386,7 @@ def _validate_record(record: MetadataRecoveryStateRecord) -> None:
     _validate_observation_provenance(record)
     _validate_verify_claim(record)
     _validate_verify_error_kind(record)
+    _validate_verify_history(record)
     values = (record.id_solicitud, record.profile_id, record.authorization_ref)
     if any(not isinstance(value, str) or not value.strip() for value in values):
         raise MetadataRecoveryStateError("recovery-state-invalid")
@@ -355,6 +426,36 @@ def _validate_record(record: MetadataRecoveryStateRecord) -> None:
         raise MetadataRecoveryStateError("package-binding-invalid")
     _validate_artifact_bindings(record)
     _validate_zip_receipts(record)
+
+
+def _validate_verify_history(record: MetadataRecoveryStateRecord) -> None:
+    history = record.verify_history
+    if type(history) is not tuple or any(type(item) is not MetadataVerifyHistoryEntry for item in history):
+        raise MetadataRecoveryStateError("verify-history-invalid")
+    previous_attempt = 0
+    for item in history:
+        if (
+            type(item.attempt) is not int or item.attempt <= previous_attempt
+            or type(item.category) is not MetadataVerifyResult
+            or type(item.result) is not MetadataVerifyResult
+            or type(item.scheduled_at) is not datetime
+            or item.scheduled_at.utcoffset() != timedelta(0)
+            or type(item.contacted_at) is not datetime
+            or item.contacted_at.utcoffset() != timedelta(0)
+            or item.contacted_at < item.scheduled_at
+            or (item.next_check_at is not None and (
+                type(item.next_check_at) is not datetime
+                or item.next_check_at.utcoffset() != timedelta(0)
+            ))
+            or (item.error_kind is not None and type(item.error_kind) is not MetadataVerifyErrorKind)
+            or type(item.claim_ref) is not str
+            or _VERIFY_CLAIM_REF_RE.fullmatch(item.claim_ref) is None
+        ):
+            raise MetadataRecoveryStateError("verify-history-invalid")
+        previous_attempt = item.attempt
+    completed_attempts = record.recovery.verify_attempts - (1 if record.verify_claim is not None else 0)
+    if history and history[-1].attempt > completed_attempts:
+        raise MetadataRecoveryStateError("verify-history-invalid")
 
 
 def _validate_verify_error_kind(record: MetadataRecoveryStateRecord) -> None:
@@ -496,6 +597,7 @@ def _validate_verify_claim(record: MetadataRecoveryStateRecord) -> None:
         or claim.due_at.utcoffset() != timedelta(0)
         or type(claim.claimed_at) is not datetime
         or claim.claimed_at.utcoffset() != timedelta(0)
+        or (claim.claim_ref and _VERIFY_CLAIM_REF_RE.fullmatch(claim.claim_ref) is None)
         or claim.claimed_at < claim.due_at
         or claim.claimed_at >= record.recovery.deadline_at
         or record.recovery.status is not RecoveryStatus.VERIFY_SCHEDULED
@@ -525,16 +627,31 @@ def _validate_recovery(
         raise MetadataRecoveryStateError("recovery-state-invalid")
     try:
         recovery.to_redacted_document()
-    except ValueError:
+    except (AttributeError, TypeError, ValueError):
         redaction_invalid = True
     else:
         redaction_invalid = False
     if redaction_invalid:
         raise MetadataRecoveryStateError("recovery-state-invalid")
-    datetimes = (recovery.created_at, recovery.deadline_at, recovery.next_check_at)
+    datetimes = (
+        recovery.created_at, recovery.deadline_at,
+        recovery.service_window_expires_at, recovery.next_check_at,
+    )
     if (
-        any(value is not None and value.utcoffset() is None for value in datetimes)
-        or recovery.deadline_at != recovery.created_at + timedelta(days=7)
+        any(value is not None and type(value) is not datetime for value in datetimes)
+        or any(value is not None and value.utcoffset() is None for value in datetimes)
+        or (
+            recovery.service_window_expires_at is None
+            and recovery.deadline_at != recovery.created_at + timedelta(days=7)
+        )
+        or (
+            recovery.service_window_expires_at is not None
+            and recovery.deadline_at != recovery.service_window_expires_at
+        )
+        or (
+            recovery.service_window_expires_at is not None
+            and not timedelta(0) < recovery.service_window_expires_at - recovery.created_at <= timedelta(hours=48)
+        )
         or type(recovery.verify_attempts) is not int
         or recovery.verify_attempts < 0
         or (
@@ -570,6 +687,7 @@ def _validate_recovery(
     valid = {
         RecoveryStatus.VERIFY_SCHEDULED: no_packages and recovery.next_check_at is not None,
         RecoveryStatus.PENDING_AFTER_BUDGET: no_packages and recovery.next_check_at is None,
+        RecoveryStatus.SERVICE_WINDOW_EXCEEDED: no_packages and recovery.next_check_at is None,
         RecoveryStatus.VERIFY_FAILED: no_packages
         and recovery.next_check_at is None
         and _verification_failure_possible(recovery),
@@ -598,7 +716,9 @@ def _validate_recovery(
     }[recovery.status]
     if (
         not valid
-        or (not pending and recovery.status not in {RecoveryStatus.PENDING_AFTER_BUDGET}
+        or (not pending and recovery.status not in {
+            RecoveryStatus.PENDING_AFTER_BUDGET, RecoveryStatus.SERVICE_WINDOW_EXCEEDED,
+        }
             and recovery.packages and (recovery.next_check_at is not None or recovery.verify_attempts == 0))
         or (pending and (minimum_due is None or recovery.next_check_at is None
                          or recovery.next_check_at < minimum_due))
@@ -607,7 +727,14 @@ def _validate_recovery(
 
 
 def _minimum_next_check(recovery: MetadataRecovery, attempts: int | None = None) -> datetime | None:
-    probe = lifecycle.start_metadata_recovery(recovery.recovery_ref, created_at=recovery.created_at)
+    probe = lifecycle.start_metadata_recovery(
+        recovery.recovery_ref,
+        created_at=recovery.created_at,
+        service_window=(
+            recovery.deadline_at - recovery.created_at
+            if recovery.service_window_expires_at is None else timedelta(hours=48)
+        ),
+    )
     for _ in range(recovery.verify_attempts if attempts is None else attempts):
         if probe.next_check_at is None:
             return None
@@ -618,10 +745,17 @@ def _minimum_next_check(recovery: MetadataRecovery, attempts: int | None = None)
 
 
 def _verification_failure_possible(recovery: MetadataRecovery) -> bool:
-    """Confirm the failed attempt can occur before the seven-day deadline."""
+    """Confirm the failed attempt can occur before its stored deadline."""
     if recovery.verify_attempts < 1:
         return False
-    probe = lifecycle.start_metadata_recovery(recovery.recovery_ref, created_at=recovery.created_at)
+    probe = lifecycle.start_metadata_recovery(
+        recovery.recovery_ref,
+        created_at=recovery.created_at,
+        service_window=(
+            recovery.deadline_at - recovery.created_at
+            if recovery.service_window_expires_at is None else timedelta(hours=48)
+        ),
+    )
     for _ in range(recovery.verify_attempts - 1):
         if probe.next_check_at is None:
             return False
@@ -637,6 +771,13 @@ def _validate_replacement(
     if current == candidate:
         return
     _validate_provenance_replacement(current, candidate)
+    previous_history = current.verify_history
+    if (
+        len(candidate.verify_history) < len(previous_history)
+        or candidate.verify_history[:len(previous_history)] != previous_history
+        or len(candidate.verify_history) - len(previous_history) > 1
+    ):
+        raise MetadataRecoveryStateError("verify-history-immutable")
     claim_transition = _validate_verify_claim_replacement(current, candidate)
     _validate_verify_error_kind_replacement(current, candidate, claim_transition)
     if current.package_bindings and current.package_bindings != candidate.package_bindings:
@@ -663,6 +804,7 @@ def _validate_replacement(
         current.recovery == candidate.recovery
         and current.package_bindings == candidate.package_bindings
         and current.artifact_bindings == candidate.artifact_bindings
+        and current.verify_history == candidate.verify_history
         and not added_receipts
     ):
         return
@@ -671,8 +813,14 @@ def _validate_replacement(
         return
     if claim_transition == "resolved":
         before = replace(before, verify_attempts=before.verify_attempts - 1)
-    immutable = (before.recovery_ref, before.created_at, before.deadline_at)
-    if immutable != (after.recovery_ref, after.created_at, after.deadline_at):
+    immutable = (
+        before.recovery_ref, before.created_at, before.deadline_at,
+        before.service_window_expires_at,
+    )
+    if immutable != (
+        after.recovery_ref, after.created_at, after.deadline_at,
+        after.service_window_expires_at,
+    ):
         raise MetadataRecoveryStateError("recovery-state-regression")
     try:
         expected = _exact_successor(before, after)
@@ -697,7 +845,15 @@ def _validate_verify_error_kind_replacement(
     before, after = current.last_verify_error_kind, candidate.last_verify_error_kind
     if claim_transition != "resolved":
         if before is not after:
-            raise MetadataRecoveryStateError("verify-error-kind-transition-invalid")
+            if not (
+                candidate.recovery.status is RecoveryStatus.SERVICE_WINDOW_EXCEEDED
+                and after is None
+                and before in {
+                    MetadataVerifyErrorKind.VERIFY_RETRYABLE,
+                    MetadataVerifyErrorKind.VERIFY_UNCERTAIN,
+                }
+            ):
+                raise MetadataRecoveryStateError("verify-error-kind-transition-invalid")
         return
     successful = candidate.recovery.status in {
         RecoveryStatus.PACKAGES_READY,
@@ -795,7 +951,9 @@ def _exact_successor(before: MetadataRecovery, after: MetadataRecovery) -> Metad
             return lifecycle.record_pending_verification(
                 before, checked_at=before.next_check_at, sat_next_check_at=after.next_check_at,
             )
-        if after.status is RecoveryStatus.PENDING_AFTER_BUDGET:
+        if after.status in {
+            RecoveryStatus.PENDING_AFTER_BUDGET, RecoveryStatus.SERVICE_WINDOW_EXCEEDED,
+        }:
             return lifecycle.apply_recovery_deadline(before, now=before.deadline_at)
         if after.status is RecoveryStatus.VERIFY_FAILED:
             return lifecycle.record_verification_failure(before, checked_at=before.next_check_at)
@@ -831,14 +989,22 @@ def _exact_successor(before: MetadataRecovery, after: MetadataRecovery) -> Metad
 def _record_from_document(
     value: object, *, schema_version: int,
 ) -> MetadataRecoveryStateRecord:
+    if (
+        schema_version < _SCHEMA_VERSION and isinstance(value, Mapping)
+        and "verifyHistory" in value
+    ):
+        if value["verifyHistory"] != []:
+            raise MetadataRecoveryStateError("verify-history-schema-invalid")
+        value = {key: item for key, item in value.items() if key != "verifyHistory"}
     keys = {
         _LEGACY_SCHEMA_VERSION: _LEGACY_RECORD_KEYS,
         _PROVENANCE_SCHEMA_VERSION: _PROVENANCE_RECORD_KEYS,
         _VERIFY_CLAIM_SCHEMA_VERSION: _VERIFY_CLAIM_RECORD_KEYS,
+        _ZIP_RECEIPT_SCHEMA_VERSION: _PREVIOUS_CURRENT_RECORD_KEYS,
         _SCHEMA_VERSION: _RECORD_KEYS,
     }[schema_version]
     has_receipts = isinstance(value, Mapping) and _ZIP_RECEIPTS_KEY in value
-    if has_receipts and schema_version != _SCHEMA_VERSION and value[_ZIP_RECEIPTS_KEY] != []:
+    if has_receipts and schema_version not in {_ZIP_RECEIPT_SCHEMA_VERSION, _SCHEMA_VERSION} and value[_ZIP_RECEIPTS_KEY] != []:
         raise MetadataRecoveryStateError("zip-receipt-schema-invalid")
     document = _mapping(value, keys | {_ZIP_RECEIPTS_KEY}) if has_receipts else _mapping(value, keys)
     packages = document["packages"]
@@ -873,6 +1039,13 @@ def _record_from_document(
         )
     except (MetadataRecoveryStateError, MetadataZipReceiptError, TypeError, ValueError, AttributeError):
         raise MetadataRecoveryStateError("zip-receipt-invalid") from None
+    history_value = document.get("verifyHistory", [])
+    if type(history_value) is not list:
+        raise MetadataRecoveryStateError("verify-history-invalid")
+    try:
+        history = tuple(_verify_history_from_document(item) for item in history_value)
+    except (MetadataRecoveryStateError, TypeError, ValueError):
+        raise MetadataRecoveryStateError("verify-history-invalid") from None
     return MetadataRecoveryStateRecord(
         recovery=_recovery_from_document(document["recovery"]),
         id_solicitud=_string(document, "idSolicitud"), profile_id=_string(document, "profileId"),
@@ -894,6 +1067,7 @@ def _record_from_document(
             if schema_version == _SCHEMA_VERSION else None
         ),
         zip_receipts=receipts,
+        verify_history=history,
     )
 
 
@@ -928,11 +1102,17 @@ def _verify_claim_from_document(value: object) -> MetadataVerifyClaim | None:
     if value is None:
         return None
     try:
-        document = _mapping(value, _VERIFY_CLAIM_KEYS)
+        if not isinstance(value, Mapping):
+            raise MetadataRecoveryStateError("verify-claim-invalid")
+        document = _mapping(
+            value,
+            _VERIFY_CLAIM_CURRENT_KEYS if "claimRef" in value else _VERIFY_CLAIM_KEYS,
+        )
         return MetadataVerifyClaim(
             attempt=_integer(document, "attempt"),
             due_at=_parse_datetime(_string(document, "dueAt")),
             claimed_at=_parse_datetime(_string(document, "claimedAt")),
+            claim_ref=_string(document, "claimRef") if "claimRef" in document else "",
         )
     except (MetadataRecoveryStateError, TypeError, ValueError):
         raise MetadataRecoveryStateError("verify-claim-invalid") from None
@@ -945,6 +1125,46 @@ def _verify_claim_document(claim: MetadataVerifyClaim | None) -> dict[str, objec
         "attempt": claim.attempt,
         "dueAt": claim.due_at.isoformat().replace("+00:00", "Z"),
         "claimedAt": claim.claimed_at.isoformat().replace("+00:00", "Z"),
+        "claimRef": claim.claim_ref,
+    }
+
+
+def _verify_history_from_document(value: object) -> MetadataVerifyHistoryEntry:
+    document = _mapping(value, _VERIFY_HISTORY_KEYS)
+    try:
+        return MetadataVerifyHistoryEntry(
+            attempt=_integer(document, "attempt"),
+            scheduled_at=_parse_datetime(_string(document, "scheduledAt")),
+            contacted_at=_parse_datetime(_string(document, "contactedAt")),
+            category=MetadataVerifyResult(_string(document, "category")),
+            next_check_at=(
+                _parse_datetime(_string(document, "nextCheckAt"))
+                if _string(document, "nextCheckAt") else None
+            ),
+            result=MetadataVerifyResult(_string(document, "result")),
+            error_kind=(
+                MetadataVerifyErrorKind(_string(document, "errorKind"))
+                if _string(document, "errorKind") else None
+            ),
+            claim_ref=_string(document, "claimRef"),
+        )
+    except (MetadataRecoveryStateError, TypeError, ValueError):
+        raise MetadataRecoveryStateError("verify-history-invalid") from None
+
+
+def _verify_history_document(entry: MetadataVerifyHistoryEntry) -> dict[str, object]:
+    return {
+        "attempt": entry.attempt,
+        "scheduledAt": entry.scheduled_at.isoformat().replace("+00:00", "Z"),
+        "contactedAt": entry.contacted_at.isoformat().replace("+00:00", "Z"),
+        "category": entry.category.value,
+        "nextCheckAt": (
+            entry.next_check_at.isoformat().replace("+00:00", "Z")
+            if entry.next_check_at is not None else ""
+        ),
+        "result": entry.result.value,
+        "errorKind": entry.error_kind.value if entry.error_kind is not None else "",
+        "claimRef": entry.claim_ref,
     }
 
 
@@ -983,7 +1203,12 @@ def _provenance_document(
 
 
 def _recovery_from_document(value: object) -> MetadataRecovery:
-    document = _mapping(value, _RECOVERY_KEYS)
+    if not isinstance(value, Mapping):
+        raise MetadataRecoveryStateError("recovery-state-invalid")
+    document = _mapping(
+        value,
+        _RECOVERY_KEYS if "serviceWindowExpiresAt" in value else _RECOVERY_KEYS - {"serviceWindowExpiresAt"},
+    )
     packages_value = document["packages"]
     if not isinstance(packages_value, list):
         raise MetadataRecoveryStateError("recovery-state-invalid")
@@ -997,6 +1222,10 @@ def _recovery_from_document(value: object) -> MetadataRecovery:
             _string(document, "recoveryRef"), _parse_datetime(_string(document, "createdAt")),
             _parse_datetime(_string(document, "deadlineAt")), RecoveryStatus(_string(document, "status")),
             _integer(document, "verifyAttempts"), _parse_datetime(next_check) if next_check else None,
+            (
+                _parse_datetime(_string(document, "serviceWindowExpiresAt"))
+                if _string(document, "serviceWindowExpiresAt") else None
+            ),
             _record_count(document, "recordCount"), packages,
         )
         if recovery.to_redacted_document() != dict(document):
@@ -1165,6 +1394,7 @@ def _read_state(path: Path) -> dict[str, object]:
             _LEGACY_SCHEMA_VERSION,
             _PROVENANCE_SCHEMA_VERSION,
             _VERIFY_CLAIM_SCHEMA_VERSION,
+            _ZIP_RECEIPT_SCHEMA_VERSION,
             _SCHEMA_VERSION,
         }
         or type(mapped["recoveries"]) is not list

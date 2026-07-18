@@ -180,7 +180,7 @@ def test_observation_provenance_v4_round_trips_privately_only(tmp_path) -> None:
 
     assert subject.load_metadata_recovery_state(tmp_path, record.recovery.recovery_ref) == record
     private = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
-    assert private["schemaVersion"] == 6
+    assert private["schemaVersion"] == 7
     assert private["recoveries"][0]["observationProvenance"] == {
         "projectionVersion": 1,
         "testedCommit": "f" * 40,
@@ -197,7 +197,7 @@ def test_observation_provenance_v4_round_trips_privately_only(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("schema_version", (3, 4))
-def test_legacy_state_reads_without_claim_and_rewrites_v6(tmp_path, schema_version: int) -> None:
+def test_legacy_state_reads_without_claim_and_rewrites_v7(tmp_path, schema_version: int) -> None:
     record = _pending_record()
     if schema_version == 4:
         record = replace(record, observation_provenance=_provenance())
@@ -215,7 +215,7 @@ def test_legacy_state_reads_without_claim_and_rewrites_v6(tmp_path, schema_versi
     assert (loaded.observation_provenance is None) is (schema_version == 3)
     subject.save_metadata_recovery_state(tmp_path, loaded)
     rewritten = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
-    assert rewritten["schemaVersion"] == 6
+    assert rewritten["schemaVersion"] == 7
     assert rewritten["recoveries"][0]["verifyClaim"] is None
     assert rewritten["recoveries"][0]["lastVerifyErrorKind"] is None
     if schema_version == 3:
@@ -224,7 +224,7 @@ def test_legacy_state_reads_without_claim_and_rewrites_v6(tmp_path, schema_versi
 
 
 @pytest.mark.parametrize("kind", tuple(subject.MetadataVerifyErrorKind))
-def test_verify_error_kind_v6_round_trips_privately(
+def test_verify_error_kind_v7_round_trips_privately(
     tmp_path, kind: subject.MetadataVerifyErrorKind,
 ) -> None:
     record = _persist_verify_error_resolution(tmp_path, kind)
@@ -232,7 +232,7 @@ def test_verify_error_kind_v6_round_trips_privately(
     loaded = subject.load_metadata_recovery_state(tmp_path, record.recovery.recovery_ref)
     private = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
     assert loaded.last_verify_error_kind is kind
-    assert private["schemaVersion"] == 6
+    assert private["schemaVersion"] == 7
     assert private["recoveries"][0]["lastVerifyErrorKind"] == kind.value
 
 
@@ -266,7 +266,7 @@ def test_schema_v5_decodes_without_error_kind_and_upgrades_on_save(tmp_path) -> 
     assert loaded.last_verify_error_kind is None
     subject.save_metadata_recovery_state(tmp_path, loaded)
     rewritten = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
-    assert rewritten["schemaVersion"] == 6
+    assert rewritten["schemaVersion"] == 7
     assert rewritten["recoveries"][0]["lastVerifyErrorKind"] is None
 
 
@@ -285,11 +285,78 @@ def test_verify_error_kind_loader_rejects_unknown_or_non_string_value(
 ) -> None:
     record = _failed_record()
     document = _state_document(record)
+    document["schemaVersion"] = 7
     document["recoveries"][0]["lastVerifyErrorKind"] = value
     _write_document(tmp_path, document)
 
     with pytest.raises(subject.MetadataRecoveryStateError, match="verify-error-kind-invalid"):
         subject.list_metadata_recovery_states(tmp_path)
+
+
+def test_verify_history_round_trips_as_private_state_and_redacts_entries(tmp_path) -> None:
+    entry = subject.MetadataVerifyHistoryEntry(
+        attempt=1,
+        scheduled_at=START + timedelta(minutes=5),
+        contacted_at=START + timedelta(minutes=5),
+        category=subject.MetadataVerifyResult.ERROR,
+        next_check_at=None,
+        result=subject.MetadataVerifyResult.ERROR,
+        error_kind=subject.MetadataVerifyErrorKind.VERIFY_FAILED,
+        claim_ref="vfy-0123456789ab",
+    )
+    initial = replace(_pending_record(), observation_provenance=_provenance())
+    claimed = _claimed_record(initial)
+    record = replace(
+        claimed,
+        recovery=lifecycle.record_verification_failure(
+            initial.recovery, checked_at=entry.contacted_at,
+        ),
+        verify_claim=None,
+        last_verify_error_kind=subject.MetadataVerifyErrorKind.VERIFY_FAILED,
+        verify_history=(entry,),
+    )
+
+    subject.save_metadata_recovery_state(tmp_path, initial)
+    subject.save_metadata_recovery_state(tmp_path, claimed)
+    subject.save_metadata_recovery_state(tmp_path, record)
+    loaded = subject.load_metadata_recovery_state(tmp_path, record.recovery.recovery_ref)
+    private = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
+
+    assert loaded.verify_history == (entry,)
+    assert private["schemaVersion"] == 7
+    assert private["recoveries"][0]["verifyHistory"][0]["claimRef"] == "vfy-0123456789ab"
+    redacted = loaded.to_redacted_document()
+    assert redacted["verifyHistoryCount"] == 1
+    assert redacted["lastVerifyResult"] == "error"
+    assert "verifyHistory" not in redacted
+
+
+def test_verify_history_cannot_be_rewritten_or_skipped(tmp_path) -> None:
+    entry = subject.MetadataVerifyHistoryEntry(
+        1, START + timedelta(minutes=5), START + timedelta(minutes=5),
+        subject.MetadataVerifyResult.ERROR, None, subject.MetadataVerifyResult.ERROR,
+        subject.MetadataVerifyErrorKind.VERIFY_FAILED, "vfy-0123456789ab",
+    )
+    initial = replace(_pending_record(), observation_provenance=_provenance())
+    claimed = _claimed_record(initial)
+    record_with_history = replace(
+        claimed,
+        recovery=lifecycle.record_verification_failure(
+            initial.recovery, checked_at=entry.contacted_at,
+        ),
+        verify_claim=None,
+        last_verify_error_kind=subject.MetadataVerifyErrorKind.VERIFY_FAILED,
+        verify_history=(entry,),
+    )
+    subject.save_metadata_recovery_state(tmp_path, initial)
+    subject.save_metadata_recovery_state(tmp_path, claimed)
+    subject.save_metadata_recovery_state(tmp_path, record_with_history)
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="verify-history-immutable"):
+        subject.save_metadata_recovery_state(tmp_path, replace(record_with_history, verify_history=()))
+
+    with pytest.raises(subject.MetadataRecoveryStateError, match="verify-history-regression"):
+        subject.append_verify_history(record_with_history, entry)
 
 
 def test_verify_error_kind_rejects_value_before_completed_attempt() -> None:
@@ -578,7 +645,7 @@ def test_redacted_state_excludes_all_private_resume_values() -> None:
         json.dumps({"schemaVersion": 2, "recoveries": []}),
         json.dumps({"schemaVersion": 3.0, "recoveries": []}),
         json.dumps({"schemaVersion": 4.0, "recoveries": []}),
-        json.dumps({"schemaVersion": 7, "recoveries": []}),
+        json.dumps({"schemaVersion": 8, "recoveries": []}),
         json.dumps({"schemaVersion": 6, "recoveries": [], "unexpected": True}),
     ),
 )
@@ -720,7 +787,7 @@ def test_artifacts_round_trip_privately_and_advance_sequentially(tmp_path) -> No
     with pytest.raises(subject.MetadataRecoveryStateError, match="artifact-binding-invalid"):
         replace(completed, artifact_bindings=tuple(reversed(completed.artifact_bindings)))
     private = json.loads(subject.metadata_recovery_state_path(tmp_path).read_text(encoding="utf-8"))
-    assert private["schemaVersion"] == 6
+    assert private["schemaVersion"] == 7
     assert private["recoveries"][0]["artifacts"] == [
         item.to_private_document() for item in completed.artifact_bindings
     ]
