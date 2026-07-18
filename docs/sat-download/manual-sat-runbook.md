@@ -1,490 +1,71 @@
-# MANUAL-SAT-001: human-gated live SAT smoke runbook
+# SAT campaign runbook
 
-Target contract:
-SAT Descarga Masiva CFDI y CFDI de Retenciones v1.5, mayo 2025.
+This document defines the human gate and evidence policy for the productive
+SAT v1.5 campaign. It replaces the historical smoke, probe, diagnostic,
+manual-recovery, and live-gate runbooks. Those names are retained only in
+history and are not public commands.
 
-Allowed sources:
-- V1_5_CONTRACT
-- RUNTIME_WSDL
-- COMMUNITY_ORACLE as implementation oracle only
+## Public workflow
 
-Forbidden as operational contract:
-- v1.2
-- 2023 manuals
-- legacy endpoints
-- forums/blogs/snippets
-- old prompts
-
-
-This runbook defines the approval and evidence rules for any future real SAT smoke. It does not authorize live SAT execution by itself, and it must never run in CI.
-
-## Current status
-
-Live SAT access is available only behind the human-gated smoke/diagnostic commands below. This runbook does not approve a run by itself.
-
-Before any real SAT/e.firma action, all of these must be true:
-
-1. Carlos explicitly approves the one-time smoke in issue #50 or in the exact PR for that run.
-2. The live SAT smoke issue is approved for that exact run.
-3. The command is run only on the operator machine in an interactive terminal.
-4. No real certificate, key, password, token, SAT ZIP, metadata, XML, RFC, or local path is copied into git, logs, screenshots, fixtures, or PR text.
-5. The local working tree is clean before and after the smoke.
-
-If any item is false, stop.
-
-## Offline metadata-led window selection
-
-Before creating a live request, the operator may manually export received CFDI
-metadata from the SAT portal and use it only as an offline date index. This is
-SAT-published portal evidence, not a `RUNTIME_WSDL` claim; see [Consulta y
-recuperacion de comprobantes](https://wwwmat.sat.gob.mx/consultas/42968/consulta-y-recuperacion-de-comprobantes-%28nuevo%29).
-Keep the TXT outside the repository and run:
-
-```powershell
-cfdi-vault sat metadata-window-plan `
-  --metadata <EXTERNAL_METADATA_TXT> `
-  --from 2026-01-01 `
-  --to 2026-06-30 `
-  --direction received
-```
-
-This experimental reference-system command reads the file into memory and
-derives local XML eligibility from the portal TXT; it is not observed live SAT
-behavior. `--direction` defaults to `received`. Received cancelled UUIDs are
-excluded, while issued active or cancelled UUIDs are eligible. Unknown or
-contradictory UUID evidence requires manual review and selects no window.
-
-The command resolves both the candidate path and the active checkout root. It
-rejects a lexical checkout path or a link/junction that resolves back into the
-checkout. Windows extended/device namespace spellings (`\\?\` and `\\.\`,
-including extended UNC) are rejected before normalization. The command never
-prints a rejected path.
-
-The range is split into inclusive seven-day windows, including a shorter final
-window when needed. At most two positive windows are returned, ordered by the
-smallest eligible UUID count and then by earliest date. Empty, headerless, unknown
-header, or invalid-row inputs produce the fail-closed `invalid_metadata` result:
-correct the external export before considering live work.
-`no_xml_eligible_metadata_in_range` means no live request should be created for that
-range.
-
-The metadata file is sensitive fiscal data. Delete or retain it according to
-the operator's local policy; never attach it to issue #50, a commit, a test, or
-diagnostic output. This offline plan does not authorize any live SAT operation.
-
-## Required live execution gates
-
-Any future live command must require all three explicit operator choices:
-
-| Gate | Required value |
-|---|---|
-| Real SAT opt-in | `CFDI_VAULT_ALLOW_REAL_SAT=1` |
-| Real credential opt-in | `CFDI_VAULT_ALLOW_REAL_CREDENTIALS=1` |
-| Manual command flag | `--manual-real-sat` |
-
-These gates are not permission by themselves. They only make the future command eligible to continue after issue #50 is explicitly approved.
-
-The verify-only v1.5 live gate adds two explicit opt-ins before any network I/O:
-
-| Gate | Required value |
-|---|---|
-| Verify live gate opt-in | `CFDI_VAULT_SAT_LIVE=1` |
-| Production-signed verify opt-in | `CFDI_VAULT_SAT_PRODUCTION_SIGNED=1` |
-
-## Enablement commands
-
-The safe CLI surface is:
-
-```powershell
-cfdi-vault sat auth-smoke `
-  --profile <PROFILE_ID> `
-  --manual-real-sat
-
-cfdi-vault download live-smoke `
-  --profile <PROFILE_ID> `
-  --from <YYYY-MM-DD> `
-  --to <YYYY-MM-DD> `
-  --kind metadata `
-  --direction received `
-  --manual-real-sat
-
-cfdi-vault sat diagnose-live `
-  --profile <PROFILE_ID> `
-  --from <YYYY-MM-DD> `
-  --to <YYYY-MM-DD> `
-  --kind metadata `
-  --direction received `
-  --manual-real-sat
-
-cfdi-vault sat verify-live-gate `
-  --profile <PROFILE_ID> `
-  --request-ref <REQUEST_REF> `
-  --manual-real-sat `
-  --permit <PERMIT_ID> `
-  --connect-timeout-seconds 15 `
-  --read-timeout-seconds 60
-
-cfdi-vault sat download-live-gate `
-  --profile <PROFILE_ID> `
-  --request-ref <REQUEST_REF> `
-  --manual-real-sat `
-  --permit <PERMIT_ID> `
-  --connect-timeout-seconds 15 `
-  --read-timeout-seconds 180
-```
-
-Use `--direction issued` only when that exact direction is approved for the manual run.
-
-If `download live-smoke` fails with `error=live_adapter_failed`, run `sat diagnose-live` once only if the same approval still covers diagnostics. Do not retry automatically.
-
-If any command returns `error=live_adapter_unavailable`, stop. That means the safety gates passed, but the real SAT adapter is not wired for execution. Do not fall back to `sync metadata --live`.
-
-## Diagnostic path after a failed smoke
-
-Use `sat diagnose-live` to identify the failed stage without copying raw SOAP:
-
-```powershell
-cfdi-vault sat diagnose-live `
-  --profile <PROFILE_ID> `
-  --from <YYYY-MM-DD> `
-  --to <YYYY-MM-DD> `
-  --kind metadata `
-  --direction received `
-  --manual-real-sat
-```
-
-Allowed diagnostic fields to copy into #50:
-
-- `diagnostic_status`
-- `stages`
-- `failed_stage`
-- `error_kind`
-- `safe_hint`
-- `endpoint`
-- `http_status`
-- `soap_fault_code`
-- `sat_code`
-- `payload_size`
-- `envelope_sha256`
-- `duration_ms`
-- `correlation_id`
-
-Do not copy raw SOAP, headers, terminal transcript, RFCs, request ids, package ids, UUIDs, file paths, or credential details.
-
-## Safe preflight
-
-Run only repository-safe checks first:
-
-```bash
-git status --short
-cfdi-vault status
-cfdi-vault doctor
-py scripts/scan_sensitive_fixtures.py --root .
-py -m pytest
-```
-
-On non-Windows environments, use the project Python interpreter if `py` is unavailable.
-
-Expected result:
-
-- the working tree is clean;
-- status and doctor output are redacted;
-- the profile is ready in the operator AppData location;
-- `passwordRef` exists and points to the approved local `SecretProvider`;
-- scanner passes;
-- tests pass;
-- no live SAT command has been executed.
-
-## First live smoke scope
-
-The first authorized smoke must be intentionally small:
-
-- metadata-only first;
-- one calendar day only for the first attempt;
-- one local manual profile and its configured storage root;
-- no XML/package download until metadata-only evidence is reviewed;
-- no recurrent job, scheduler, CI run, or shared agent environment.
-
-### SAT-SCHED-001 offline scheduler scaffold
-
-The approved offline slice adds only a one-shot core, local lock, bounded
-scheduler-grant model, dry-run command, and Windows XML renderer:
-
-```powershell
-cfdi-vault sat verify-due-runner --profile default --dry-run
-cfdi-vault sat scheduler render-windows-task --profile default --working-directory C:\reviewed\cfdi-vault-mx
-```
-
-Non-dry execution returns `reason=activation-not-enabled`. No grant issuance,
-live verifier activation, or task installation is approved here. A future
-activation must be reviewed separately and must preserve the one-request hard
-limit, full shared-state lock, and no-create/no-download/no-XML/no-PDF boundary.
-
-## Verify v1.5 live gate
-
-Use `sat verify-live-gate` only after one metadata request has already been accepted and persisted locally as a redacted `request-ref`.
-
-This command performs, in order:
-
-1. redacted preflight only;
-2. local production-signed `VerificaSolicitudDescarga` oracle parity;
-3. public read-only verify WSDL/endpoint reachability check without e.firma material;
-4. at most one live auth + verify attempt with the configured gate timeouts.
-
-It does not create a new request, download packages, persist XML/PDF, or store raw SOAP/SAT responses.
-
-Gate timeout controls:
-
-- `--connect-timeout-seconds` defaults to 15 seconds and applies to the gate's public WSDL/endpoint check and guarded SOAP connect phase when separate gate timeouts are enabled.
-- `--read-timeout-seconds` defaults to 60 seconds and may be explicitly raised up to 180 seconds for this gate only.
-- `CFDI_VAULT_VERIFY_GATE_CONNECT_TIMEOUT_SECONDS` and `CFDI_VAULT_VERIFY_GATE_READ_TIMEOUT_SECONDS` are local fallback overrides when the flags are omitted.
-- The normal SAT runtime path is not changed by these gate-only diagnostics.
-
-Required extra evidence:
-
-- `production_signed=yes`;
-- `oracle_parity=passed`;
-- `wsdl_check=passed`;
-- `connect_timeout_seconds=15` or the approved timeout;
-- `read_timeout_seconds=60` or the approved timeout;
-- `raw_wsdl_persisted=no`;
-- `download_executed=no`;
-- `raw_soap_persisted=no`;
-- `raw_response_persisted=no`.
-
-Local gate result on 2026-07-08:
-
-First preflight-only attempt:
-
-- live SAT executed: no;
-- production-signed: no;
-- oracle parity: not run;
-- read timeout: 60 seconds;
-- reason: preflight blocked by missing `CFDI_VAULT_SAT_LIVE`, missing `CFDI_VAULT_SAT_PRODUCTION_SIGNED`, missing `--manual-real-sat`, missing `--permit`, and missing `--request-ref`.
-
-Controlled rerun after resolving the missing preflight inputs:
-
-- live SAT executed: yes;
-- production-signed: yes;
-- oracle parity: passed;
-- read timeout: 60 seconds;
-- preflight: ready;
-- `EstadoSolicitud`: not run;
-- `CodigoEstado`: not reported;
-- `NumeroCFDIs`: not reported;
-- `IdsPaquetes`: not run;
-- download executed: no;
-- raw SOAP persisted: no;
-- raw SAT response persisted: no;
-- result: not completed because the single live verify attempt reached the approved read timeout (`error_kind=verify_read_timeout`).
-
-The controlled rerun used a clean detached worktree at the same gate commit to avoid stashing, deleting, or mixing unrelated local documentation edits present in the main worktree.
-
-Controlled timeout-diagnostics rerun after adding gate-only connect/read timeout controls:
-
-- live SAT executed: yes;
-- production-signed: yes;
-- oracle parity: passed;
-- WSDL/endpoint check: passed;
-- WSDL HTTP status: 200;
-- WSDL elapsed: 392 ms;
-- connect timeout: 15 seconds;
-- read timeout: 180 seconds;
-- verify elapsed: not reported by this run;
-- preflight: ready;
-- `EstadoSolicitud`: accepted;
-- `CodigoEstado`: not reported;
-- `NumeroCFDIs`: not reported;
-- `IdsPaquetes`: none;
-- download executed: no;
-- raw WSDL persisted: no;
-- raw SOAP persisted: no;
-- raw SAT response persisted: no;
-- result: completed; the verify response was received without packages and no download was attempted.
-
-## Package/download offline gate
-
-The package/download contract is prepared offline only. It does not authorize or execute a real package download.
-
-Current offline scope:
-
-1. Build the `Descargar` SOAP envelope with `peticionDescarga`.
-2. Keep the WRAP token in the HTTP `Authorization` header, never in XML.
-3. Sign the v1.5 operation wrapper with exclusive c14n and `X509IssuerSerial` + `X509Certificate`.
-4. Parse a synthetic `Paquete` base64 response as ZIP bytes.
-5. Block download unless verify has `EstadoSolicitud=3` and at least one package id.
-
-Next live step is allowed only after a future verify result returns packages:
-
-- `EstadoSolicitud=3`;
-- `IdsPaquetes` present;
-- Carlos approves that exact live package/download gate;
-- no XML/PDF parsing is enabled in the same run;
-- copied evidence remains redacted and contains no package id, raw SOAP, raw SAT response, token, RFC, or ZIP bytes.
-
-## Download v1.5 live gate
-
-Use `sat download-live-gate` only after a package id is available from `EstadoSolicitud=3`.
-
-Safe command shapes:
-
-```powershell
-cfdi-vault sat download-live-gate `
-  --profile <PROFILE_ID> `
-  --request-ref <REQUEST_REF> `
-  --manual-real-sat `
-  --permit <PERMIT_ID> `
-  --connect-timeout-seconds 15 `
-  --read-timeout-seconds 180
-
-cfdi-vault sat download-live-gate `
-  --profile <PROFILE_ID> `
-  --package-ref <PACKAGE_REF> `
-  --manual-real-sat `
-  --permit <PERMIT_ID> `
-  --connect-timeout-seconds 15 `
-  --read-timeout-seconds 180
-```
-
-Gate behavior:
-
-- `--request-ref` may run at most one live verify first to confirm `EstadoSolicitud=3` and `IdsPaquetes`.
-- `--package-ref` must resolve to local sanitized state that already proves package readiness.
-- exactly one package is selected;
-- the download WSDL/endpoint check runs read-only and does not read or persist raw WSDL;
-- oracle parity must pass before download;
-- one live download call is allowed, with no automatic retry;
-- the `Paquete` base64 is never printed;
-- ZIP bytes are decoded and inspected in memory, then discarded by default;
-- XML/PDF parsing remains out of scope;
-- raw SOAP and raw SAT responses are never persisted.
-
-Allowed result evidence:
-
-- preflight status and missing gates;
-- WSDL reachable/status/elapsed only;
-- oracle structural fields;
-- `EstadoSolicitud`, `CodigoEstado`, `NumeroCFDIs`, and package count;
-- whether a package arrived, decoded byte count, ZIP validity, and ZIP entry count.
-
-Forbidden result evidence remains unchanged: no token, full RFC, full `IdSolicitud`, full `IdPaquete`, raw SOAP, raw SAT response, base64 package, ZIP artifact, XML, or PDF.
-
-## Required confirmation
-
-Before any future command performs network I/O, the operator must see a visible warning and confirm the exact run interactively by typing:
+The only SAT-facing CLI is:
 
 ```text
-SAT REAL METADATA SMOKE
+cfdi-vault sat campaign create --profile <profile>
+cfdi-vault sat campaign authorize --profile <profile> --campaign-ref <ref> --phase metadata-proof --expires-days 14 --reason <reason>
+cfdi-vault sat campaign run --profile <profile> --campaign-ref <ref> --grant <grant-ref>
+cfdi-vault sat campaign status --profile <profile> --campaign-ref <ref>
 ```
 
-There is no `--yes` bypass for the first live smoke.
+The campaign CLI is PostgreSQL-only. It never falls back to legacy JSON,
+prints SAT identifiers, or stores ZIP/TXT/XML in the repository. `run` is a
+one-shot wake: it contacts SAT only for a claimed operation whose persisted
+`next_check_at` is due. A missing grant, mismatched commit, invalid profile, or
+missing database fails closed.
 
-The warning must include:
+## Human and security gate
 
-- live SAT access is about to be attempted;
-- real e.firma custody is involved;
-- output and artifacts must remain redacted;
-- the run must stop if the terminal is not interactive.
+No live command is authorized by this document alone. Before Carlos authorizes
+a run, all of the following must be true:
 
-## Live smoke gate
+1. The exact commit and campaign are identified and the checkout is clean.
+2. PostgreSQL/Flyway, RabbitMQ, Redis, and the external artifact root are
+   healthy; artifacts are outside the repository and `/app`.
+3. The local profile and e.firma provider are ready; certificates, keys,
+   passwords, and tokens stay outside the repository and logs.
+4. The grant is bound to the campaign, profile, phase, commit, and budget.
+5. The run is outside CI and no endpoint override is present.
 
-| Gate | Required evidence |
-|---|---|
-| Human approval | Issue or PR comment from Carlos approving this specific run. |
-| Local-only execution | Confirmation that the command ran outside CI and outside any shared agent environment. |
-| Secret custody | Confirmation that e.firma material stayed outside the repository and was handled through local approved custody only. |
-| Output redaction | Confirmation that copied output contains no RFC, token, certificate path, key path, SAT package id, XML path, or downloaded content. |
-| Cleanup | Final `git status --short`, scanner result, and cleared live env vars. |
+The first proof is limited to received and issued metadata for
+`2026-01-01..2026-01-14`, with at most two open operations. Do not create a
+replacement request when one is pending. Wake `campaign run` at 5m, 15m, 30m,
+and 1h, then only when the persisted due time permits it; the request may
+remain pending for the local 48-hour service window.
 
-Do not attach raw terminal logs. Summarize the result with redacted fields only.
+## Evidence and redaction
 
-## Allowed evidence template
+Record only sanitized aggregates:
 
-Use this template in the issue or PR after a manually approved smoke:
+- campaign/window and direction;
+- attempt count and categorized state;
+- next review and service-window state;
+- package, ZIP, TXT, XML, and worker counts.
 
-```markdown
-## MANUAL-SAT-001 result
+Never record RFCs, UUIDs, SAT request/package ids, metadata rows, XML, ZIP
+bytes, SOAP, authorization headers, credential paths, local paths, or secrets.
+The sensitive-fixture scanner and the complete test suite must pass before and
+after any real run.
 
-- Approval: <issue-or-comment-link>
-- Date: <YYYY-MM-DD>
-- Operator: Carlos
-- Environment: local operator machine, not CI
-- Scope: metadata-only, smallest approved date range
-- Result: passed / failed / blocked
-- Request outcome: redacted
-- Diagnostic command: not run / `sat diagnose-live`
-- Diagnostic status: redacted
-- Failed stage: redacted or n/a
-- Error kind: redacted or n/a
-- Safe hint: redacted or n/a
-- HTTP status: redacted or n/a
-- SAT code: redacted or n/a
-- Correlation id: synthetic local id or n/a
-- Package/XML persistence: none for metadata-only smoke, or redacted counts only if separately approved later
-- Live env vars cleared after run: yes
-- Scanner after run: passed
-- Tests after run: passed
-- Working tree after run: clean
-- Sensitive data committed: no
+## Metadata to XML boundary
 
-Notes:
-- <redacted operational note, no paths or identifiers>
-```
-
-## Forbidden evidence
-
-Never paste or commit:
-
-- e.firma certificate/key files or filenames from the operator machine;
-- passwords, tokens, secret values, or secret references;
-- authorization headers, SOAP bodies, or raw response payloads;
-- real RFCs, taxpayer names, UUIDs, SAT request ids, package ids, metadata rows, XML, ZIPs, or extracted files;
-- absolute local paths;
-- screenshots that reveal local profile details or fiscal data.
+The first real ZIP must be validated and its TXT processed by the worker before
+an additional `cfdi-proof` grant is issued. Only then may the campaign request
+CFDI/XML for an eligible window. A download timeout becomes `uncertain` and is
+not retried automatically. Scheduler activation and campaign expansion wait
+until the Metadata and XML proof is complete.
 
 ## Abort conditions
 
-Stop the smoke and do not retry automatically if:
-
-- approval is missing or ambiguous;
-- a command would run in CI or a non-interactive terminal;
-- the working tree is dirty;
-- scanner fails;
-- `cfdi-vault status` or `cfdi-vault doctor` fails readiness checks;
-- the profile is not ready, `passwordRef` is missing, or the approved `SecretProvider` cannot resolve locally;
-- `CFDI_VAULT_ALLOW_REAL_SAT=1`, `CFDI_VAULT_ALLOW_REAL_CREDENTIALS=1`, or `--manual-real-sat` is missing;
-- `CFDI_VAULT_SAT_LIVE=1`, `CFDI_VAULT_SAT_PRODUCTION_SIGNED=1`, `--permit`, or `--request-ref` is missing for `sat verify-live-gate`;
-- the command is non-interactive or the typed confirmation is missing;
-- `--kind` is anything other than `metadata`;
-- the requested range is more than one calendar day;
-- `cfdi-vault doctor` does not pass for the selected profile;
-- a command attempts to read real SAT material from the repository;
-- output would print tokens, passwords, private keys, certificates, headers, RFCs, paths, XML, ZIPs, or raw SAT payloads;
-- real fiscal data appears in any repository path;
-- the live command is unavailable or still blocked by product code;
-- a second diagnostic retry would be needed without a new explicit approval.
-
-## Rollback and cleanup
-
-After any approved manual attempt:
-
-1. Clear live SAT opt-in environment variables from the shell.
-2. Inspect generated artifacts and logs before copying any evidence.
-3. Run the sensitive fixture scanner again.
-4. Confirm `git status --short` is clean.
-5. Record only the redacted evidence template above.
-
-PowerShell cleanup:
-
-```powershell
-Remove-Item Env:CFDI_VAULT_ALLOW_REAL_SAT -ErrorAction SilentlyContinue
-Remove-Item Env:CFDI_VAULT_ALLOW_REAL_CREDENTIALS -ErrorAction SilentlyContinue
-Remove-Item Env:CFDI_VAULT_SAT_LIVE -ErrorAction SilentlyContinue
-Remove-Item Env:CFDI_VAULT_SAT_PRODUCTION_SIGNED -ErrorAction SilentlyContinue
-git status --short
-py scripts/scan_sensitive_fixtures.py --root .
-```
-
-## Next step
-
-Keep issue #50 as the approval gate for the actual live smoke. This document only defines the manual process; it does not approve, implement, or execute live SAT access.
+Stop without replacement requests when approval, profile readiness, commit
+binding, storage safety, endpoint policy, claim ownership, or redaction cannot
+be proven. A pending, expired, no-data, or uncertain result is recorded as a
+categorized outcome and reviewed manually.

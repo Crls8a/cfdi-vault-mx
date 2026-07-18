@@ -1,116 +1,43 @@
-# SAT async verify scheduler
+# SAT campaign monitor design
 
-`cfdi-vault` treats SAT verification as persisted one-shot work, not as a long-running polling loop. SAT does not send webhooks, so the local state file stores when the next `VerificaSolicitudDescarga` check is allowed to run.
+SAT verification is persisted one-shot work, not an in-process polling loop.
+The public operation is:
 
-## Quick path
-
-```powershell
-cfdi-vault sat verify-due-runner --profile default --dry-run
-cfdi-vault sat scheduler render-windows-task --profile default --working-directory C:\reviewed\cfdi-vault-mx
-cfdi-vault download status --profile default
+```text
+cfdi-vault sat campaign run --profile <profile> --campaign-ref <campaign-ref> --grant <grant-ref>
 ```
 
-SAT-SCHED-001 provides the locked runner core, bounded scheduler grant model,
-dry-run CLI, and pure XML renderer. Recurring live activation is **not enabled**:
-non-dry CLI runs fail closed with `reason=activation-not-enabled`. The slice
-does not call SAT, create requests, download packages, parse XML, or render PDF.
+The command wakes, acquires the PostgreSQL-backed monitor lease, processes only
+due operations, and exits. A future Windows Task Scheduler or POSIX cron entry
+may invoke this same command every five minutes after a separate operational
+review; the application does not install or activate either task.
 
-## Scheduler contract
+## Due-time contract
 
-| Field | Decision |
+| Field | Contract |
 |---|---|
-| `next_check_at` | The next allowed verification time. A worker exits if nothing is due. |
-| `attempt_count` | Incremented once per verify attempt. It prevents endless retries. |
-| `expires_at` | Defaults to 72 hours after the accepted request. Expired work becomes terminal. |
-| `package_refs_redacted` | Stores non-reversible package fingerprints when SAT says the request is ready. |
+| `next_check_at` | Earliest permitted VERIFY contact; no due work means no SAT contact. |
+| `verify_history` | Private append-only attempt history; public status exposes aggregates only. |
+| `service_window_expires_at` | New requests use a 48-hour local window; legacy requests retain their stored deadline. |
+| `package_refs_redacted` | Private non-reversible package references when SAT reports readiness. |
 
-Initial backoff policy:
-
-| Completed attempts | Next delay |
-|---:|---|
-| 0 | 5 minutes after request acceptance |
-| 1 | 15 minutes |
-| 2 | 30 minutes |
-| 3 | 1 hour |
-| 4+ | 2-4 hours with deterministic jitter |
-
-`max_attempts` defaults to 12 and is configurable in code through `VerifyBackoffPolicy`.
+The deterministic minimum schedule is 5m, 15m, 30m, 1h, 2h, 4h, and then 8h
+between contacts. A later SAT-provided time always wins. No request is
+contacted after its service window expires, and no timeout creates a
+replacement request.
 
 ## Worker behavior
 
-The core runner:
+The runner claims VERIFY before contacting SAT and appends one sanitized result
+for each claim. `5004` closes the window as no data; pending, expired,
+service-window, and uncertain outcomes remain categorized in PostgreSQL. A
+download timeout is uncertain and is not automatically retried. RabbitMQ jobs
+carry opaque references only; ZIP/TXT/XML remain in external storage.
 
-1. Acquires `state/sat-verify-due.lock` for the entire shared-state cycle.
-2. Claims one invocation from a separate scheduler grant for authorized runs.
-3. Reuses `run_verify_due(..., limit=1)`; the limit is not configurable.
-4. Updates state/backoff through the existing verify policy and exits.
+## Review-only scheduling shape
 
-Dry-run still takes and releases the lock, but does not mutate request state,
-claim a grant, or call a verifier. The persistent lock file is held by an OS
-lock handle for the complete invocation (`msvcrt` on Windows; `fcntl` for test
-portability). Process death releases the OS lock automatically. Old metadata is
-harmless and is rewritten only after exclusive acquisition; release never
-deletes another owner's pathname.
-
-## Scheduler grant boundary
-
-The scheduler grant is not a `LiveExecutionPermit`. It is bound to the profile,
-repository path fingerprint, and `sat_due_verify_one` scope. It expires within
-24 hours, allows at most 288 invocations, fixes per-request verification to 12
-attempts, and explicitly denies request creation, download, XML, and PDF.
-
-Persisted grant windows also fail closed: creation cannot be in the future,
-creation must precede expiry, lifetime cannot exceed 24 hours, and consumed
-invocations must remain between zero and the configured maximum.
-
-Grant claims are serialized and persisted before verification. SAT-SCHED-001
-does not expose grant issuance or live activation in the CLI; those remain a
-separate human-approved change.
-
-## Terminal states
-
-The scheduler stops retrying on:
-
-- `VERIFY_NO_DATA`
-- `VERIFY_REJECTED`
-- `VERIFY_EXPIRED`
-- `VERIFY_MANUAL_REVIEW`
-- `VERIFY_FAILED_PERMANENT`
-- `PACKAGE_READY`
-
-`VERIFY_MANUAL_REVIEW` is for terminal outcomes that must not be collapsed into `no_data` or retried blindly, such as duplicate/quota-like SAT
-responses or a finished response without package ids.
-
-`PACKAGE_READY` only records redacted package references and counts when SAT returns package ids. Package download remains a separate gated step.
-
-## What not to do
-
-Do not wrap verify in this shape:
-
-```text
-while True:
-    verify()
-    sleep(30)
-```
-
-That hides state in a process. The correct shape is persisted state plus a scheduled one-shot command:
-
-```text
-submit request -> persist state -> set next_check_at -> run verify-due once -> update state -> exit
-```
-
-## Windows Task Scheduler shape
-
-The rendered XML is a review-only template. It runs every five minutes, uses
-`MultipleInstancesPolicy=IgnoreNew`, `ExecutionTimeLimit=PT4M`, and least
-privilege. The required reviewed `WorkingDirectory` fixes the repository used
-for grant binding instead of trusting an ambient scheduler directory. Its
-one-shot action is:
-
-```powershell
-cfdi-vault sat verify-due-runner --profile default --grant SCHEDULER_GRANT_ID
-```
-
-The renderer never registers or installs the task. The placeholder cannot be
-activated by this slice; `USER_SID` is also a review placeholder. Windows frequency only wakes the process;
-`next_check_at` remains the retry authority.
+An operator may review a platform-specific task that invokes the public
+`campaign run` command. It must use the same profile, campaign, grant, and
+private storage as the interactive run, enforce one process at a time, and
+never add a sleep loop or a second SAT request. The scheduler is an operational
+convenience; `next_check_at` remains the sole authority for SAT contact.

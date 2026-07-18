@@ -137,10 +137,20 @@ supported LIB-005B and LIB-005C rows are public library API.
 | `cfdi_vault.sat_campaign_manifest_store` | Internal reference-system persistence | Private atomic campaign-manifest codec and transitions; not a supported import. |
 | `cfdi_vault.sat_campaign_preflight` | Internal reference-system safety evidence | Neutral injected local-readiness proof for later campaign guards; no authorization, adapter construction, state mutation, or SAT contact. |
 | `cfdi_vault.sat_campaign_adapter` | Internal reference-system adapter factory | Lazy grant- and preflight-bound canonical v1.5 Metadata adapter construction; no import-time or factory-creation I/O. |
+| `cfdi_vault.sat_campaign_artifacts` | Internal reference-system persistence | Coordinates external package bytes with opaque PostgreSQL artifact metadata; never a supported import. |
+| `cfdi_vault.sat_campaign_db_cli` | Internal reference-system application service | PostgreSQL campaign, grant, and status operations for the CLI; no SAT contact. |
 | `cfdi_vault.sat_campaign_query` | Internal reference-system planning | Pure profile-bound Metadata query derivation for outstanding campaign work; not a supported import. |
+| `cfdi_vault.sat_campaign_download_effects` | Internal live orchestration | Exactly-once Metadata ZIP download effect with private artifact binding; never a supported import. |
 | `cfdi_vault.sat_campaign_recovery_projection` | Internal reference-system reconciliation | Projects persisted recovery outcomes into campaign transitions; no stable consumer surface. |
 | `cfdi_vault.sat_campaign_run` | Internal reference-system application service | One-shot preflight, reservation, and bounded Metadata submission with ref-free aggregates; not a supported import. |
 | `cfdi_vault.sat_campaign_runner` | Internal reference-system orchestration | One-shot campaign reservation, recovery binding, and claim planning; no stable consumer surface. |
+| `cfdi_vault.sat_db_campaign_runner` | Internal reference-system orchestration | PostgreSQL due VERIFY claims and sanitized result categorization; no live side effects by import. |
+| `cfdi_vault.sat_campaign_repository` | Internal reference-system persistence | Short SQLAlchemy transactions for claims, submissions, attempts, packages, and status. |
+| `cfdi_vault.sat_campaign_repository_campaign` | Internal reference-system persistence | Campaign, window, and grant repository mixin; not a supported import. |
+| `cfdi_vault.sat_campaign_repository_constants` | Internal reference-system persistence | Allowlisted database states and repository errors; not a supported import. |
+| `cfdi_vault.sat_campaign_repository_helpers` | Internal reference-system persistence | Private claim, artifact, and transaction validation helpers. |
+| `cfdi_vault.sat_campaign_repository_status` | Internal reference-system reporting | Database aggregate projection without fiscal rows or SAT identifiers. |
+| `cfdi_vault.sat_campaign_jobs` | Internal reference-system queue handoff | Publishes opaque artifact references to metadata/XML parsing queues; never embeds package bytes or fiscal rows. |
 | `cfdi_vault.sat_campaign_status` | Internal reference-system reporting | Read-only manifest-bound recovery aggregates; not a supported import and never contacts SAT. |
 | `cfdi_vault.sat_campaign_submission_effects` | Internal live orchestration | Sequential grant-authorized Metadata submission effects; never selected implicitly. |
 | `cfdi_vault.sat_campaign_submission_projection` | Internal reference-system reconciliation | Read-only persisted-outcome validation with an atomic failure-only campaign transition; no SAT contact. |
@@ -162,8 +172,14 @@ supported LIB-005B and LIB-005C rows are public library API.
 | `cfdi_vault.sat_metadata_recovery_scheduler` | Internal reference-system scheduling | Pure due selection for a local scheduler wake; not a supported consumer surface. |
 | `cfdi_vault.sat_metadata_recovery_state` | Internal reference-system persistence | Private resumable recovery state and identifiers; never re-exported. |
 | `cfdi_vault.sat_metadata_zip_state` | Internal reference-system evidence | Private raw-ZIP receipts bound to opaque campaign/work references; never re-exported. |
+| `cfdi_vault.sat_monitor_service` | Internal operations service | Five-minute Compose wakeup, advisory lease, heartbeat hook, and no-contact disabled mode. |
+| `cfdi_vault.sat_live_worker_runtime` | Internal live runtime wiring | Explicit grant-bound SAT v1.5 adapter factories; disabled by default and never contacts SAT at import or factory construction. |
 | `cfdi_vault.sat_metadata_submission` | Internal live submission helper | Permit-gated exactly-once request claim; no default use or supported import. |
 | `cfdi_vault.sat_metadata_window_plan` | Internal planning helper | Operator-metadata window selection without network behavior; not public API. |
+| `cfdi_vault.sat_legacy_import` | Internal migration utility | Explicit, bounded, idempotent import of private legacy JSON into PostgreSQL; never contacts SAT. |
+| `cfdi_vault.sat_legacy_import_history` | Internal migration utility | VERIFY history portion of the legacy importer; append-only database writes. |
+| `cfdi_vault.sat_legacy_import_packages` | Internal migration utility | Legacy package and external-artifact references; payloads remain outside PostgreSQL. |
+| `cfdi_vault.sat_legacy_import_windows` | Internal migration utility | Legacy campaign-window import with bounded parent validation. |
 | `cfdi_vault.sat_orchestration` | Reference-system orchestration | Application flow, persistence, and runtime coordination. |
 | `cfdi_vault.sat_package_download_offline` | Internal offline helper | Useful evidence path, but not yet a stable adapter contract. |
 | `cfdi_vault.sat_scheduled_verify` | Internal reference-system orchestration | Locked one-shot wrapper around due verification; not a supported consumer import. |
