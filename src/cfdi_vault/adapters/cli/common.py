@@ -1,19 +1,27 @@
 """Shared CLI dependencies and helpers."""
 
+# This module intentionally re-exports imported CLI dependencies through its
+# dynamic ``__all__`` for the existing family shims.
+# ruff: noqa: F401
+
 from __future__ import annotations
-from collections.abc import Callable
-from dataclasses import dataclass, replace
-from datetime import date, datetime, time, timezone
+
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass, replace
+from datetime import date, datetime, time, timezone
+from pathlib import Path
+
 import typer
+
 from cfdi_vault import setup as setup_flow
+from cfdi_vault.cache import RedisCache
 from cfdi_vault.config import ConfigValidationError, load_config
 from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType
-from cfdi_vault.cache import RedisCache
+from cfdi_vault.metadata_parser import parse_metadata_bytes
 from cfdi_vault.onboarding import (
     OnboardingError,
     OnboardingRequest,
@@ -22,6 +30,8 @@ from cfdi_vault.onboarding import (
     parse_schedule_mode,
     run_onboarding,
 )
+from cfdi_vault.os_secret_providers import OsSecretProviderError, native_provider_for_reference
+from cfdi_vault.package_processor import PackageProcessingError, ProcessedPackage, process_sat_package
 from cfdi_vault.queueing import RabbitMqQueue
 from cfdi_vault.recovery_service import (
     DownloadStatus,
@@ -30,28 +40,14 @@ from cfdi_vault.recovery_service import (
     read_download_status,
     write_minimal_pdf,
 )
-from cfdi_vault.metadata_parser import parse_metadata_bytes
-from cfdi_vault.package_processor import PackageProcessingError, ProcessedPackage, process_sat_package
-from cfdi_vault.secrets import CredentialKind, CredentialProviderError, CredentialReference, DummySecretProvider
-from cfdi_vault.service import ImportBatchResult, ImportRecord, SummaryRow, VaultService
-from cfdi_vault.sat_async_verify import VerifyBackoffPolicy, VerifyDueReport, run_verify_due
-from cfdi_vault.sat_backfill import BackfillPlan, build_backfill_plan
-from cfdi_vault.sat_orchestration import DownloadRequestOrchestrator
-from cfdi_vault.sat_simulator import FakeSatScenario, FakeSatScenarioClient
-from cfdi_vault.sat_v15_adapter import (
-    DIAGNOSTIC_STAGES,
-    SatLiveMetadataSmokeAdapter,
-    SatV15AdapterError,
-    _build_auth_envelope,
-    load_sat_efirma_material,
-)
+from cfdi_vault.sat_contract import SatOutcomeAction
 from cfdi_vault.sat_live_request_state import (
-    LiveMetadataRequestRecord,
-    LiveMetadataRequestSummary,
-    LiveRequestStateError,
     PACKAGE_DOWNLOADED,
     PACKAGE_READY,
     VERIFY_SCHEDULED,
+    LiveMetadataRequestRecord,
+    LiveMetadataRequestSummary,
+    LiveRequestStateError,
     list_live_metadata_requests,
     load_live_metadata_request,
     persist_live_metadata_request,
@@ -59,48 +55,21 @@ from cfdi_vault.sat_live_request_state import (
     summarize_live_metadata_requests,
     upsert_live_metadata_request,
 )
-from cfdi_vault.sat_auth_envelope_lint import AuthEnvelopeLintResult, build_dummy_auth_envelope, lint_auth_envelope
-from cfdi_vault.sat_auth_contract import AuthWsdlContract, fetch_auth_wsdl_contract
-from cfdi_vault.sat_auth_endpoints import resolve_auth_endpoint
-from cfdi_vault.sat_auth_matrix_probe import SatAuthMatrixProbeResult, run_sat_auth_matrix_probe
-from cfdi_vault.sat_auth_oracle import (
-    AuthEnvelopeFingerprint,
-    AuthOracleDiffResult,
-    PHP_CFDI_BUILDER_SOURCE_DISABLED_IN_CI,
-    PhpCfdiOracleFingerprint,
-    diff_auth_oracle,
-    fingerprint_auth_envelope,
-    fingerprint_phpcfdi_oracle,
-)
-from cfdi_vault.sat_auth_post_probe import SatAuthPostProbeResult, run_sat_auth_post_probe
-from cfdi_vault.sat_contract import SatOutcomeAction
-from cfdi_vault.sat_transport_probe import SatProbeResult, run_sat_transport_probe
-from cfdi_vault.sat_verify_post_probe import SatVerifyPostProbeResult, run_sat_verify_post_probe
-from cfdi_vault.live_permit import (
-    BACKFILL_SUBMIT_SCOPE,
-    LivePermitError,
-    LivePermitRequest,
-    MAX_BACKFILL_RANGE_DAYS,
-    METADATA_LIVE_SMOKE_SCOPE,
-    PACKAGE_DOWNLOAD_SCOPE,
-    auth_live_smoke_permit_expectation,
-    create_live_execution_permit,
-    load_live_execution_permit,
-    permit_expectation_from_query,
-    transport_probe_permit_expectation,
-    validate_and_consume_live_permit,
-)
-from cfdi_vault.sat_auth_constants import AUTH_ENVELOPE_VARIANT_SECURITY_ONLY, AUTH_ENVELOPE_VARIANTS, DEFAULT_AUTH_ENVELOPE_VARIANT
+from cfdi_vault.sat_orchestration import DownloadRequestOrchestrator
+from cfdi_vault.sat_simulator import FakeSatScenario, FakeSatScenarioClient
 from cfdi_vault.sat_transport import (
     GuardedSoapHttpTransport,
     LiveSatGuardError,
     LiveSatGuardInput,
     validate_live_sat_guard,
 )
-from cfdi_vault.worker import RecoveryWorker
+from cfdi_vault.sat_v15_adapter import (
+    SatV15AdapterError,
+)
+from cfdi_vault.secrets import CredentialKind, CredentialReference
+from cfdi_vault.service import ImportBatchResult, ImportRecord, SummaryRow, VaultService
 from cfdi_vault.storage import LocalStorage
-from cfdi_vault.windows_secrets import WindowsCredentialManagerSecretProvider
-
+from cfdi_vault.worker import RecoveryWorker
 
 LIVE_SMOKE_CONFIRMATION = "SAT REAL METADATA SMOKE"
 LIVE_TRANSPORT_PROBE_CONFIRMATION = "SAT REAL TRANSPORT PROBE"
@@ -238,6 +207,15 @@ def _validate_live_smoke_guard(
     permit_ref: str | None = None,
     permit_scope: str = "metadata_live_smoke",
 ) -> bool:
+    # Retired live-smoke callers are intentionally lazy.  The productive CLI
+    # must be importable without loading probe/diagnostic/permit modules.
+    from cfdi_vault.live_permit import (
+        LivePermitError,
+        auth_live_smoke_permit_expectation,
+        permit_expectation_from_query,
+        validate_and_consume_live_permit,
+    )
+
     profile = _load_download_profile(profile_id)
     provider = _setup_provider(profile_id)
     inspection = setup_flow.inspect_profile(profile_id, provider=provider)
@@ -370,6 +348,8 @@ def _run_live_metadata_smoke(
     *,
     live_permit_verified: bool = False,
 ) -> LiveSmokeCliResult:
+    from cfdi_vault.sat_v15_adapter import SatLiveMetadataSmokeAdapter
+
     profile = _load_download_profile(profile_id)
     adapter = SatLiveMetadataSmokeAdapter(
         profile=profile,
@@ -557,14 +537,23 @@ def _parse_cli_datetime(value: str, *, end_of_day: bool) -> datetime:
     return parsed
 
 def _provider_for_reference(reference: CredentialReference) -> object:
-    if reference.provider_scheme == WindowsCredentialManagerSecretProvider.provider_scheme:
-        return WindowsCredentialManagerSecretProvider()
-    if reference.provider_scheme == DummySecretProvider.provider_scheme:
-        return DummySecretProvider()
-    raise typer.BadParameter(f"unsupported credential reference scheme: {reference.provider_scheme}")
+    try:
+        return native_provider_for_reference(
+            reference,
+            platform="win32" if os.environ.get("LOCALAPPDATA") else None,
+            allow_synthetic=True,
+        )
+    except OsSecretProviderError as exc:
+        raise typer.BadParameter(str(exc)) from None
 
 def _setup_provider(profile_id: str) -> object:
-    phrase_ref = setup_flow.default_phrase_reference(profile_id)
+    try:
+        phrase_ref = setup_flow.load_profile(profile_id).phrase_ref
+    except setup_flow.SetupError:
+        phrase_ref = setup_flow.default_phrase_reference(
+            profile_id,
+            platform="win32" if os.environ.get("LOCALAPPDATA") else None,
+        )
     return _provider_for_reference(CredentialReference(uri=phrase_ref, kind=CredentialKind.PHRASE))
 
 __all__ = tuple(name for name in globals() if not name.startswith("__") and name != "__all__")

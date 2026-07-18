@@ -43,6 +43,9 @@ Allowed reference schemes:
 | Scheme | Intended use |
 |---|---|
 | `windows-credential-manager://` | Windows local secure storage entry. |
+| `macos-keychain://` | macOS Keychain entry. |
+| `linux-secret-service://` | Linux Secret Service entry (for example, GNOME Keyring). |
+| `linux-kwallet://` | Linux KWallet entry when Secret Service is unavailable. |
 | `vault://` | Future external vault entry. |
 | `kms://` | Future managed key entry. |
 | `local-dev-dummy://` | Dummy examples and tests only. Not production custody. |

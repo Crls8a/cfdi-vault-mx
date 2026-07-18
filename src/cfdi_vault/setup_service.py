@@ -22,7 +22,12 @@ from cfdi_vault.setup_core import (
     validate_rfc,
     write_profile,
 )
-from cfdi_vault.setup_intake import CredentialSelection, discover_credentials, guard_credential_intake, stage_credentials_for_appdata
+from cfdi_vault.setup_intake import (
+    CredentialSelection,
+    discover_credentials,
+    guard_credential_intake,
+    stage_credentials_for_appdata,
+)
 
 
 def run_setup(
@@ -38,13 +43,15 @@ def run_setup(
     env: Mapping[str, str] | None = None,
     home: Path | None = None,
     repo_root: Path | None = None,
+    platform: str | None = None,
 ) -> SetupResult:
     """Create the local AppData profile and store the phrase through a provider."""
 
     safe_profile_id = validate_profile_id(profile_id)
     normalized_rfc = validate_rfc(rfc)
-    paths = build_profile_paths(safe_profile_id, env=env, home=home)
     environment = env if env is not None else os.environ
+    effective_platform = platform or ("win32" if environment.get("LOCALAPPDATA") else None)
+    paths = build_profile_paths(safe_profile_id, env=environment, home=home, platform=effective_platform)
     guard_credential_intake(
         source_folder=source_folder,
         destination_root=paths.base_dir,
@@ -56,7 +63,7 @@ def run_setup(
     if not phrase_value or not phrase_value.strip():
         raise SetupError(["private-key phrase must be provided and is stored only through the secret provider"])
 
-    phrase_ref = default_phrase_reference(safe_profile_id)
+    phrase_ref = default_phrase_reference(safe_profile_id, platform=effective_platform)
     pending_import = stage_credentials_for_appdata(selection, paths, mode=mode)
     fingerprint = _sha256_file(pending_import.staged_selection.certificate_path)
     profile = LocalProfile(

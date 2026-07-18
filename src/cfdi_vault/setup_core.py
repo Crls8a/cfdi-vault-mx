@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import StrEnum
 import json
 import os
+import sys
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Mapping, Protocol
 
 from cfdi_vault.config import PROFILE_ID_PATTERN, RFC_PATTERN
 from cfdi_vault.secrets import CredentialReference, SecretValue
-
 
 APPDATA_DIR_NAME = "cfdi-vault-mx"
 DIRECT_CREDENTIAL_ENV_VARS = frozenset(
@@ -128,21 +128,49 @@ def validate_profile_id(value: str) -> str:
     return normalized
 
 
-def resolve_appdata_root(*, env: Mapping[str, str] | None = None, home: Path | None = None) -> Path:
-    """Resolve the cfdi-vault-mx AppData root with the documented fallback."""
+def resolve_appdata_root(
+    *,
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+    platform: str | None = None,
+) -> Path:
+    """Resolve the per-user app-data root without storing credential values.
+
+    ``platform`` is injectable so callers and tests can select a deterministic
+    convention.  Accepted values are Python-style platform names for Windows,
+    macOS, and Linux; omitted values use the current interpreter platform.
+    """
 
     environment = env if env is not None else os.environ
-    local_appdata = environment.get("LOCALAPPDATA")
-    if local_appdata and local_appdata.strip():
-        return Path(local_appdata).expanduser() / APPDATA_DIR_NAME
-    return (home or Path.home()).expanduser() / "AppData" / "Local" / APPDATA_DIR_NAME
+    home_path = (home or Path.home()).expanduser()
+    # LOCALAPPDATA is an explicit compatibility signal used by older Windows
+    # installs and by isolated tests.  It may therefore select the Windows
+    # layout even when the interpreter itself is running on another host.
+    platform_family = _platform_family(platform or ("windows" if environment.get("LOCALAPPDATA") else None))
+    if platform_family == "windows":
+        local_appdata = environment.get("LOCALAPPDATA")
+        if local_appdata and local_appdata.strip():
+            return Path(local_appdata).expanduser() / APPDATA_DIR_NAME
+        return home_path / "AppData" / "Local" / APPDATA_DIR_NAME
+    if platform_family == "macos":
+        return home_path / "Library" / "Application Support" / APPDATA_DIR_NAME
+    xdg_data_home = environment.get("XDG_DATA_HOME")
+    if xdg_data_home and xdg_data_home.strip():
+        return Path(xdg_data_home).expanduser() / APPDATA_DIR_NAME
+    return home_path / ".local" / "share" / APPDATA_DIR_NAME
 
 
-def build_profile_paths(profile_id: str, *, env: Mapping[str, str] | None = None, home: Path | None = None) -> AppDataPaths:
+def build_profile_paths(
+    profile_id: str,
+    *,
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+    platform: str | None = None,
+) -> AppDataPaths:
     """Build AppData paths for one profile without creating them."""
 
     safe_profile_id = validate_profile_id(profile_id)
-    base_dir = resolve_appdata_root(env=env, home=home)
+    base_dir = resolve_appdata_root(env=env, home=home, platform=platform)
     profiles_dir = base_dir / "profiles"
     profile_dir = profiles_dir / safe_profile_id
     return AppDataPaths(
@@ -153,6 +181,19 @@ def build_profile_paths(profile_id: str, *, env: Mapping[str, str] | None = None
         credentials_dir=profile_dir / "credentials",
         storage_root=base_dir / "storage" / safe_profile_id,
     )
+
+
+def _platform_family(value: str | None) -> str:
+    """Normalize an injectable interpreter platform name to a path family."""
+
+    candidate = (value or sys.platform).strip().lower()
+    if candidate.startswith("win"):
+        return "windows"
+    if candidate in {"darwin", "mac", "macos", "osx"} or candidate.startswith("darwin"):
+        return "macos"
+    if candidate.startswith("linux"):
+        return "linux"
+    raise SetupError(["unsupported platform; expected Windows, macOS, or Linux"])
 
 
 def ensure_profile_layout(paths: AppDataPaths) -> None:
@@ -220,11 +261,17 @@ def profile_from_document(data: Mapping[str, object]) -> LocalProfile:
     )
 
 
-def default_phrase_reference(profile_id: str) -> str:
-    """Build the controlled local phrase reference for one profile."""
+def default_phrase_reference(profile_id: str, *, platform: str | None = None) -> str:
+    """Build a platform-native phrase reference without reading its value."""
 
     safe_profile_id = validate_profile_id(profile_id)
-    return f"windows-credential-manager://cfdi-vault/setup/{safe_profile_id}/private-key-phrase"
+    family = _platform_family(platform)
+    schemes = {
+        "windows": "windows-credential-manager",
+        "macos": "macos-keychain",
+        "linux": "linux-secret-service",
+    }
+    return f"{schemes[family]}://cfdi-vault/setup/{safe_profile_id}/private-key-phrase"
 
 
 def redact_rfc(value: str) -> str:

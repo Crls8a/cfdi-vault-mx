@@ -10,7 +10,6 @@ from typer.testing import CliRunner
 from cfdi_vault.cli import app
 from cfdi_vault.config import ConfigValidationError, validate_config
 
-
 EXAMPLE_CONFIG = {
     "schemaVersion": 1,
     "profiles": [
@@ -55,6 +54,14 @@ def test_config_accepts_multiple_profiles_with_references() -> None:
     assert config.get_profile("dummy-received-lookback").rfc == "XAXX010101000"
     assert config.get_profile("dummy-received-lookback").lookback_days == 30
     assert config.get_profile("dummy-issued-initial-range").initial_range is not None
+
+
+@pytest.mark.parametrize("scheme", ["macos-keychain", "linux-secret-service", "linux-kwallet"])
+def test_config_accepts_native_cross_platform_reference_schemes(scheme: str) -> None:
+    config_data = copy.deepcopy(EXAMPLE_CONFIG)
+    config_data["profiles"][0]["credentialRefs"]["passphraseRef"] = f"{scheme}://cfdi-vault/tests/phrase"
+    config = validate_config(config_data)
+    assert config.get_profile("dummy-received-lookback").credential_refs.phrase_ref.startswith(f"{scheme}://")
 
 
 def test_config_rejects_raw_credential_field() -> None:

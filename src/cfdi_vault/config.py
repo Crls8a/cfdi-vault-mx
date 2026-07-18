@@ -6,14 +6,13 @@ must be represented by references to an external custody mechanism.
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 from datetime import date
-import json
 from pathlib import Path
-import re
 from typing import Any, Mapping
 from urllib.parse import urlparse
-
 
 RFC_PATTERN = re.compile(r"^[A-Z&Ñ]{3,4}\d{6}[A-Z0-9]{3}$", re.IGNORECASE)
 PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{1,63}$")
@@ -23,6 +22,9 @@ TIME_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 ALLOWED_REFERENCE_SCHEMES = frozenset(
     {
         "windows-credential-manager",
+        "macos-keychain",
+        "linux-secret-service",
+        "linux-kwallet",
         "vault",
         "kms",
         "local-dev-dummy",

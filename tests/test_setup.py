@@ -19,11 +19,48 @@ def test_rfc_validation_accepts_valid_shape_and_rejects_invalid() -> None:
 
 def test_appdata_path_builder_uses_localappdata_and_home_fallback(tmp_path: Path) -> None:
     local_appdata = tmp_path / "local-appdata"
-    paths = setup.build_profile_paths("dummy-profile", env={"LOCALAPPDATA": str(local_appdata)})
+    paths = setup.build_profile_paths("dummy-profile", env={"LOCALAPPDATA": str(local_appdata)}, platform="win32")
     assert paths.profile_json == local_appdata / "cfdi-vault-mx" / "profiles" / "dummy-profile" / "profile.json"
     assert paths.credentials_dir == local_appdata / "cfdi-vault-mx" / "profiles" / "dummy-profile" / "credentials"
     assert paths.storage_root == local_appdata / "cfdi-vault-mx" / "storage" / "dummy-profile"
-    assert setup.build_profile_paths("dummy-profile", env={}, home=tmp_path / "home").base_dir == tmp_path / "home" / "AppData" / "Local" / "cfdi-vault-mx"
+    assert setup.build_profile_paths("dummy-profile", env={}, home=tmp_path / "home", platform="windows").base_dir == tmp_path / "home" / "AppData" / "Local" / "cfdi-vault-mx"
+
+
+def test_appdata_path_builder_uses_macos_application_support(tmp_path: Path) -> None:
+    home = tmp_path / "mac-home"
+    paths = setup.build_profile_paths("dummy-profile", env={}, home=home, platform="darwin")
+    expected = home / "Library" / "Application Support" / "cfdi-vault-mx"
+    assert paths.base_dir == expected
+    assert paths.profile_json == expected / "profiles" / "dummy-profile" / "profile.json"
+    assert paths.credentials_dir == expected / "profiles" / "dummy-profile" / "credentials"
+    assert paths.storage_root == expected / "storage" / "dummy-profile"
+
+
+def test_appdata_path_builder_uses_linux_xdg_data_home_before_home_fallback(tmp_path: Path) -> None:
+    home = tmp_path / "linux-home"
+    xdg_data_home = tmp_path / "xdg-data"
+    with_xdg = setup.build_profile_paths(
+        "dummy-profile",
+        env={"XDG_DATA_HOME": str(xdg_data_home)},
+        home=home,
+        platform="linux",
+    )
+    without_xdg = setup.build_profile_paths("dummy-profile", env={}, home=home, platform="linux")
+    assert with_xdg.base_dir == xdg_data_home / "cfdi-vault-mx"
+    assert without_xdg.base_dir == home / ".local" / "share" / "cfdi-vault-mx"
+
+
+def test_appdata_path_builder_rejects_unknown_platform(tmp_path: Path) -> None:
+    with pytest.raises(setup.SetupError, match="unsupported platform"):
+        setup.resolve_appdata_root(platform="plan9", home=tmp_path / "home")
+
+
+@pytest.mark.parametrize(
+    ("platform", "scheme"),
+    [("win32", "windows-credential-manager"), ("darwin", "macos-keychain"), ("linux", "linux-secret-service")],
+)
+def test_default_phrase_reference_uses_native_provider_scheme(platform: str, scheme: str) -> None:
+    assert setup.default_phrase_reference("dummy-profile", platform=platform).startswith(f"{scheme}://")
 
 
 def test_profile_json_roundtrip_never_requires_secret_value(tmp_path: Path) -> None:
