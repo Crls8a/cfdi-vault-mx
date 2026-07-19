@@ -39,10 +39,7 @@ def _concept(
     if overrides:
         attributes.update(overrides)
     rendered = " ".join(f'{name}="{value}"' for name, value in attributes.items())
-    return (
-        '<cfdi:Concepto xmlns:cfdi="urn:synthetic:cfdi" '
-        f"{rendered} {extra}/>"
-    )
+    return f'<cfdi:Concepto xmlns:cfdi="urn:synthetic:cfdi" {rendered} {extra}/>'
 
 
 def test_v40_multi_concept_normalization_is_ordered_and_bounded() -> None:
@@ -60,11 +57,15 @@ def test_v40_multi_concept_normalization_is_ordered_and_bounded() -> None:
 
 
 def test_optional_attributes_are_none_and_namespaces_are_tolerated() -> None:
-    xml = _xml(concepts=_concept().replace("cfdi:Concepto", "x:Concepto", 1).replace(
-        'xmlns:cfdi="urn:synthetic:cfdi"',
-        'xmlns:x="urn:synthetic:other"',
-        1,
-    ))
+    xml = _xml(
+        concepts=_concept()
+        .replace("cfdi:Concepto", "x:Concepto", 1)
+        .replace(
+            'xmlns:cfdi="urn:synthetic:cfdi"',
+            'xmlns:x="urn:synthetic:other"',
+            1,
+        )
+    )
     result = normalize_concepts(xml)
 
     assert result.records[0].discount is None
@@ -97,6 +98,10 @@ def test_doctype_and_entities_are_rejected_before_parsing() -> None:
 
     with pytest.raises(CfdiParseError, match="concept-doctype-rejected"):
         normalize_concepts(xml)
+
+    utf16 = '<!DOCTYPE x [<!ENTITY e "unsafe">]><Comprobante Version="4.0"/>'.encode("utf-16")
+    with pytest.raises(CfdiParseError, match="concept-xml-encoding-invalid"):
+        normalize_concepts(utf16)
 
 
 def test_reprocess_is_deterministic_and_does_not_duplicate_records() -> None:

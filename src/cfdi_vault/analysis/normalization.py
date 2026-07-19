@@ -96,8 +96,9 @@ def normalize_concepts(
     if not isinstance(xml_bytes, bytes):
         raise TypeError("concept-xml-bytes-required")
     provenance = _validate_provenance(document_ref)
-    _reject_unsafe_declarations(xml_bytes)
-    root = _parse_root(xml_bytes)
+    xml_text = _decode_xml(xml_bytes)
+    _reject_unsafe_declarations(xml_text)
+    root = _parse_root(xml_text)
     if _local_name(root.tag) != "Comprobante":
         raise CfdiParseError("concept-root-invalid")
 
@@ -184,15 +185,22 @@ def _validate_provenance(value: str) -> str:
     return value
 
 
-def _reject_unsafe_declarations(xml_bytes: bytes) -> None:
-    upper = xml_bytes.upper()
-    if b"<!DOCTYPE" in upper or b"<!ENTITY" in upper:
+def _decode_xml(xml_bytes: bytes) -> str:
+    try:
+        return xml_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        raise CfdiParseError("concept-xml-encoding-invalid") from None
+
+
+def _reject_unsafe_declarations(xml_text: str) -> None:
+    upper = xml_text.upper()
+    if "<!DOCTYPE" in upper or "<!ENTITY" in upper:
         raise CfdiParseError("concept-doctype-rejected")
 
 
-def _parse_root(xml_bytes: bytes) -> ET.Element:
+def _parse_root(xml_text: str) -> ET.Element:
     try:
-        return ET.fromstring(xml_bytes)
+        return ET.fromstring(xml_text)
     except ET.ParseError:
         raise CfdiParseError("concept-xml-invalid") from None
 
