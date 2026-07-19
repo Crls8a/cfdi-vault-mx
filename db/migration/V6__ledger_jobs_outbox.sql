@@ -31,12 +31,13 @@ AS $$
     SELECT jsonb_typeof(value) = 'object'
        AND NOT EXISTS (
            SELECT 1
-           FROM jsonb_each_text(value) AS entry(key, value)
+           FROM jsonb_each(value) AS entry(key, value)
            WHERE entry.key <> ALL (ARRAY[
                'records', 'eligible', 'cancelled', 'duplicate', 'conflict',
                'unknown', 'concepts', 'taxes', 'payments', 'payroll', 'related'
            ])
-           OR entry.value !~ '^[0-9]+$'
+           OR jsonb_typeof(entry.value) <> 'number'
+           OR entry.value::text !~ '^(0|[1-9][0-9]*)$'
        );
 $$;
 
@@ -69,7 +70,7 @@ CREATE TABLE ledger_jobs (
     )),
     CONSTRAINT ck_ledger_jobs_attempts CHECK (attempt_count >= 0 AND max_attempts > 0 AND attempt_count <= max_attempts),
     CONSTRAINT ck_ledger_jobs_error_code CHECK (
-        last_error_code IS NULL OR last_error_code ~ '^[a-z][a-z0-9_]{0,63}$'
+        last_error_code IS NULL OR last_error_code ~ '^[a-z][a-z0-9._-]{0,63}$'
     ),
     CONSTRAINT ck_ledger_jobs_counts CHECK (ledger_aggregate_counts_valid(aggregate_counts)),
     CONSTRAINT ck_ledger_jobs_completion CHECK (
@@ -128,7 +129,7 @@ CREATE TABLE ledger_job_claims (
     CONSTRAINT ck_ledger_job_claims_attempt CHECK (attempt > 0),
     CONSTRAINT ck_ledger_job_claims_lease CHECK (lease_until > claimed_at),
     CONSTRAINT ck_ledger_job_claims_result CHECK (
-        result_code IS NULL OR result_code ~ '^[a-z][a-z0-9_]{0,63}$'
+        result_code IS NULL OR result_code ~ '^[a-z][a-z0-9._-]{0,63}$'
     ),
     CONSTRAINT ck_ledger_job_claims_completion CHECK (
         completed_at IS NULL OR completed_at >= claimed_at
@@ -195,7 +196,7 @@ CREATE TABLE ledger_outbox (
     CONSTRAINT ck_ledger_outbox_lease CHECK (status <> 'claimed' OR lease_until IS NOT NULL),
     CONSTRAINT ck_ledger_outbox_published CHECK (status <> 'published' OR published_at IS NOT NULL),
     CONSTRAINT ck_ledger_outbox_error_code CHECK (
-        last_error_code IS NULL OR last_error_code ~ '^[a-z][a-z0-9_]{0,63}$'
+        last_error_code IS NULL OR last_error_code ~ '^[a-z][a-z0-9._-]{0,63}$'
     )
 );
 
@@ -210,7 +211,7 @@ CREATE TABLE ledger_inbox (
     CONSTRAINT ck_ledger_inbox_event_id CHECK (length(event_id) BETWEEN 1 AND 96),
     CONSTRAINT ck_ledger_inbox_consumer CHECK (length(consumer_name) BETWEEN 1 AND 128),
     CONSTRAINT ck_ledger_inbox_result CHECK (
-        result_code IS NULL OR result_code ~ '^[a-z][a-z0-9_]{0,63}$'
+        result_code IS NULL OR result_code ~ '^[a-z][a-z0-9._-]{0,63}$'
     ),
     CONSTRAINT ck_ledger_inbox_completion CHECK (
         (processed_at IS NULL AND result_code IS NULL) OR (processed_at IS NOT NULL AND result_code IS NOT NULL)

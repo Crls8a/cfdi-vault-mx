@@ -55,7 +55,7 @@ def test_v6_jobs_have_durable_identity_status_and_aggregate_only_result() -> Non
         normalized,
     )
     assert "ledger_aggregate_counts_valid(aggregate_counts)" in normalized
-    assert "last_error_code ~ '^[a-z][a-z0-9_]{0,63}$'" in normalized
+    assert "last_error_code ~ '^[a-z][a-z0-9._-]{0,63}$'" in normalized
     assert "completed_at IS NOT NULL" in normalized
     assert "FOREIGN KEY (tenant_id) REFERENCES tenants (id)" in normalized
 
@@ -71,6 +71,15 @@ def test_v6_job_completion_check_requires_exact_nullability() -> None:
         "status NOT IN ('succeeded', 'duplicate', 'failed', 'uncertain', 'dead_letter') AND completed_at IS NULL"
         in completion
     )
+
+
+def test_v6_reason_codes_and_counts_match_queue_safety_contract() -> None:
+    normalized = _normalized_sql()
+    assert normalized.count("'^[a-z][a-z0-9._-]{0,63}$'") == 4
+    assert "jsonb_each_text" not in normalized
+    assert "jsonb_each(value) AS entry(key, value)" in normalized
+    assert "jsonb_typeof(entry.value) <> 'number'" in normalized
+    assert "entry.value::text !~ '^(0|[1-9][0-9]*)$'" in normalized
 
 
 def test_v6_claims_are_leased_unique_and_append_only() -> None:
