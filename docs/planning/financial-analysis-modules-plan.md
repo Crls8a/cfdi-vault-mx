@@ -255,8 +255,12 @@ has an aggregate count, and can be resolved/recomputed idempotently.
 
 Expose report DTOs and private CSV/JSON exports with date, direction, status,
 currency, and completeness filters. The first pure composition DTO is now
-available through `analysis.reporting`; database query wiring and export
-adapters remain pending. Add operator-facing aggregate status only after
+available through `analysis.reporting`; the in-memory export adapter is now
+available through the internal `analysis.export` module. Its JSON and CSV
+functions accept only the validated report DTO, use fixed schemas, and never
+write files or include provenance, identifiers, hashes, paths, raw XML/ZIP,
+credentials, or SOAP. Database query wiring, private storage delivery, and CLI
+integration remain pending. Add operator-facing aggregate status only after
 redaction tests. **Measure:** no default output contains RFC, UUID, raw XML,
 package bytes, storage paths, credentials, or SOAP.
 
