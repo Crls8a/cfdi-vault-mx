@@ -75,7 +75,9 @@ class QualityObservation:
     The booleans deliberately carry only presence/conflict facts; they do not
     contain UUIDs, RFCs, SAT identifiers, paths, or raw payloads.  Statuses
     are normalized to lowercase at construction and are safe to include only
-    in private classification logic, never in the aggregate output.
+    in private classification logic, never in the aggregate output.  When a
+    legacy child table cannot prove tenant ownership, ``payment_evidence_available``
+    is false and no missing-complement finding is inferred.
     """
 
     metadata_present: bool = False
@@ -86,6 +88,7 @@ class QualityObservation:
     payment_present: bool = False
     parser_status: str = "complete"
     reconciliation_state: str = ReconciliationState.DISCOVERED_IN_METADATA.value
+    payment_evidence_available: bool = True
 
     def __post_init__(self) -> None:
         for name in (
@@ -95,6 +98,7 @@ class QualityObservation:
             "xml_conflict",
             "payment_expected",
             "payment_present",
+            "payment_evidence_available",
         ):
             if type(getattr(self, name)) is not bool:
                 raise TypeError(f"quality-{name}-bool-required")
@@ -221,7 +225,7 @@ def _categories_for(observation: QualityObservation) -> tuple[str, ...]:
         categories.add("cancelled_with_xml")
     if observation.xml_conflict:
         categories.add("duplicate_or_conflicting_xml")
-    if observation.payment_expected and not observation.payment_present:
+    if observation.payment_evidence_available and observation.payment_expected and not observation.payment_present:
         categories.add("missing_payment_complement")
 
     parser_status = observation.parser_status

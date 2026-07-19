@@ -69,6 +69,12 @@ def test_quality_allows_multiple_categories_without_row_details() -> None:
     assert all(value in QUALITY_CATEGORIES for value in snapshot.counts)
 
 
+def test_quality_does_not_infer_missing_payment_when_presence_is_unavailable() -> None:
+    snapshot = snapshot_quality([_observation(payment_expected=True, payment_evidence_available=False)])
+
+    assert snapshot.count("missing_payment_complement") == 0
+
+
 def test_one_observation_counts_each_category_once_and_order_is_fixed() -> None:
     observation = _observation(
         metadata_present=True,
