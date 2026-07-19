@@ -5,10 +5,12 @@ from decimal import Decimal
 
 import pytest
 
+from cfdi_vault.analysis.contextual_report import ContextualReportBundle
 from cfdi_vault.analysis.monthly import MonthlyAnalysisRecord
 from cfdi_vault.analysis.postgres_accounting import AccountingReadResult
 from cfdi_vault.analysis.postgres_report import PostgresFinancialAnalysisService
 from cfdi_vault.analysis.quality import QualityObservation
+from cfdi_vault.analysis.quality_context import QualityAnalysisRecord
 
 
 class _MonthlyReader:
@@ -45,6 +47,33 @@ class _AccountingReader:
     def quality_observations(self, tenant_id: str, *, start: date, end: date):
         self.calls.append(("quality", tenant_id, start, end))
         return self.observations
+
+
+class _ContextualAccountingReader(_AccountingReader):
+    def __init__(
+        self,
+        *,
+        context_records: tuple[QualityAnalysisRecord, ...] = (),
+    ) -> None:
+        super().__init__()
+        self.context_records = context_records
+        self.context_calls: list[tuple[str, date, date]] = []
+
+    def quality_context_records(self, tenant_id: str, *, start: date, end: date):
+        self.context_calls.append((tenant_id, start, end))
+        return self.context_records
+
+
+def _contextual_service(
+    records: tuple[QualityAnalysisRecord, ...] = (),
+) -> tuple[PostgresFinancialAnalysisService, _MonthlyReader, _ContextualAccountingReader]:
+    monthly = _MonthlyReader()
+    accounting = _ContextualAccountingReader(context_records=records)
+    service = PostgresFinancialAnalysisService(
+        monthly,  # type: ignore[arg-type]
+        accounting,  # type: ignore[arg-type]
+    )
+    return service, monthly, accounting
 
 
 def _service(
@@ -170,3 +199,68 @@ def test_generated_at_uses_injected_clock_or_explicit_utc_timestamp() -> None:
             date(2026, 1, 31),
             generated_at=datetime(2026, 2, 2, 9, 0, tzinfo=timezone(timedelta(hours=-6))),
         )
+
+
+def test_contextual_report_uses_quality_context_and_keeps_legacy_children_partial() -> None:
+    service, monthly, accounting = _contextual_service(
+        (
+            QualityAnalysisRecord(
+                observed_at=date(2026, 1, 31),
+                direction="received",
+                currency="MXN",
+                observation=QualityObservation(
+                    metadata_present=True,
+                    xml_present=False,
+                    parser_status="partial",
+                ),
+            ),
+        )
+    )
+
+    bundle = service.build_contextual_report("tenant", date(2026, 1, 1), date(2026, 1, 31))
+
+    assert isinstance(bundle, ContextualReportBundle)
+    assert bundle.source_status == "partial"
+    assert bundle.month_bounds == ("2026-01", "2026-01")
+    assert bundle.quality.contexts[0].direction == "received"
+    assert bundle.quality.contexts[0].currency == "MXN"
+    assert bundle.taxes.contexts == () and bundle.taxes.source_status == "partial"
+    assert bundle.payments.contexts == () and bundle.payments.source_status == "partial"
+    assert monthly.calls == []
+    assert accounting.calls == []
+    assert accounting.context_calls == [("tenant", date(2026, 1, 1), date(2026, 1, 31))]
+
+
+def test_contextual_report_with_no_quality_rows_does_not_invent_period_or_zeroes() -> None:
+    service, _, accounting = _contextual_service()
+
+    bundle = service.build_contextual_report("tenant", date(2026, 3, 1), date(2026, 3, 31))
+
+    assert bundle.source_status == "partial"
+    assert bundle.month_bounds is None
+    assert bundle.quality.contexts == ()
+    assert bundle.taxes.contexts == () and bundle.payments.contexts == ()
+    assert accounting.context_calls == [("tenant", date(2026, 3, 1), date(2026, 3, 31))]
+
+
+def test_contextual_report_validates_before_database_reads() -> None:
+    service, monthly, accounting = _contextual_service()
+
+    with pytest.raises(ValueError, match="analysis-tenant-required"):
+        service.build_contextual_report(" ", date(2026, 1, 1), date(2026, 1, 31))
+    with pytest.raises(TypeError, match="analysis-date-invalid"):
+        service.build_contextual_report("tenant", datetime(2026, 1, 1, tzinfo=UTC), date(2026, 1, 31))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="analysis-period-invalid"):
+        service.build_contextual_report("tenant", date(2026, 2, 1), date(2026, 1, 31))
+
+    assert monthly.calls == []
+    assert accounting.context_calls == []
+
+
+def test_contextual_report_requires_only_new_quality_adapter_method() -> None:
+    service, _, accounting = _service()
+
+    with pytest.raises(TypeError, match="analysis-quality-context-adapter-required"):
+        service.build_contextual_report("tenant", date(2026, 1, 1), date(2026, 1, 31))
+
+    assert accounting.calls == []

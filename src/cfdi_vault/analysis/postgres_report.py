@@ -13,11 +13,18 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime
 
 from cfdi_vault.analysis.accounting import summarize_payments, summarize_taxes
+from cfdi_vault.analysis.contextual_report import (
+    ContextualReportBundle,
+    compose_contextual_report_bundle,
+)
 from cfdi_vault.analysis.monthly import analyze_monthly
+from cfdi_vault.analysis.payment_context import PaymentContextReport
 from cfdi_vault.analysis.postgres import MonthlyAnalysisPostgresAdapter
 from cfdi_vault.analysis.postgres_accounting import AccountingPostgresAdapter
 from cfdi_vault.analysis.quality import snapshot_quality
+from cfdi_vault.analysis.quality_context import summarize_quality_by_context
 from cfdi_vault.analysis.reporting import AnalysisPeriod, FinancialAnalysisReport
+from cfdi_vault.analysis.tax_context import TaxContextReport
 
 __all__ = ["PostgresFinancialAnalysisService"]
 
@@ -107,6 +114,41 @@ class PostgresFinancialAnalysisService:
             period=AnalysisPeriod(start, end),
             generated_at=timestamp,
         )
+
+    def build_contextual_report(
+        self,
+        tenant_id: str,
+        start: date,
+        end: date,
+    ) -> ContextualReportBundle:
+        """Return contextual quality evidence without inventing child data.
+
+        Only the dated quality-context adapter is read.  Tax and payment
+        contextual reports remain empty with ``partial`` status because the
+        legacy child reads cannot yet prove tenant-safe V5 ownership.  Missing
+        quality rows therefore do not become zeroes or requested-period
+        months.  This method is read-only and has no SAT, queue, storage, or
+        network side effects.
+
+        Raises:
+            ValueError: for a blank tenant or inverted period.
+            TypeError: for non-``date`` bounds or adapters without the new
+                ``quality_context_records`` method.
+        """
+
+        _validate_request(tenant_id, start, end)
+        quality_context_records = getattr(self._accounting_adapter, "quality_context_records", None)
+        if not callable(quality_context_records):
+            raise TypeError("analysis-quality-context-adapter-required")
+
+        quality = summarize_quality_by_context(
+            quality_context_records(tenant_id, start=start, end=end),
+            start=start,
+            end=end,
+        )
+        taxes = TaxContextReport((), "partial")
+        payments = PaymentContextReport((), "partial")
+        return compose_contextual_report_bundle(taxes, payments, quality)
 
     def __repr__(self) -> str:
         """Return a representation without adapters, tenants, or report data."""
