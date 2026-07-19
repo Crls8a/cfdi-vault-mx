@@ -1,5 +1,13 @@
 """Private financial-analysis contracts for normalized CFDI evidence."""
 
+from cfdi_vault.analysis.accounting import (
+    PaymentSummaryReport,
+    PaymentSummaryRow,
+    TaxSummaryReport,
+    TaxSummaryRow,
+    summarize_payments,
+    summarize_taxes,
+)
 from cfdi_vault.analysis.monthly import (
     MonthlyAggregate,
     MonthlyAnalysisRecord,
@@ -31,6 +39,12 @@ __all__ = [
     "MonthlyAnalysisRecord",
     "MonthlyAnalysisReport",
     "analyze_monthly",
+    "TaxSummaryRow",
+    "TaxSummaryReport",
+    "summarize_taxes",
+    "PaymentSummaryRow",
+    "PaymentSummaryReport",
+    "summarize_payments",
     "MonthlyAnalysisPostgresAdapter",
     "monthly_records_statement",
     "ConceptNormalizationResult",
