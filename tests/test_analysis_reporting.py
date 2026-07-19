@@ -14,6 +14,7 @@ from cfdi_vault.analysis.accounting import (
     TaxSummaryRow,
 )
 from cfdi_vault.analysis.monthly import MonthlyAggregate, MonthlyAnalysisReport, MonthlyTrend
+from cfdi_vault.analysis.payroll_accounting import PayrollSummaryReport, PayrollSummaryRow
 from cfdi_vault.analysis.quality import QualityObservation, snapshot_quality
 from cfdi_vault.analysis.reporting import AnalysisPeriod, FinancialAnalysisReport
 
@@ -72,6 +73,28 @@ def _payments(status: str = "complete") -> PaymentSummaryReport:
         else (),
         source_status=status,
         incomplete_count=1 if status == "partial" else 0,
+    )
+
+
+def _payroll(status: str = "complete") -> PayrollSummaryReport:
+    return PayrollSummaryReport(
+        rows=(
+            PayrollSummaryRow(
+                month="2026-01",
+                payroll_type="O",
+                count=2,
+                incomplete_count=1 if status == "partial" else 0,
+                paid_days=Decimal("30"),
+                total_perceptions=Decimal("2000"),
+                total_deductions=Decimal("400"),
+                total_other_payments=Decimal("100"),
+            ),
+        )
+        if status not in {"empty", "unsupported"}
+        else (),
+        source_status=status,
+        incomplete_count=1 if status == "partial" else 0,
+        record_count=2 if status not in {"empty", "unsupported"} else 0,
     )
 
 
@@ -300,3 +323,92 @@ def test_report_rejects_invalid_monthly_status_counts_and_trend_dimensions() -> 
                 trends=(replace(bad_trend, direction="received", prior_available=False),),
             )
         )
+
+
+def test_report_includes_payroll_as_an_aggregate_only_section() -> None:
+    report = _report(payroll=_payroll())
+    payload = report.as_dict()
+
+    assert payload["section_statuses"]["payroll"] == "complete"
+    assert payload["section_completeness"]["payroll"] == "complete"
+    assert payload["sections"]["payroll"] == {
+        "status": "complete",
+        "completeness": "complete",
+        "record_count": 2,
+        "incomplete_count": 0,
+        "rows": [
+            {
+                "month": "2026-01",
+                "payroll_type": "O",
+                "count": 2,
+                "incomplete_count": 0,
+                "paid_days": "30",
+                "total_perceptions": "2000",
+                "total_deductions": "400",
+                "total_other_payments": "100",
+            }
+        ],
+    }
+    json.dumps(payload)
+
+
+@pytest.mark.parametrize("status", ["partial", "empty", "unsupported"])
+def test_report_preserves_payroll_status_and_incomplete_count(status: str) -> None:
+    report = _report(payroll=_payroll(status))
+
+    assert report.section_statuses["payroll"] == status
+    section = report.as_dict()["sections"]["payroll"]
+    assert section["status"] == status
+    assert section["completeness"] == status
+    assert section["incomplete_count"] == (1 if status == "partial" else 0)
+
+
+def test_report_orders_payroll_rows_and_redacts_source_details() -> None:
+    first = PayrollSummaryRow("2026-02", "E", 1, 0, Decimal("1"), Decimal("2"), None, None)
+    second = PayrollSummaryRow("2026-01", "O", 1, 0, Decimal("3"), Decimal("4"), None, None)
+    report = _report(
+        payroll=PayrollSummaryReport(
+            rows=(first, second),
+            source_status="complete",
+            incomplete_count=0,
+            record_count=2,
+        )
+    )
+
+    rows = report.as_dict()["sections"]["payroll"]["rows"]
+    assert [(row["month"], row["payroll_type"]) for row in rows] == [("2026-01", "O"), ("2026-02", "E")]
+    rendered = repr(report) + json.dumps(report.as_dict())
+    assert "PayrollSummaryRow" not in rendered
+    assert "PayrollRecord" not in rendered
+    assert "RFC" not in rendered
+
+
+def test_report_rejects_malformed_payroll_dimensions_and_counts() -> None:
+    base = _payroll().rows[0]
+    with pytest.raises(ValueError, match="analysis-month-invalid"):
+        _report(payroll=PayrollSummaryReport((replace(base, month="2026-13"),), "complete", 0, 1))
+    with pytest.raises(ValueError, match="analysis-payroll-type-invalid"):
+        _report(payroll=PayrollSummaryReport((replace(base, payroll_type="RFCABC010101AAA"),), "complete", 0, 1))
+    with pytest.raises(TypeError, match="analysis-count-invalid"):
+        _report(payroll=PayrollSummaryReport((replace(base, count=-1),), "complete", 0, 1))
+    with pytest.raises(TypeError, match="analysis-count-invalid"):
+        _report(payroll=PayrollSummaryReport((base,), "complete", -1, 1))
+    with pytest.raises(TypeError, match="analysis-count-invalid"):
+        _report(payroll=PayrollSummaryReport((base,), "complete", 0, -1))
+    with pytest.raises(ValueError, match="analysis-section-status-invalid"):
+        _report(payroll=PayrollSummaryReport((), "raw", 0, 0))
+
+
+def test_report_without_payroll_keeps_legacy_four_section_shape() -> None:
+    legacy = FinancialAnalysisReport(
+        _monthly(),
+        _taxes(),
+        _payments(),
+        snapshot_quality([]),
+        (date(2026, 1, 1), date(2026, 1, 31)),
+        datetime(2026, 2, 1, 12, 0, tzinfo=UTC),
+    )
+    payload = legacy.as_dict()
+
+    assert "payroll" not in payload["section_statuses"]
+    assert "payroll" not in payload["sections"]
