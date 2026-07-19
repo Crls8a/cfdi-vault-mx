@@ -1,7 +1,8 @@
 # Financial and accounting analysis modules plan
 
 Status: phased implementation. The pure monthly, normalization, accounting,
-quality, and report-composition contracts are implemented and unit-tested;
+quality, report-composition, and in-memory XML projection contracts are
+implemented and unit-tested;
 database ingestion, normalized ledgers, private exports, and operator CLI
 remain pending. This document does not enable SAT access, change the database
 schema, or make a tax determination.
@@ -41,6 +42,7 @@ deliberately narrower than claiming that the full financial product exists.
 | Monthly contract slice | `analysis.monthly.analyze_monthly()` plus `analysis.postgres.MonthlyAnalysisPostgresAdapter` produce deterministic month/direction/currency aggregates from typed metadata/XML evidence records and tenant-scoped PostgreSQL rows. | Implemented and unit-tested for UTC date bounds, metadata/XML precedence, partial-header fallback, sanitized DTOs, bounded active/cancelled/unknown status counts, and month-over-month deltas. Effect/type dimensions remain deferred because the current typed input and PostgreSQL read model do not expose those fields; private reporting is pending. |
 | Accounting summary slice | `analysis.accounting.summarize_taxes()` and `summarize_payments()` aggregate normalized tax/payment DTOs with source-status propagation and incomplete-data counts. | Implemented as a pure, unit-tested contract; persistence mapping, tax period/currency/direction dimensions, payment reconciliation, payroll, and private reporting remain pending. |
 | Worker handoff | `RecoveryService` consumes reference-only metadata/XML jobs and updates PostgreSQL. | Implemented and synthetic-worker tested; financial aggregates are not emitted by the worker. |
+| In-memory accounting projection | `analysis.projection.project_accounting_xml()` dispatches one stored XML value to the four pure normalizers and returns typed records, parser statuses, counts, and opaque deterministic references. | Implemented and unit-tested only; process-local duplicate suppression is not durable idempotency and no DB/worker/queue integration exists yet. |
 | Reporting/export | `analysis.reporting.FinancialAnalysisReport` composes monthly, tax, payment, and quality DTOs with UTC/period validation and aggregate-only JSON projection, including bounded monthly status counts and trend deltas. | Implemented as a pure, unit-tested contract; PostgreSQL queries, private exports, and CLI integration remain pending. |
 
 ### Important limitation
@@ -202,6 +204,21 @@ rows retain evidence provenance.
 The pure payroll slice is now implemented; its amount coverage is limited to
 direct Nomina totals and child counts until a separate schema/worker mapping is
 approved.
+
+The pure projection slice is now implemented in
+`analysis.projection.project_accounting_xml()`. It accepts one already-stored
+XML byte sequence, rejects non-UTF-8/`DOCTYPE`/`ENTITY` input, invokes the
+concept/tax/payment/payroll normalizers, and returns typed records plus parser
+statuses, record counts, aggregate completeness, and deterministic opaque
+source/idempotency references. `AccountingProjectionDispatcher` suppresses a
+duplicate only in process memory for offline tests; it does not write a row,
+publish a job, or replace the durable worker idempotency claim. The projection
+`as_dict()` and `repr()` expose aggregates only; hash-derived source and
+idempotency references remain typed in memory for a future private worker
+handoff. XML rows, UUID/RFC values, paths, and raw XML remain private to the
+typed records and are not serialized. Connecting this projection to PostgreSQL
+or RabbitMQ is a separate ingestion phase and requires the existing
+schema/worker review gate.
 
 ### Phase 4 — Reconciliation and quality snapshots
 

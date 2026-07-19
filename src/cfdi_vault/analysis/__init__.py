@@ -34,6 +34,12 @@ from cfdi_vault.analysis.postgres import (
     MonthlyAnalysisPostgresAdapter,
     monthly_records_statement,
 )
+from cfdi_vault.analysis.projection import (
+    AccountingDispatch,
+    AccountingProjection,
+    AccountingProjectionDispatcher,
+    project_accounting_xml,
+)
 from cfdi_vault.analysis.quality import (
     QUALITY_CATEGORIES,
     QualityBucket,
@@ -81,4 +87,8 @@ __all__ = [
     "PayrollNormalizationResult",
     "PayrollRecord",
     "normalize_payroll",
+    "AccountingDispatch",
+    "AccountingProjection",
+    "AccountingProjectionDispatcher",
+    "project_accounting_xml",
 ]
