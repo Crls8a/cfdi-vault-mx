@@ -35,6 +35,7 @@ from cfdi_vault.analysis.quality import (
     QualitySnapshot,
     snapshot_quality,
 )
+from cfdi_vault.analysis.reporting import AnalysisPeriod, FinancialAnalysisReport
 from cfdi_vault.analysis.taxes import (
     TaxNormalizationResult,
     TaxRecord,
@@ -59,6 +60,8 @@ __all__ = [
     "QualityBucket",
     "QualitySnapshot",
     "snapshot_quality",
+    "AnalysisPeriod",
+    "FinancialAnalysisReport",
     "ConceptNormalizationResult",
     "ConceptRecord",
     "normalize_concepts",

@@ -40,7 +40,7 @@ deliberately narrower than claiming that the full financial product exists.
 | Monthly contract slice | `analysis.monthly.analyze_monthly()` plus `analysis.postgres.MonthlyAnalysisPostgresAdapter` produce deterministic month/direction/currency aggregates from typed metadata/XML evidence records and tenant-scoped PostgreSQL rows. | Implemented and unit-tested for UTC date bounds, metadata/XML precedence, partial-header fallback, and sanitized DTOs; effect/type breakdowns, deltas, and private reporting are pending. |
 | Accounting summary slice | `analysis.accounting.summarize_taxes()` and `summarize_payments()` aggregate normalized tax/payment DTOs with source-status propagation and incomplete-data counts. | Implemented as a pure, unit-tested contract; persistence mapping, tax period/currency/direction dimensions, payment reconciliation, payroll, and private reporting remain pending. |
 | Worker handoff | `RecoveryService` consumes reference-only metadata/XML jobs and updates PostgreSQL. | Implemented and synthetic-worker tested; financial aggregates are not emitted by the worker. |
-| Reporting/export | Search, show, CSV export, and basic summary exist. | Useful operational surfaces; no accounting report schema, period filters, or quality report. |
+| Reporting/export | `analysis.reporting.FinancialAnalysisReport` composes monthly, tax, payment, and quality DTOs with UTC/period validation and aggregate-only JSON projection. | Implemented as a pure, unit-tested contract; PostgreSQL queries, private exports, and CLI integration remain pending. |
 
 ### Important limitation
 
@@ -192,9 +192,11 @@ has an aggregate count, and can be resolved/recomputed idempotently.
 ### Phase 5 — Private reports and exports
 
 Expose report DTOs and private CSV/JSON exports with date, direction, status,
-currency, and completeness filters. Add operator-facing aggregate status only
-after redaction tests. **Measure:** no default output contains RFC, UUID, raw
-XML, package bytes, storage paths, credentials, or SOAP.
+currency, and completeness filters. The first pure composition DTO is now
+available through `analysis.reporting`; database query wiring and export
+adapters remain pending. Add operator-facing aggregate status only after
+redaction tests. **Measure:** no default output contains RFC, UUID, raw XML,
+package bytes, storage paths, credentials, or SOAP.
 
 ### Phase 6 — Live evidence and promotion
 
