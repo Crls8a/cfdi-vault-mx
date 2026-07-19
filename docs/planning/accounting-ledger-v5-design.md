@@ -1,12 +1,11 @@
-# Accounting ledger V5 design (pending human approval)
+# Accounting ledger V5 design (approved for implementation)
 
-**Status:** design only. No migration, model, worker, CLI, or SAT behavior is
-changed by this document.
+**Status:** approved for implementation. No migration, model, worker, CLI, or
+SAT behavior has been changed by this document.
 
-**Decision gate:** every schema, retention, and identity decision below is a
-proposal. A maintainer must approve the additive migration and its rollback
-runbook before implementation. The first implementation must remain offline
-and use synthetic fixtures only.
+**Decision gate:** the maintainer approved the additive migration and rollback
+runbook below. Post-approval implementation gates remain mandatory, and the
+first implementation must remain offline and use synthetic fixtures only.
 
 ## 1. Current facts (verified in the repository)
 
@@ -39,8 +38,8 @@ normalized families, validates opaque tenant/work scope plus a required
 normalization generation, and derives deterministic private idempotency keys.
 It is deliberately not a mapper: it performs no SQL, queue, storage, or SAT
 operation and its aggregate projection excludes rows, raw payloads, hashes,
-and identifiers. V5 migration and worker mapping remain pending human
-approval.
+and identifiers. V5 migration and worker mapping remain pending
+implementation and post-approval verification.
 The source reference is canonicalized from the evidence hash prefix; replacing
 that reference without a matching hash is rejected before a mapper can use the
 intent.
@@ -49,13 +48,13 @@ intent.
 
 **Action required:** review and record every decision below before any V5
 migration, model, mapper, worker, CLI, queue, or SAT behavior is implemented.
-This document remains a proposal until the checklist is approved. A partial
-approval is a **NO-GO** for implementation; it does not authorize a narrower
+This document records the maintainer's complete approval. A partial approval
+would remain a **NO-GO** for implementation; it does not authorize a narrower
 schema or an implicit fallback.
 
 ### Review path
 
-1. Review the [proposed V5 boundary](#2-proposed-v5-boundary-not-approved)
+1. Review the [approved V5 boundary](#2-approved-v5-boundary)
    and [identity rules](#3-proposed-identity-and-uniqueness-rules).
 2. Confirm the [nullable-field policy](#4-missing-payroll-and-payment-fields),
    [worker boundaries](#5-transaction-and-worker-boundaries), and
@@ -63,7 +62,8 @@ schema or an implicit fallback.
 3. Confirm the [pre-approval evidence](#pre-approval-evidence-required-before-authorization)
    before recording an implementation decision. The migration, mapper,
    worker, and rollback tests in §8 are **post-approval completion gates**;
-   they cannot be evidence that an unapproved implementation already works.
+   they cannot be evidence that an implementation already works before they
+   are executed.
 4. Record one exact decision per row in the table below. Blank or mixed
    decisions remain **NO-GO**.
 
@@ -71,15 +71,15 @@ schema or an implicit fallback.
 
 | Decision | Maintainer must confirm | Decision (GO/NO-GO) |
 |---|---|---|
-| Scope | V5 is additive, Flyway-owned, synthetic/offline first, and does not copy raw XML, ZIP/TXT bytes, secrets, or unbounded payloads. | |
-| Tenant boundary | Parent keys and every child reference use same-tenant composite keys; ambiguous legacy backfill stops for review. | |
-| Evidence and idempotency | Evidence hash, source reference, ordinal, generation, and exact-key idempotency are required; conflicts preserve prior evidence. | |
-| Payroll fields | Source amounts remain nullable; missing values stay `NULL`; no net-pay arithmetic or employee identity is inferred. | |
-| Payment fields | Exchange rate is conditionally required by currency; missing related identity is incomplete; no paid/tax conclusion is inferred. | |
-| Worker boundary | Claims and short DB transactions surround external effects; SAT/storage/queue I/O is outside transactions; outbox publication follows commit. | |
-| Rollback and retention | Writers stop, queues drain, backup/counts are captured, and reverse-order rollback retains evidence, legacy rows, and audit history. | |
-| Public redaction | Status/report output is aggregate-only and excludes tenant/row identifiers, hashes, storage references, raw payloads, SOAP, credentials, and external error text. | |
-| Pre-approval evidence | Design review, pure contract/intent tests, redaction/security scans, and no-runtime-change gates pass on a clean tree. | |
+| Scope | V5 is additive, Flyway-owned, synthetic/offline first, and does not copy raw XML, ZIP/TXT bytes, secrets, or unbounded payloads. | GO |
+| Tenant boundary | Parent keys and every child reference use same-tenant composite keys; ambiguous legacy backfill stops for review. | GO |
+| Evidence and idempotency | Evidence hash, source reference, ordinal, generation, and exact-key idempotency are required; conflicts preserve prior evidence. | GO |
+| Payroll fields | Source amounts remain nullable; missing values stay `NULL`; no net-pay arithmetic or employee identity is inferred. | GO |
+| Payment fields | Exchange rate is conditionally required by currency; missing related identity is incomplete; no paid/tax conclusion is inferred. | GO |
+| Worker boundary | Claims and short DB transactions surround external effects; SAT/storage/queue I/O is outside transactions; outbox publication follows commit. | GO |
+| Rollback and retention | Writers stop, queues drain, backup/counts are captured, and reverse-order rollback retains evidence, legacy rows, and audit history. | GO |
+| Public redaction | Status/report output is aggregate-only and excludes tenant/row identifiers, hashes, storage references, raw payloads, SOAP, credentials, and external error text. | GO |
+| Pre-approval evidence | Design review, pure contract/intent tests, redaction/security scans, and no-runtime-change gates pass on a clean tree. | GO |
 
 ### Pre-approval evidence (required before authorization)
 
@@ -93,6 +93,21 @@ The maintainer must attach or record evidence for each item before choosing
 - sensitive/SAT scanners, markdown diff-check, and the existing full suite pass;
 - the diff contains no V5 migration, model, mapper, worker, queue, CLI, or
   runtime behavior change.
+
+### Approval record
+
+- **Authorization:** on 2026-07-19, the maintainer explicitly replied
+  **"si autorizo"**, approving all nine decisions above.
+- **Scope:** implementation of the approved V5 design may begin with synthetic
+  PostgreSQL/Compose evidence only. This authorization does **not** authorize
+  SAT contact, production credentials, or real fiscal data.
+- **Approved baseline:** commit `d8f2d71cbb7c21f905fb2a8edaa4be1229247e96`
+  (`docs(analysis): record contextual postgres report`), recorded with a clean
+  working tree and tracked-content digest
+  `sha256:d71e4f292de20dc7d257384254444e05c98904d62860672e8be796128c7a5390`.
+- **Status of evidence:** the pre-approval evidence is recorded above; the
+  post-approval migration, mapper, worker, rollback, and Compose gates have
+  not yet been run and must not be presented as complete.
 
 ### Post-approval completion gates
 
@@ -119,7 +134,7 @@ SAT contact or production credentials; those remain a separate human gate.
 These facts are a boundary, not an assertion that the accounting ledgers are
 already populated.
 
-## 2. Proposed V5 boundary (not approved)
+## 2. Approved V5 boundary
 
 The migration should be additive and owned by Flyway. It should preserve legacy
 columns while adding a tenant-safe, evidence-aware generation of normalized
@@ -165,7 +180,7 @@ lowercase hexadecimal `source_sha256` of exactly 64 characters, positive
 ordinals, and a non-empty bounded generation string. Add a same-tenant
 composite foreign key to the new `(tenant_id, id)` key on `xml_evidence`.
 
-**Proposed decision (pending):** V5 normalized fields must never depend on the
+**Approved decision:** V5 normalized fields must never depend on the
 legacy `raw_payload`. A future diagnostic JSONB field may retain only an
 allow-listed, redacted, size-bounded summary after an approved application or
 schema bound is implemented. Until that bound is approved and tested, the V5
@@ -360,5 +375,5 @@ pre-approval evidence in the maintainer checklist:
 16. Ruff, the full test suite, sensitive/SAT scanners, `docker compose config`,
    and `git diff --check` pass with a clean tree.
 
-Until these tests and the human gate pass, V5 remains a design proposal and no
-schema or worker implementation should be presented as complete.
+Until these tests pass, no schema or worker implementation should be presented
+as complete.
