@@ -115,3 +115,42 @@ def test_monthly_analysis_rejects_free_form_dimensions() -> None:
         analyze_monthly([_record(currency="C:/private")])
     with pytest.raises(ValueError, match="analysis-currency-invalid"):
         analyze_monthly([_record(currency="USDX")])
+
+
+def test_monthly_analysis_separates_explicit_effect_and_document_type() -> None:
+    report = analyze_monthly(
+        [
+            _record(effect="i", document_type="i"),
+            _record(effect="E", document_type="E", total=Decimal("20.00")),
+            _record(total=Decimal("30.00")),
+        ]
+    )
+
+    assert [(row.effect, row.document_type, row.count, row.total) for row in report.rows] == [
+        (None, None, 1, Decimal("30.00")),
+        ("E", "E", 1, Decimal("20.00")),
+        ("I", "I", 1, Decimal("116.00")),
+    ]
+
+
+def test_monthly_analysis_rejects_unsupported_effect_or_document_type() -> None:
+    with pytest.raises(ValueError, match="analysis-effect-invalid"):
+        analyze_monthly([_record(effect="received")])
+    with pytest.raises(ValueError, match="analysis-document-type-invalid"):
+        analyze_monthly([_record(document_type="invoice")])
+
+
+def test_monthly_analysis_trends_keep_explicit_dimensions_separate() -> None:
+    report = analyze_monthly(
+        [
+            _record(issue_date=date(2026, 1, 10), effect="I", document_type="I"),
+            _record(issue_date=date(2026, 2, 10), effect="I", document_type="I", total=Decimal("25.00")),
+            _record(issue_date=date(2026, 2, 10), effect="E", document_type="E", total=Decimal("8.00")),
+        ]
+    )
+
+    february_issued = next(trend for trend in report.trends if trend.month == "2026-02" and trend.effect == "I")
+    february_credit = next(trend for trend in report.trends if trend.month == "2026-02" and trend.effect == "E")
+    assert february_issued.prior_available
+    assert february_issued.total_delta == Decimal("-91.00")
+    assert not february_credit.prior_available

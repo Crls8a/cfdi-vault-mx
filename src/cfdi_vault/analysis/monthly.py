@@ -2,7 +2,9 @@
 
 This module is intentionally pure.  It does not open PostgreSQL, read files,
 contact SAT, or decide tax liability.  A repository adapter can convert
-normalized database rows into ``MonthlyAnalysisRecord`` values later.
+normalized database rows into ``MonthlyAnalysisRecord`` values later. CFDI
+effect and document type are accepted only as explicit bounded dimensions;
+missing values remain missing.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ _CANCELLED = frozenset({"cancelado", "cancelled", "canceled"})
 _ACTIVE = frozenset({"vigente", "active", "activo", "valid"})
 _DIRECTIONS = frozenset({"received", "issued", "unknown"})
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
+_CFDI_DIMENSIONS = frozenset({"I", "E", "T", "P", "N"})
 
 
 @dataclass(frozen=True)
@@ -32,11 +35,18 @@ class MonthlyAnalysisRecord:
     total: Decimal | None
     status: str | None = None
     source_kind: str = "metadata"
+    effect: str | None = None
+    document_type: str | None = None
 
 
 @dataclass(frozen=True)
 class MonthlyAggregate:
-    """One private aggregate bucket, separated by month/direction/currency."""
+    """One private aggregate bucket separated by explicit CFDI dimensions.
+
+    ``effect`` and ``document_type`` remain ``None`` when the source did not
+    provide those fields. They are never derived from direction, status, or
+    another payload field.
+    """
 
     month: str
     direction: str
@@ -49,6 +59,8 @@ class MonthlyAggregate:
     xml_count: int
     active_count: int = 0
     unknown_status_count: int = 0
+    effect: str | None = None
+    document_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +85,8 @@ class MonthlyTrend:
     unknown_status_count_delta: int | None
     metadata_count_delta: int | None
     xml_count_delta: int | None
+    effect: str | None = None
+    document_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -89,17 +103,18 @@ def analyze_monthly(
     start: date | None = None,
     end: date | None = None,
 ) -> MonthlyAnalysisReport:
-    """Return deterministic month/direction/currency aggregates.
+    """Return deterministic monthly aggregates with explicit CFDI dimensions.
 
     Bounds are inclusive and use the CFDI issue date.  Currency buckets never
-    mix, and missing amounts are treated as zero only for aggregation; source
+    mix, and effect/type fields are used only when explicitly supplied by the
+    source. Missing amounts are treated as zero only for aggregation; source
     completeness must be reported separately by the caller.
     """
 
     if start is not None and end is not None and start > end:
         raise ValueError("analysis-period-invalid")
 
-    buckets: defaultdict[tuple[str, str, str], dict[str, object]] = defaultdict(
+    buckets: defaultdict[tuple[str, str, str, str | None, str | None], dict[str, object]] = defaultdict(
         lambda: {
             "count": 0,
             "subtotal": _ZERO,
@@ -119,10 +134,12 @@ def analyze_monthly(
             continue
         direction = _normalize_direction(record.direction)
         currency = _normalize_currency(record.currency)
+        effect = _normalize_cfdi_dimension(record.effect, "analysis-effect-invalid")
+        document_type = _normalize_cfdi_dimension(record.document_type, "analysis-document-type-invalid")
         source_kind = str(record.source_kind).strip().lower()
         if source_kind not in {"metadata", "xml"}:
             raise ValueError("analysis-source-invalid")
-        key = (issue_date.strftime("%Y-%m"), direction, currency)
+        key = (issue_date.strftime("%Y-%m"), direction, currency, effect, document_type)
         bucket = buckets[key]
         bucket["count"] = int(bucket["count"]) + 1
         bucket["subtotal"] = bucket["subtotal"] + _decimal(record.subtotal)
@@ -152,18 +169,22 @@ def analyze_monthly(
             xml_count=int(values["xml_count"]),
             active_count=int(values["active_count"]),
             unknown_status_count=int(values["unknown_status_count"]),
+            effect=effect,
+            document_type=document_type,
         )
-        for (month, direction, currency), values in sorted(buckets.items())
+        for (month, direction, currency, effect, document_type), values in sorted(
+            buckets.items(), key=lambda item: tuple(value or "" for value in item[0])
+        )
     )
     return MonthlyAnalysisReport(rows=rows, trends=_build_trends(rows))
 
 
 def _build_trends(rows: tuple[MonthlyAggregate, ...]) -> tuple[MonthlyTrend, ...]:
-    by_key = {(row.month, row.direction, row.currency): row for row in rows}
+    by_key = {(row.month, row.direction, row.currency, row.effect, row.document_type): row for row in rows}
     trends: list[MonthlyTrend] = []
     for row in rows:
         prior_month = _previous_month(row.month)
-        prior = by_key.get((prior_month, row.direction, row.currency))
+        prior = by_key.get((prior_month, row.direction, row.currency, row.effect, row.document_type))
         if prior is None:
             trends.append(
                 MonthlyTrend(
@@ -180,6 +201,8 @@ def _build_trends(rows: tuple[MonthlyAggregate, ...]) -> tuple[MonthlyTrend, ...
                     unknown_status_count_delta=None,
                     metadata_count_delta=None,
                     xml_count_delta=None,
+                    effect=row.effect,
+                    document_type=row.document_type,
                 )
             )
             continue
@@ -198,6 +221,8 @@ def _build_trends(rows: tuple[MonthlyAggregate, ...]) -> tuple[MonthlyTrend, ...
                 unknown_status_count_delta=row.unknown_status_count - prior.unknown_status_count,
                 metadata_count_delta=row.metadata_count - prior.metadata_count,
                 xml_count_delta=row.xml_count - prior.xml_count,
+                effect=row.effect,
+                document_type=row.document_type,
             )
         )
     return tuple(trends)
@@ -221,6 +246,17 @@ def _normalize_currency(value: object) -> str:
     normalized = str(value or "unknown").strip().upper() or "UNKNOWN"
     if normalized != "UNKNOWN" and not _CURRENCY.fullmatch(normalized):
         raise ValueError("analysis-currency-invalid")
+    return normalized
+
+
+def _normalize_cfdi_dimension(value: object, error: str) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().upper()
+    if not normalized:
+        return None
+    if normalized not in _CFDI_DIMENSIONS:
+        raise ValueError(error)
     return normalized
 
 
