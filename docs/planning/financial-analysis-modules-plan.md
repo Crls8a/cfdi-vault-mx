@@ -45,6 +45,7 @@ deliberately narrower than claiming that the full financial product exists.
 | Accounting summary slice | `analysis.accounting.summarize_taxes()`, `summarize_payments()`, and `summarize_payroll()` aggregate normalized tax/payment/payroll DTOs with source-status propagation and incomplete-data counts. | Implemented as pure, unit-tested contracts; they consume only in-memory normalized records and return aggregate DTOs. They do not read/write PostgreSQL, enqueue jobs, or contact SAT. Persistence mapping, tax period/currency/direction dimensions, payment reconciliation, payroll ledger mapping, and private reporting remain pending. |
 | Contextual tax summary | `analysis.tax_context.summarize_taxes_by_context()` partitions existing tax records by UTC month, direction, and currency, then delegates tax arithmetic to the existing summary contract. | Implemented and unit-tested as a pure contextual view; ledger persistence and worker mapping remain pending, and currencies are never mixed. |
 | Contextual payment summary | `analysis.payment_context.summarize_payments_by_context()` partitions normalized payments by UTC month, explicit document direction, currency, and payment form, then delegates arithmetic to `summarize_payments()`. | Implemented and unit-tested as a pure aggregate view; direction is never inferred, unknown dimensions remain explicit, and PostgreSQL/worker persistence remains pending. |
+| Contextual report bundle | Internal `analysis.contextual_report.compose_contextual_report_bundle()` composes the required tax, payment, and quality contextual reports after validating their represented month bounds. | Implemented and unit-tested as a deterministic aggregate-only bundle; child statuses are preserved, completeness is conservative, missing interior months are not synthesized, and no tax, cash, or legal conclusion is calculated. |
 | Payment reconciliation slice | `analysis.payment_reconciliation.reconcile_payment_applications()` allocates typed payment applications only within matching invoice/currency candidates and emits fixed aggregate categories. | Implemented as a pure, unit-tested contract. It separates currencies, rejects cross-currency netting, exposes applied/unapplied/missing-identity/duplicate-conflict/invalid-partial categories, and never infers paid or legal status. It does not query PostgreSQL, persist links, or replace durable worker idempotency. |
 | Worker handoff | `RecoveryService` consumes reference-only metadata/XML jobs and updates PostgreSQL. | Implemented and synthetic-worker tested; financial aggregates are not emitted by the worker. |
 | In-memory accounting projection | `analysis.projection.project_accounting_xml()` dispatches one stored XML value to the four pure normalizers and returns typed records, parser statuses, counts, and opaque deterministic references. | Implemented and unit-tested only; process-local duplicate suppression is not durable idempotency and no DB/worker/queue integration exists yet. |
@@ -283,15 +284,16 @@ worker reconciliation, and durable tenant-safe joins remain pending.
 ### Phase 5 — Private reports and exports
 
 Expose report DTOs and private CSV/JSON exports with date, direction, status,
-currency, and completeness filters. The first pure composition DTO is now
-available through `analysis.reporting`; the in-memory export adapter is now
-available through the internal `analysis.export` module. Its JSON and CSV
-functions accept only the validated report DTO, use fixed schemas, and never
+currency, and completeness filters. The pure composition DTOs are now
+available through `analysis.reporting` and the internal
+`analysis.contextual_report` bundle; the in-memory export adapter is now
+available through the internal `analysis.export` module. Their JSON and CSV
+functions accept only validated aggregate DTOs, use fixed schemas, and never
 write files or include provenance, identifiers, hashes, paths, raw XML/ZIP,
 credentials, or SOAP. Database writes, V5 child-ledger/worker mapping, private
-storage delivery, and CLI integration remain pending. Add operator-facing aggregate status only after
-redaction tests. **Measure:** no default output contains RFC, UUID, raw XML,
-package bytes, storage paths, credentials, or SOAP.
+storage delivery, and CLI integration remain pending. Add operator-facing
+aggregate status only after redaction tests. **Measure:** no default output
+contains RFC, UUID, raw XML, package bytes, storage paths, credentials, or SOAP.
 
 ### Phase 6 — Live evidence and promotion
 
