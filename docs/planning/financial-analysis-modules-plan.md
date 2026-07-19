@@ -1,8 +1,8 @@
 # Financial and accounting analysis modules plan
 
 Status: phased implementation. The pure monthly, normalization, accounting,
-quality, report-composition, in-memory XML projection, and in-memory private
-export contracts are implemented and unit-tested; database ingestion,
+payment-reconciliation, quality, report-composition, in-memory XML projection,
+and in-memory private export contracts are implemented and unit-tested; database ingestion,
 normalized ledgers, private storage delivery, and operator CLI remain pending.
 This document does not enable SAT access, change the database schema, or make a
 tax determination.
@@ -41,6 +41,7 @@ deliberately narrower than claiming that the full financial product exists.
 | Existing summary | `VaultService.summary()` groups the legacy invoice model by month, issuer, and comprobante type; CLI `summary` prints counts, subtotal, and total. | Implemented for the legacy path; not yet the PostgreSQL recovery analytics contract. |
 | Monthly contract slice | `analysis.monthly.analyze_monthly()` plus `analysis.postgres.MonthlyAnalysisPostgresAdapter` produce deterministic month/direction/currency aggregates from typed metadata/XML evidence records and tenant-scoped PostgreSQL rows. | Implemented and unit-tested for UTC date bounds, metadata/XML precedence, partial-header fallback, sanitized DTOs, bounded active/cancelled/unknown status counts, and month-over-month deltas. Effect/type dimensions remain deferred because the current typed input and PostgreSQL read model do not expose those fields; private reporting is pending. |
 | Accounting summary slice | `analysis.accounting.summarize_taxes()`, `summarize_payments()`, and `summarize_payroll()` aggregate normalized tax/payment/payroll DTOs with source-status propagation and incomplete-data counts. | Implemented as pure, unit-tested contracts; they consume only in-memory normalized records and return aggregate DTOs. They do not read/write PostgreSQL, enqueue jobs, or contact SAT. Persistence mapping, tax period/currency/direction dimensions, payment reconciliation, payroll ledger mapping, and private reporting remain pending. |
+| Payment reconciliation slice | `analysis.payment_reconciliation.reconcile_payment_applications()` allocates typed payment applications only within matching invoice/currency candidates and emits fixed aggregate categories. | Implemented as a pure, unit-tested contract. It separates currencies, rejects cross-currency netting, exposes applied/unapplied/missing-identity/duplicate-conflict/invalid-partial categories, and never infers paid or legal status. It does not query PostgreSQL, persist links, or replace durable worker idempotency. |
 | Worker handoff | `RecoveryService` consumes reference-only metadata/XML jobs and updates PostgreSQL. | Implemented and synthetic-worker tested; financial aggregates are not emitted by the worker. |
 | In-memory accounting projection | `analysis.projection.project_accounting_xml()` dispatches one stored XML value to the four pure normalizers and returns typed records, parser statuses, counts, and opaque deterministic references. | Implemented and unit-tested only; process-local duplicate suppression is not durable idempotency and no DB/worker/queue integration exists yet. |
 | Reporting/export | `analysis.reporting.FinancialAnalysisReport` composes monthly, tax, payment, optional payroll, and quality DTOs with UTC/period validation and aggregate-only JSON projection. Supplying `PayrollSummaryReport` adds a bounded payroll section (month, `O`/`E`/`UNKNOWN`, counts, and Decimal totals); omitting it preserves the legacy four-section projection. `analysis.export` provides deterministic in-memory JSON/CSV adapters with fail-closed validation. | Pure report composition and in-memory private exports are implemented and unit-tested; PostgreSQL queries, private storage delivery, and CLI integration remain pending. |
@@ -244,6 +245,23 @@ publish RabbitMQ messages, access storage/SAT, or serialize raw XML, payloads,
 identifiers, or hashes. The schema gate remains open.
 The private source reference is also bound to the projection hash prefix, so a
 replaced evidence reference cannot reuse an existing write plan.
+
+The pure payment-reconciliation slice is now implemented in
+`analysis.payment_reconciliation.reconcile_payment_applications()`. It accepts
+typed invoice balances and payment-application candidates, allocates exact
+Decimal amounts only when identities, evidence, balance, and currency agree,
+and classifies every rejected link as `unapplied`, `missing_identity`,
+`duplicate_conflict`, or `invalid_partial`. Rows are deterministic and
+aggregate-only; candidate references remain private and redacted. A missing
+related identity is not treated as paid, and an over-allocation is not clipped
+to the invoice balance. Applications are canonically ordered by opaque
+payment/invoice references, currency, amount, and evidence status; exact
+duplicate ties have the same aggregate outcome, so reversed input cannot
+change allocation. An
+unapplied-only result may be source-complete, but `allocation_complete` stays
+false and no paid/legal/tax status is inferred. The function is deliberately pure: a future mapper
+must perform tenant-safe joins, claims, durable duplicate handling, and
+payment/invoice persistence outside this module.
 
 ### Phase 4 — Reconciliation and quality snapshots
 

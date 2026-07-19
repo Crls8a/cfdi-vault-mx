@@ -33,6 +33,14 @@ from cfdi_vault.analysis.normalization import (
     ConceptRecord,
     normalize_concepts,
 )
+from cfdi_vault.analysis.payment_reconciliation import (
+    RECONCILIATION_CATEGORIES,
+    InvoiceApplicationCandidate,
+    PaymentApplicationCandidate,
+    PaymentReconciliationReport,
+    PaymentReconciliationRow,
+    reconcile_payment_applications,
+)
 from cfdi_vault.analysis.payments import (
     PaymentNormalizationResult,
     PaymentRecord,
@@ -108,6 +116,12 @@ __all__ = [
     "PaymentNormalizationResult",
     "PaymentRecord",
     "normalize_payments",
+    "RECONCILIATION_CATEGORIES",
+    "InvoiceApplicationCandidate",
+    "PaymentApplicationCandidate",
+    "PaymentReconciliationRow",
+    "PaymentReconciliationReport",
+    "reconcile_payment_applications",
     "PayrollNormalizationResult",
     "PayrollRecord",
     "normalize_payroll",
