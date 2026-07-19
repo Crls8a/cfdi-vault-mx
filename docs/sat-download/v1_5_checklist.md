@@ -15,7 +15,8 @@ Forbidden as operational contract:
 - forums/blogs/snippets
 - old prompts
 
-Use this checklist before changing SAT Download behavior or approving a live gate. It is a context guard, not authorization to run SAT live.
+Use this checklist before changing SAT Download behavior or reviewing the
+productive campaign. It is a context guard, not authorization to run SAT live.
 
 ## Contract scope
 
@@ -42,7 +43,8 @@ Use this checklist before changing SAT Download behavior or approving a live gat
 - `SolicitaDescargaEmitidos`.
 - `SolicitaDescargaRecibidos`.
 - `SolicitaDescargaFolio`.
-- Metadata is recommended for smoke tests.
+- Metadata is the first productive campaign proof; synthetic fixtures are code
+  tests only and do not count as SAT evidence.
 - Validate `FechaInicial < FechaFinal`.
 - Do not assume an exact instant query.
 - Use a minimum two-second range.

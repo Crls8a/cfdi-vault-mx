@@ -33,9 +33,13 @@ This folder turns SAT Descarga Masiva work into small, reviewable documents. The
 10. Implement around [Statuses, limits, and errors](statuses-limits-errors.md).
 11. Run the fake/offline local path with [Offline/local SAT download operations](offline-local-operations.md).
 12. Use [SAT async verify scheduler](async-verify-scheduler.md) for one-shot persisted verification work.
-13. Use [Verify POST transport probe](verify-post-probe.md) only for guarded, redacted verify POST diagnostics.
-14. Review [MANUAL-SAT-001](manual-sat-runbook.md) before requesting any human-gated live smoke.
+13. Use the [productive SAT campaign runbook](../runbooks/sat-campaign.md) for the only live workflow.
+14. Read the [code/documentation audit](../audits/sat-code-doc-audit-2026-07-19.md) before treating an outcome as evidence.
 15. Use [Implementation plan](implementation-plan.md) to split future work into reviewable units.
+
+The older [VERIFY transport note](verify-post-probe.md) is historical context
+only. It is not an executable command, a SAT check, or integration evidence.
+The former manual runbook is a compatibility pointer to the productive runbook.
 
 ## What the library is expected to do
 
@@ -43,7 +47,7 @@ This folder turns SAT Descarga Masiva work into small, reviewable documents. The
 |---|---|
 | Authenticate | Build and sign the WS-Security authentication request with a valid e.firma. |
 | Request | Ask SAT to prepare CFDI or metadata packages for issued, received, or folio-based queries. |
-| Verify | Poll the asynchronous request until SAT returns package identifiers or a terminal state. |
+| Verify | Revisit the asynchronous request only when PostgreSQL says `next_check_at` is due; the one-shot runner never busy-polls. |
 | Download | Download package ZIP content and decode the base64 SOAP response. |
 | Persist | Track requests, packages, hashes, attempts, and source files idempotently. |
 | Parse | Read downloaded XML or metadata TXT packages after safe storage. |

@@ -9,7 +9,7 @@ from cfdi_vault.domain import DownloadDirection, DownloadQuery, RequestType, Sat
 from cfdi_vault.recovery_db import Tenant
 from cfdi_vault.sat_campaign_repository import SatCampaignRepository
 from cfdi_vault.sat_contract import SatOutcomeAction, SatRequestResult, SatVerificationError, SatVerificationResult
-from cfdi_vault.sat_db_campaign_runner import SatCampaignRunner, next_local_check
+from cfdi_vault.sat_db_campaign_runner import SatCampaignRunner, SatRunnerReport, next_local_check
 
 NOW = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
 MANIFEST = "a" * 64
@@ -211,6 +211,21 @@ def test_local_schedule_is_deterministic() -> None:
     assert next_local_check(NOW, 1) == NOW + timedelta(minutes=15)
     assert next_local_check(NOW, 7) == NOW + timedelta(hours=8)
     assert next_local_check(NOW, 99) == NOW + timedelta(hours=8)
+
+
+def test_runner_safe_report_matches_cli_status_contract() -> None:
+    report = SatRunnerReport(
+        claimed_count=1, contacted_count=1, categories={"pending": 1},
+        package_count=0, next_due_at=NOW + timedelta(minutes=15),
+    )
+
+    safe = report.as_safe_dict()
+
+    assert safe["status"] == "processed"
+    assert safe["next_check_at"] == "2026-01-01T12:15:00+00:00"
+    assert safe["next_due_at"] == safe["next_check_at"]
+    assert SatRunnerReport(0, 0, {}, 0, None).as_safe_dict()["status"] == "no_due_operations"
+    assert SatRunnerReport(0, 0, {}, 0, None, busy=True).as_safe_dict()["status"] == "busy"
 
 
 def test_runner_submits_planned_window_after_grant_bound_claim() -> None:

@@ -15,14 +15,24 @@ the command fails closed instead of reading or writing the legacy private JSON
 state. JSON files remain available only to the explicit legacy importer and are
 never a campaign CLI source of truth.
 
-`campaign run` is a one-shot monitor wake. In the PostgreSQL migration phase it
-only inspects persisted due work and returns `campaign-adapter-required` when
-an external adapter would be required; it never contacts SAT. Once the
-human-gated adapter is enabled, it may contact SAT only for a persisted
-recovery whose `next_check_at` has expired, and exits without contact otherwise.
-A global lock returns `busy` instead of allowing concurrent SAT calls. The
-scheduler wakes every five minutes, but the persisted due time remains the only
-contact authority.
+`campaign run` is a one-shot monitor wake. With the live worker disabled it
+fails closed before any SAT side effect. With the human-gated adapter enabled,
+it may submit an authorized `planned` window or verify a persisted request whose
+`next_check_at` is due, subject to the two-operation ceiling. It exits without
+contact otherwise. A global lock returns `busy` instead of allowing concurrent
+SAT calls. The scheduler wakes every five minutes, but the persisted due time
+remains the only contact authority. A pending, submitted, or uncertain request
+is never replaced automatically.
+
+The runner's sanitized result contains these operator-facing fields:
+
+| Field | Meaning |
+|---|---|
+| `status` | `no_due_operations`, `processed`, `busy`, or `error`. |
+| `contacted_count` | Number of VERIFY calls made by this one-shot run. |
+| `next_check_at` | Earliest persisted next review, or `None`; this is not the 48-hour expiry. |
+| `categories` / `submission_categories` | Counts of categorized VERIFY/submission outcomes. |
+| `package_count` | Packages handed to external artifact storage during this run. |
 
 `status` is local and read-only. It does not authenticate, contact SAT, verify a
 request, or download a package. It loads the persisted campaign and counts only
@@ -94,7 +104,7 @@ human reviewer to follow one operation from the CLI to PostgreSQL and back:
 
 | Runbook step | Implementation | Durable contract |
 |---|---|---|
-| `campaign create`, `authorize`, `status` | `src/cfdi_vault/adapters/cli/sat_campaign_*.py` → `sat_campaign_db_cli.py` | Campaign, windows, grants, and sanitized aggregates are PostgreSQL-backed. |
+| `campaign create`, `authorize`, `status` | `src/cfdi_vault/adapters/cli/sat_campaign.py`, `sat_campaign_authorize.py` → `sat_campaign_db_cli.py` | Campaign, windows, grants, and sanitized aggregates are PostgreSQL-backed. |
 | `campaign run` | `sat_campaign_run.py` → `run_from_environment()` | A grant and commit-bound campaign are validated before any live factory is built. |
 | Select due work | `SatCampaignRepository.claim_due_operations()` | `next_check_at` must be due and `service_window_expires_at` must still be future; `FOR UPDATE SKIP LOCKED` creates the VERIFY claim. |
 | Prevent replacement requests | `SatCampaignRunner._submit_windows()` + `count_open_operations()` | Persisted open requests and unbound submit claims consume the two-operation ceiling. |

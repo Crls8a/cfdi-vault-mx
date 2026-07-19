@@ -2,8 +2,8 @@
 
 CFDI Vault MX is safe by design only when fake/offline behavior is the default and
 real taxpayer data, credentials, certificates, and live SAT access stay behind explicit
-security gates. SAT SOAP research and guarded live-gate code can exist in the
-repository, but they do not make live access a default or production-ready behavior.
+security gates. The grant-bound campaign runtime can exist in the repository, but it
+does not make live access a default or production-ready behavior.
 
 This document describes the legacy synthetic lab safety boundary. Recovery v2 infrastructure is PostgreSQL/RabbitMQ/Redis-first even when it still uses fake SAT and synthetic data; see `docs/foundation/infrastructure-boundary.md`.
 

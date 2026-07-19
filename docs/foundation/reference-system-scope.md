@@ -14,7 +14,7 @@ contract.
 
 | Area | Responsibility |
 |---|---|
-| CLI | Operator commands for setup, doctor, fake sync, queue status, search, print, export, and guarded live smoke. |
+| CLI | Operator commands for setup, doctor, fake sync, queue status, search, print, export, and the grant-bound SAT campaign. |
 | Runtime | Docker/local composition of PostgreSQL, RabbitMQ, Redis, workers, and adapters. |
 | Persistence | Application tables, queue audit, package/XML references, hashes, attempts, and reconciliation state. |
 | Local profile | AppData/local configuration with credential references and redacted status. |
@@ -38,7 +38,7 @@ flowchart LR
     B --> C["cfdi_vault domain and ports"]
     B --> D["Reference adapters"]
     D --> E["PostgreSQL / RabbitMQ / Redis / local storage"]
-    D --> F["Fake SAT or guarded live SAT"]
+    D --> F["Fake SAT or grant-bound live campaign"]
 ```
 
 The system should consume library contracts through adapters. If a feature cannot be

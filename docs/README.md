@@ -29,7 +29,8 @@ This repository is split into the current PostgreSQL-backed CFDI recovery refere
 23. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
 24. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
 25. Read [Offline/local SAT download operations](sat-download/offline-local-operations.md) before validating issue #51.
-26. Read [MANUAL-SAT-001](sat-download/manual-sat-runbook.md) before requesting any human-gated live SAT smoke.
+26. Read the [productive SAT campaign runbook](runbooks/sat-campaign.md) before requesting any human-gated live SAT operation.
+27. Read the [SAT code/documentation audit](audits/sat-code-doc-audit-2026-07-19.md) before treating a live result as evidence.
 
 ## Documentation map
 
@@ -72,7 +73,8 @@ This repository is split into the current PostgreSQL-backed CFDI recovery refere
 | Planned library | [Statuses, limits, and errors](sat-download/statuses-limits-errors.md) | State machine, quotas, and error handling. |
 | Planned library | [User-facing errors and edge cases](sat-download/user-facing-errors.md) | Error payload contract, user messages, and edge cases. |
 | Planned library | [Offline/local SAT download operations](sat-download/offline-local-operations.md) | Fake/offline runbook for issue #51: demo path, backup/restore, observability, and #50 boundary. |
-| Planned library | [MANUAL-SAT-001 live smoke runbook](sat-download/manual-sat-runbook.md) | Human-gated live SAT smoke approval, evidence, and redaction rules. |
+| Reference system | [SAT campaign runbook](runbooks/sat-campaign.md) | PostgreSQL campaign, grants, due VERIFY, package storage, worker handoff, and redaction rules. |
+| Audit | [SAT code/documentation audit](audits/sat-code-doc-audit-2026-07-19.md) | Current code↔docs traceability, evidence boundary, findings, and open cleanup. |
 | Planned library | [Implementation plan](sat-download/implementation-plan.md) | Proposed library modules, persistence, and roadmap. |
 | Planned library | [Examples](sat-download/examples.md) | Transport examples and payload templates. |
 | Planned library | [Sources](sat-download/sources.md) | Official and community references. |

@@ -22,7 +22,7 @@ CFDI Vault MX is a development-stage case study and reference implementation. It
 | Topic | Current claim |
 |---|---|
 | PyPI availability | Not published yet. `pip install cfdi-vault-mx` is the library/package release target, not a current guarantee. |
-| SAT live automation | Not production-ready. Live SAT access remains gated behind signing, credential custody, compliance, and manual approval. |
+| SAT live automation | A grant-bound PostgreSQL campaign path exists in the reference system, but it is not production-ready and has no committed real ZIP/TXT/XML evidence. Live access remains gated behind signing, credential custody, compliance, and manual approval. |
 | Supported demo mode | Fake/offline SAT flows with synthetic data. |
 | Intended use today | Learning, architecture review, local development, and contribution discussion. |
 | Contact | Open a GitHub issue for questions, collaboration, or responsible disclosure before depending on unsupported behavior. |
@@ -31,7 +31,7 @@ The current code uses one durable data direction: PostgreSQL. Flyway owns schema
 
 Important database boundary: synthetic import checks, recovery jobs, package/XML evidence, reconciliation, accounting search, and queue audit all belong in PostgreSQL.
 
-Live SAT SOAP access is still intentionally disabled until signing, credential custody, and compliance work are implemented.
+Live SAT SOAP access is disabled by default. The campaign runtime refuses to build a live adapter unless its explicit environment gate, clean-tree/scanner evidence, canonical endpoints, profile, campaign, and grant are all present.
 
 ## Branching policy
 

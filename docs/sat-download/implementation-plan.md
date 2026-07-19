@@ -1,5 +1,10 @@
 # Implementation plan for the SAT download library
 
+> **Roadmap status:** this is a historical library roadmap, not the current
+> live execution procedure. The implemented reference-system path is the
+> [productive SAT campaign](../runbooks/sat-campaign.md). The old live-gate
+> slice names below must not be invoked as commands or treated as SAT evidence.
+
 Target contract:
 SAT Descarga Masiva CFDI y CFDI de Retenciones v1.5, mayo 2025.
 

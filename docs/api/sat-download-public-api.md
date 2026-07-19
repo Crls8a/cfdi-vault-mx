@@ -10,7 +10,7 @@ example of how to schedule, persist, inspect, and reconcile a personal CFDI vaul
 The SAT integration must be a library boundary first and a system workflow second.
 The reusable package exposes typed models, ports, result objects, parsers, fake/offline
 adapters, and eventually a narrow SAT facade. The CLI, Docker runtime, PostgreSQL
-schema, queue workers, live smoke commands, and manual gates belong to the reference
+schema, queue workers, productive campaign, and human gate belong to the reference
 system unless they are explicitly promoted through the release contract.
 
 ## Verified source snapshot
@@ -81,7 +81,7 @@ Start narrow. A small, honest API beats exporting every useful module by acciden
 | Ports | `cfdi_vault.ports.SatAuthenticatorPort`, `SatRequestPort`, `SatVerificationPort`, `SatDownloadPort`, `SignerPort`, `SecretProviderPort`, `StoragePort` | Good candidates. | Prefer split ports; do not promote legacy one-method magic clients as the main contract. |
 | Results/errors | `cfdi_vault.sat_contract.SatAuthResult`, `SatRequestResult`, `SatVerificationResult`, `SatDownloadResult`, `SatOutcomeAction` | Good candidates. | Add a single public error hierarchy before release. |
 | Offline adapters | fake SAT, simulator, package processor, metadata/XML parsers | Good candidates. | Keep all fixtures synthetic; prove no live network. |
-| Live SAT adapters | guarded live smoke/probe modules | Internal/experimental. | Needs issue, security review, source traceability, human gate, tests, and explicit opt-in. |
+| Live SAT adapters | grant-bound v1.5 campaign runtime | Internal reference-system path; not a stable library API. | Needs issue, security review, source traceability, human gate, tests, and explicit opt-in. Retired smoke/probe modules are not supported entry points. |
 | CLI | `cfdi-vault` command | Reference-system interface. | Package smoke may validate it, but it is not the library API contract by itself. |
 
 A future facade can be introduced as `cfdi_vault.sat_download` only after the names,

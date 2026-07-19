@@ -61,12 +61,27 @@ class SatRunnerReport:
     def as_safe_dict(self) -> dict[str, object]:
         """Serialize the aggregate without request or package identifiers."""
 
+        next_check_at = self.next_due_at.isoformat() if self.next_due_at else None
+        if self.busy:
+            status = "busy"
+        elif self.error:
+            status = "error"
+        elif self.submitted_count or self.contacted_count or self.categories or self.submission_categories:
+            status = "processed"
+        else:
+            status = "no_due_operations"
+
         return {
+            "status": status,
             "claimed_count": self.claimed_count,
             "contacted_count": self.contacted_count,
             "categories": dict(self.categories),
             "package_count": self.package_count,
-            "next_due_at": self.next_due_at.isoformat() if self.next_due_at else None,
+            "next_due_at": next_check_at,
+            # The CLI contract calls this field next_check_at.  Keep the
+            # internal next_due_at name above for callers using the report
+            # model, but expose both names in the sanitized boundary.
+            "next_check_at": next_check_at,
             "submitted_count": self.submitted_count,
             "submission_categories": dict(self.submission_categories or {}),
             "busy": self.busy,

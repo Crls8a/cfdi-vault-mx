@@ -1,8 +1,8 @@
 # Offline/local SAT download operations
 
-This runbook is the docs-only FASE 12 path for issue #51. It proves the current fake/offline download workflow without real SAT access, real e.firma use, fiscal data, secrets, certificates, SAT ZIPs, or live smoke execution.
+This runbook is the docs-only FASE 12 path for issue #51. It proves the current fake/offline download workflow without real SAT access, real e.firma use, fiscal data, secrets, certificates, or SAT ZIPs.
 
-> Scope boundary: issue #50 remains the human-gated live SAT smoke. This document does not authorize, execute, or close that gate.
+> Scope boundary: the productive SAT campaign is documented in [the canonical runbook](../runbooks/sat-campaign.md). This document does not authorize, execute, or close a live campaign.
 >
 > Infrastructure boundary: the recovery runtime target is PostgreSQL through Docker Compose and local `DATABASE_URL`.
 
@@ -117,9 +117,9 @@ Do not paste:
 
 ## Live SAT boundary
 
-FASE 12 is offline/local release hardening for issue #51 only. The live SAT smoke remains issue #50 and must follow [MANUAL-SAT-001](manual-sat-runbook.md): explicit Carlos approval, local operator machine, redacted evidence, clean working tree, scanner, and tests.
+FASE 12 is offline/local release hardening for issue #51 only. Any live SAT work must follow [the canonical campaign runbook](../runbooks/sat-campaign.md): explicit Carlos approval, local operator machine, redacted evidence, clean working tree, scanner, and tests.
 
-If the live command is unavailable, still blocked, or requires real e.firma/SAT access, stop. Do not convert this runbook into a live smoke.
+If the live campaign is unavailable, still blocked, or requires real e.firma/SAT access, stop. Do not convert this runbook into a live execution.
 
 ## Follow-up proposal
 
