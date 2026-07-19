@@ -33,6 +33,18 @@ and use synthetic fixtures only.
   yet persist their child records. Process-local duplicate suppression is not a
   durable idempotency guarantee.
 
+The pre-persistence `analysis.ledger_intent` contract is now implemented and
+tested. It produces immutable typed intents for source evidence and the four
+normalized families, validates opaque tenant/work scope plus a required
+normalization generation, and derives deterministic private idempotency keys.
+It is deliberately not a mapper: it performs no SQL, queue, storage, or SAT
+operation and its aggregate projection excludes rows, raw payloads, hashes,
+and identifiers. V5 migration and worker mapping remain pending human
+approval.
+The source reference is canonicalized from the evidence hash prefix; replacing
+that reference without a matching hash is rejected before a mapper can use the
+intent.
+
 These facts are a boundary, not an assertion that the accounting ledgers are
 already populated.
 

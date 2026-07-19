@@ -233,6 +233,18 @@ typed records and are not serialized. Connecting this projection to PostgreSQL
 or RabbitMQ is a separate ingestion phase and requires the existing
 schema/worker review gate.
 
+The pure write-intent slice is now implemented in
+`analysis.ledger_intent.build_ledger_write_intent()`. It validates an opaque
+tenant/work context and a required normalization generation, then derives
+deterministic private idempotency keys for source evidence and each concept,
+tax, payment, and payroll record. `LedgerWriteIntent.as_dict()` emits only
+parser statuses, completeness, and family counts. This is a pre-persistence
+contract for the future V5 worker mapper: it does not write PostgreSQL,
+publish RabbitMQ messages, access storage/SAT, or serialize raw XML, payloads,
+identifiers, or hashes. The schema gate remains open.
+The private source reference is also bound to the projection hash prefix, so a
+replaced evidence reference cannot reuse an existing write plan.
+
 ### Phase 4 — Reconciliation and quality snapshots
 
 Join metadata ledger, XML evidence, normalized records, SAT/job states, and
