@@ -6,6 +6,11 @@ from cfdi_vault.analysis.monthly import (
     MonthlyAnalysisReport,
     analyze_monthly,
 )
+from cfdi_vault.analysis.normalization import (
+    ConceptNormalizationResult,
+    ConceptRecord,
+    normalize_concepts,
+)
 from cfdi_vault.analysis.postgres import (
     MonthlyAnalysisPostgresAdapter,
     monthly_records_statement,
@@ -18,4 +23,7 @@ __all__ = [
     "analyze_monthly",
     "MonthlyAnalysisPostgresAdapter",
     "monthly_records_statement",
+    "ConceptNormalizationResult",
+    "ConceptRecord",
+    "normalize_concepts",
 ]
