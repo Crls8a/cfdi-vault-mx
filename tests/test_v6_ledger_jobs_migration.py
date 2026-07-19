@@ -60,6 +60,19 @@ def test_v6_jobs_have_durable_identity_status_and_aggregate_only_result() -> Non
     assert "FOREIGN KEY (tenant_id) REFERENCES tenants (id)" in normalized
 
 
+def test_v6_job_completion_check_requires_exact_nullability() -> None:
+    normalized = _normalized_sql()
+    completion = normalized.split("CONSTRAINT ck_ledger_jobs_completion", 1)[1].split(");", 1)[0]
+    assert (
+        "status IN ('succeeded', 'duplicate', 'failed', 'uncertain', 'dead_letter') AND completed_at IS NOT NULL"
+        in completion
+    )
+    assert (
+        "status NOT IN ('succeeded', 'duplicate', 'failed', 'uncertain', 'dead_letter') AND completed_at IS NULL"
+        in completion
+    )
+
+
 def test_v6_claims_are_leased_unique_and_append_only() -> None:
     normalized = _normalized_sql()
     assert "UNIQUE (job_id, attempt)" in normalized
@@ -114,5 +127,7 @@ def test_v6_transition_guard_does_not_reopen_terminal_jobs() -> None:
     normalized = _normalized_sql()
     assert "ledger_jobs_validate_transition" in normalized
     assert "OLD.STATUS IN ('SUCCEEDED', 'DUPLICATE', 'FAILED', 'UNCERTAIN', 'DEAD_LETTER')" in normalized.upper()
-    assert "NEW.STATUS = 'QUEUED'" in normalized.upper()
-    assert "LEDGER JOB CANNOT BE REOPENED" in normalized.upper()
+    assert "NEW.STATUS IS DISTINCT FROM OLD.STATUS" in normalized.upper()
+    assert "NEW.AGGREGATE_COUNTS IS DISTINCT FROM OLD.AGGREGATE_COUNTS" in normalized.upper()
+    assert "NEW.COMPLETED_AT IS DISTINCT FROM OLD.COMPLETED_AT" in normalized.upper()
+    assert "LEDGER JOB TERMINAL STATE IS IMMUTABLE" in normalized.upper()

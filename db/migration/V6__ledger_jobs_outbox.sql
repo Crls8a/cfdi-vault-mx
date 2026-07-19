@@ -74,7 +74,7 @@ CREATE TABLE ledger_jobs (
     CONSTRAINT ck_ledger_jobs_counts CHECK (ledger_aggregate_counts_valid(aggregate_counts)),
     CONSTRAINT ck_ledger_jobs_completion CHECK (
         (status IN ('succeeded', 'duplicate', 'failed', 'uncertain', 'dead_letter') AND completed_at IS NOT NULL)
-        OR (status NOT IN ('succeeded', 'duplicate', 'failed', 'uncertain', 'dead_letter'))
+        OR (status NOT IN ('succeeded', 'duplicate', 'failed', 'uncertain', 'dead_letter') AND completed_at IS NULL)
     )
 );
 
@@ -83,13 +83,24 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    IF OLD.status IN ('succeeded', 'duplicate', 'failed', 'uncertain', 'dead_letter')
-       AND NEW.status <> OLD.status THEN
+    IF OLD.status IN ('succeeded', 'duplicate', 'failed', 'uncertain', 'dead_letter') AND (
+        NEW.job_id IS DISTINCT FROM OLD.job_id
+        OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+        OR NEW.job_type IS DISTINCT FROM OLD.job_type
+        OR NEW.queue_name IS DISTINCT FROM OLD.queue_name
+        OR NEW.artifact_ref IS DISTINCT FROM OLD.artifact_ref
+        OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
+        OR NEW.status IS DISTINCT FROM OLD.status
+        OR NEW.available_at IS DISTINCT FROM OLD.available_at
+        OR NEW.attempt_count IS DISTINCT FROM OLD.attempt_count
+        OR NEW.max_attempts IS DISTINCT FROM OLD.max_attempts
+        OR NEW.last_error_code IS DISTINCT FROM OLD.last_error_code
+        OR NEW.aggregate_counts IS DISTINCT FROM OLD.aggregate_counts
+        OR NEW.created_at IS DISTINCT FROM OLD.created_at
+        OR NEW.updated_at IS DISTINCT FROM OLD.updated_at
+        OR NEW.completed_at IS DISTINCT FROM OLD.completed_at
+    ) THEN
         RAISE EXCEPTION 'ledger job terminal state is immutable' USING ERRCODE = 'check_violation';
-    END IF;
-    IF OLD.status IN ('succeeded', 'duplicate', 'failed', 'uncertain', 'dead_letter')
-       AND NEW.status = 'queued' THEN
-        RAISE EXCEPTION 'ledger job cannot be reopened' USING ERRCODE = 'check_violation';
     END IF;
     RETURN NEW;
 END;
