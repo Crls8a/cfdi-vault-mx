@@ -25,6 +25,11 @@ from cfdi_vault.analysis.payments import (
     PaymentRecord,
     normalize_payments,
 )
+from cfdi_vault.analysis.payroll import (
+    PayrollNormalizationResult,
+    PayrollRecord,
+    normalize_payroll,
+)
 from cfdi_vault.analysis.postgres import (
     MonthlyAnalysisPostgresAdapter,
     monthly_records_statement,
@@ -73,4 +78,7 @@ __all__ = [
     "PaymentNormalizationResult",
     "PaymentRecord",
     "normalize_payments",
+    "PayrollNormalizationResult",
+    "PayrollRecord",
+    "normalize_payroll",
 ]
