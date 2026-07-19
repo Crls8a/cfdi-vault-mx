@@ -90,13 +90,13 @@ class FinancialAnalysisReport:
 
     @property
     def section_statuses(self) -> Mapping[str, str]:
-        """Return immutable aggregate status for each mandatory section."""
+        """Return immutable aggregate status for each included section."""
 
         return MappingProxyType({name: state[0] for name, state in self._section_states().items()})
 
     @property
     def section_completeness(self) -> Mapping[str, str]:
-        """Return immutable completeness for each mandatory section."""
+        """Return immutable completeness for each included section."""
 
         return MappingProxyType({name: state[1] for name, state in self._section_states().items()})
 
