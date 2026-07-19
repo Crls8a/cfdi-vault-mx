@@ -12,6 +12,7 @@ from cfdi_vault.analysis.monthly import (
     MonthlyAggregate,
     MonthlyAnalysisRecord,
     MonthlyAnalysisReport,
+    MonthlyTrend,
     analyze_monthly,
 )
 from cfdi_vault.analysis.normalization import (
@@ -46,6 +47,7 @@ __all__ = [
     "MonthlyAggregate",
     "MonthlyAnalysisRecord",
     "MonthlyAnalysisReport",
+    "MonthlyTrend",
     "analyze_monthly",
     "TaxSummaryRow",
     "TaxSummaryReport",

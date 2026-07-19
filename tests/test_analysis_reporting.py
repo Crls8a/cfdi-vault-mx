@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -12,7 +13,7 @@ from cfdi_vault.analysis.accounting import (
     TaxSummaryReport,
     TaxSummaryRow,
 )
-from cfdi_vault.analysis.monthly import MonthlyAggregate, MonthlyAnalysisReport
+from cfdi_vault.analysis.monthly import MonthlyAggregate, MonthlyAnalysisReport, MonthlyTrend
 from cfdi_vault.analysis.quality import QualityObservation, snapshot_quality
 from cfdi_vault.analysis.reporting import AnalysisPeriod, FinancialAnalysisReport
 
@@ -101,6 +102,9 @@ def test_report_composes_sections_and_serializes_decimal_values() -> None:
         "quality": "complete",
     }
     assert payload["sections"]["monthly"]["rows"][0]["total"] == "116.00"
+    assert payload["sections"]["monthly"]["rows"][0]["active_count"] == 0
+    assert payload["sections"]["monthly"]["rows"][0]["unknown_status_count"] == 0
+    assert payload["sections"]["monthly"]["trends"] == []
     assert payload["sections"]["taxes"]["rows"][0]["amount"] == "16.00"
     assert payload["sections"]["payments"]["rows"][0]["amount"] == "116.00"
     json.dumps(payload)
@@ -188,3 +192,111 @@ def test_report_rejects_free_form_dimensions_and_invalid_section_counts() -> Non
         _report(taxes=TaxSummaryReport(rows=(), source_status="empty", incomplete_count=-1))
     with pytest.raises(ValueError, match="analysis-section-status-invalid"):
         _report(payments=PaymentSummaryReport(rows=(), source_status="raw"))
+
+
+def test_report_serializes_monthly_trends_as_aggregate_only_values() -> None:
+    trend = MonthlyTrend(
+        month="2026-02",
+        direction="received",
+        currency="MXN",
+        prior_month="2026-01",
+        prior_available=True,
+        count_delta=1,
+        subtotal_delta=Decimal("10.00"),
+        total_delta=Decimal("11.60"),
+        cancelled_count_delta=-1,
+        active_count_delta=1,
+        unknown_status_count_delta=0,
+        metadata_count_delta=1,
+        xml_count_delta=0,
+    )
+    row = MonthlyAggregate(
+        "2026-02",
+        "received",
+        "MXN",
+        3,
+        Decimal("110.00"),
+        Decimal("127.60"),
+        0,
+        1,
+        2,
+        2,
+        1,
+    )
+    report = _report(monthly=MonthlyAnalysisReport(rows=(row,), trends=(trend,)))
+
+    payload = report.as_dict()["sections"]["monthly"]
+    assert payload["rows"][0]["active_count"] == 2
+    assert payload["rows"][0]["unknown_status_count"] == 1
+    assert payload["trends"] == [
+        {
+            "month": "2026-02",
+            "direction": "received",
+            "currency": "MXN",
+            "prior_month": "2026-01",
+            "prior_available": True,
+            "count_delta": 1,
+            "subtotal_delta": "10.00",
+            "total_delta": "11.60",
+            "cancelled_count_delta": -1,
+            "active_count_delta": 1,
+            "unknown_status_count_delta": 0,
+            "metadata_count_delta": 1,
+            "xml_count_delta": 0,
+        }
+    ]
+
+
+def test_report_rejects_invalid_monthly_status_counts_and_trend_dimensions() -> None:
+    with pytest.raises(TypeError, match="analysis-count-invalid"):
+        _report(
+            monthly=MonthlyAnalysisReport(
+                rows=(
+                    MonthlyAggregate(
+                        "2026-01",
+                        "received",
+                        "MXN",
+                        1,
+                        Decimal("1"),
+                        Decimal("1"),
+                        0,
+                        0,
+                        1,
+                        -1,
+                        0,
+                    ),
+                )
+            )
+        )
+
+    bad_trend = MonthlyTrend(
+        month="2026-02",
+        direction="RFCABC010101AAA",
+        currency="MXN",
+        prior_month="2026-01",
+        prior_available=True,
+        count_delta=0,
+        subtotal_delta=Decimal("0"),
+        total_delta=Decimal("0"),
+        cancelled_count_delta=0,
+        active_count_delta=0,
+        unknown_status_count_delta=0,
+        metadata_count_delta=0,
+        xml_count_delta=0,
+    )
+    with pytest.raises(ValueError, match="analysis-direction-invalid"):
+        _report(monthly=MonthlyAnalysisReport(rows=_monthly().rows, trends=(bad_trend,)))
+    with pytest.raises(TypeError, match="analysis-trend-delta-invalid"):
+        _report(
+            monthly=MonthlyAnalysisReport(
+                rows=_monthly().rows,
+                trends=(replace(bad_trend, direction="received", count_delta="1"),),
+            )
+        )
+    with pytest.raises(ValueError, match="analysis-trend-baseline-invalid"):
+        _report(
+            monthly=MonthlyAnalysisReport(
+                rows=_monthly().rows,
+                trends=(replace(bad_trend, direction="received", prior_available=False),),
+            )
+        )

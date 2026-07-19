@@ -66,3 +66,52 @@ def test_monthly_analysis_rejects_invalid_period_and_mixed_amount_types() -> Non
 def test_monthly_analysis_rejects_unknown_source_kind() -> None:
     with pytest.raises(ValueError, match="analysis-source-invalid"):
         analyze_monthly([_record(source_kind="csv")])
+
+
+def test_monthly_analysis_reports_bounded_status_counts() -> None:
+    report = analyze_monthly(
+        [
+            _record(status="Vigente"),
+            _record(status="Cancelado"),
+            _record(status="estado-no-reconocido"),
+            _record(status=None),
+        ]
+    )
+
+    row = report.rows[0]
+    assert row.count == 4
+    assert row.active_count == 1
+    assert row.cancelled_count == 1
+    assert row.unknown_status_count == 2
+
+
+def test_monthly_analysis_builds_deltas_only_with_prior_evidence() -> None:
+    report = analyze_monthly(
+        [
+            _record(issue_date=date(2026, 1, 10), total=Decimal("10.00")),
+            _record(issue_date=date(2026, 2, 10), total=Decimal("25.00")),
+            _record(issue_date=date(2026, 4, 10), total=Decimal("40.00")),
+        ]
+    )
+
+    assert [trend.month for trend in report.trends] == ["2026-01", "2026-02", "2026-04"]
+    january, february, april = report.trends
+    assert january.prior_month == "2025-12"
+    assert not january.prior_available
+    assert january.total_delta is None
+    assert february.prior_month == "2026-01"
+    assert february.prior_available
+    assert february.count_delta == 0
+    assert february.total_delta == Decimal("15.00")
+    assert april.prior_month == "2026-03"
+    assert not april.prior_available
+    assert april.total_delta is None
+
+
+def test_monthly_analysis_rejects_free_form_dimensions() -> None:
+    with pytest.raises(ValueError, match="analysis-direction-invalid"):
+        analyze_monthly([_record(direction="RFCABC010101AAA")])
+    with pytest.raises(ValueError, match="analysis-currency-invalid"):
+        analyze_monthly([_record(currency="C:/private")])
+    with pytest.raises(ValueError, match="analysis-currency-invalid"):
+        analyze_monthly([_record(currency="USDX")])

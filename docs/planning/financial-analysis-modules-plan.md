@@ -37,10 +37,10 @@ deliberately narrower than claiming that the full financial product exists.
 | Reconciliation | `reconciliation.py` classifies metadata versus XML as pending, downloaded, cancelled, state-check, or retry/permanent outcomes. | Implemented decision rules and tests; quality dashboard is missing. |
 | Quality snapshot contract | `analysis.quality.snapshot_quality()` classifies identifier-free observations into fixed redacted buckets using existing reconciliation states and parser status mappings. | Implemented as a pure, unit-tested contract; PostgreSQL/worker joins and quality reporting remain pending. |
 | Existing summary | `VaultService.summary()` groups the legacy invoice model by month, issuer, and comprobante type; CLI `summary` prints counts, subtotal, and total. | Implemented for the legacy path; not yet the PostgreSQL recovery analytics contract. |
-| Monthly contract slice | `analysis.monthly.analyze_monthly()` plus `analysis.postgres.MonthlyAnalysisPostgresAdapter` produce deterministic month/direction/currency aggregates from typed metadata/XML evidence records and tenant-scoped PostgreSQL rows. | Implemented and unit-tested for UTC date bounds, metadata/XML precedence, partial-header fallback, and sanitized DTOs; effect/type breakdowns, deltas, and private reporting are pending. |
+| Monthly contract slice | `analysis.monthly.analyze_monthly()` plus `analysis.postgres.MonthlyAnalysisPostgresAdapter` produce deterministic month/direction/currency aggregates from typed metadata/XML evidence records and tenant-scoped PostgreSQL rows. | Implemented and unit-tested for UTC date bounds, metadata/XML precedence, partial-header fallback, sanitized DTOs, bounded active/cancelled/unknown status counts, and month-over-month deltas. Effect/type dimensions remain deferred because the current typed input and PostgreSQL read model do not expose those fields; private reporting is pending. |
 | Accounting summary slice | `analysis.accounting.summarize_taxes()` and `summarize_payments()` aggregate normalized tax/payment DTOs with source-status propagation and incomplete-data counts. | Implemented as a pure, unit-tested contract; persistence mapping, tax period/currency/direction dimensions, payment reconciliation, payroll, and private reporting remain pending. |
 | Worker handoff | `RecoveryService` consumes reference-only metadata/XML jobs and updates PostgreSQL. | Implemented and synthetic-worker tested; financial aggregates are not emitted by the worker. |
-| Reporting/export | `analysis.reporting.FinancialAnalysisReport` composes monthly, tax, payment, and quality DTOs with UTC/period validation and aggregate-only JSON projection. | Implemented as a pure, unit-tested contract; PostgreSQL queries, private exports, and CLI integration remain pending. |
+| Reporting/export | `analysis.reporting.FinancialAnalysisReport` composes monthly, tax, payment, and quality DTOs with UTC/period validation and aggregate-only JSON projection, including bounded monthly status counts and trend deltas. | Implemented as a pure, unit-tested contract; PostgreSQL queries, private exports, and CLI integration remain pending. |
 
 ### Important limitation
 
@@ -98,6 +98,13 @@ Minimum metrics:
 - active/cancelled/unknown counts;
 - metadata-only versus XML-backed coverage;
 - top parties/categories only in private operator views.
+
+The current pure contract exposes month-over-month deltas only when the
+immediately preceding calendar month has an aggregate for the same
+direction/currency key. Missing prior evidence is represented by `null` deltas,
+not a synthetic zero. Effect/type dimensions remain deferred until the typed
+read model provides bounded fields; the module does not infer them from status,
+direction, or free-form payloads.
 
 The output is a typed aggregate DTO. Public/status output contains counts and
 totals only; identifiers and row-level details require an explicit private
