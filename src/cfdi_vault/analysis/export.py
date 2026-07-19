@@ -11,6 +11,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
+from cfdi_vault.analysis.contextual_report import ContextualReportBundle
 from cfdi_vault.analysis.quality import QUALITY_CATEGORIES
 from cfdi_vault.analysis.reporting import FinancialAnalysisReport
 
@@ -66,6 +67,28 @@ _CSV_COLUMNS = (
     "total_deductions",
     "total_other_payments",
     "total_observations",
+)
+_CONTEXTUAL_CSV_COLUMNS = (
+    "section",
+    "row_kind",
+    "status",
+    "completeness",
+    "month",
+    "direction",
+    "currency",
+    "payment_form",
+    "tax_type",
+    "tax",
+    "factor_type",
+    "metric",
+    "count",
+    "incomplete_count",
+    "base",
+    "amount",
+    "rate_or_quota",
+    "related_document_count",
+    "total_observations",
+    "category",
 )
 
 _SECTION_KEYS = {
@@ -129,16 +152,20 @@ _ROW_KEYS = {
 }
 
 
-def export_private_json(report: FinancialAnalysisReport) -> str:
+def export_private_json(report: FinancialAnalysisReport | ContextualReportBundle) -> str:
     """Return canonical ASCII JSON; reject wrong types or altered payloads."""
 
+    if isinstance(report, ContextualReportBundle):
+        return export_contextual_private_json(report)
     payload = _validated_payload(report)
     return json.dumps(payload, allow_nan=False, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n"
 
 
-def export_private_csv(report: FinancialAnalysisReport) -> str:
+def export_private_csv(report: FinancialAnalysisReport | ContextualReportBundle) -> str:
     """Return deterministic, fixed-schema CSV text without file effects."""
 
+    if isinstance(report, ContextualReportBundle):
+        return export_contextual_private_csv(report)
     payload = _validated_payload(report)
     output = io.StringIO(newline="")
     writer = csv.DictWriter(
@@ -154,6 +181,35 @@ def export_private_csv(report: FinancialAnalysisReport) -> str:
     return output.getvalue()
 
 
+def export_contextual_private_json(bundle: ContextualReportBundle) -> str:
+    """Return canonical aggregate JSON for contextual tax/payment/quality views.
+
+    The result contains only the validated bundle projection.  It never writes
+    files or exposes source provenance, identifiers, paths, or fiscal rows.
+    """
+
+    payload = _validated_contextual_payload(bundle)
+    return json.dumps(payload, allow_nan=False, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n"
+
+
+def export_contextual_private_csv(bundle: ContextualReportBundle) -> str:
+    """Return deterministic fixed-schema CSV for contextual aggregates in memory."""
+
+    payload = _validated_contextual_payload(bundle)
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(
+        output,
+        fieldnames=_CONTEXTUAL_CSV_COLUMNS,
+        lineterminator="\n",
+        quoting=csv.QUOTE_MINIMAL,
+        extrasaction="raise",
+    )
+    writer.writeheader()
+    for row in _contextual_csv_rows(payload):
+        writer.writerow({column: row.get(column, "") for column in _CONTEXTUAL_CSV_COLUMNS})
+    return output.getvalue()
+
+
 def _validated_payload(report: FinancialAnalysisReport) -> dict[str, Any]:
     if not isinstance(report, FinancialAnalysisReport):
         raise TypeError("analysis-report-required")
@@ -162,6 +218,112 @@ def _validated_payload(report: FinancialAnalysisReport) -> dict[str, Any]:
         raise TypeError("analysis-export-payload-invalid")
     _validate_payload(payload)
     return payload
+
+
+def _validated_contextual_payload(bundle: ContextualReportBundle) -> dict[str, Any]:
+    if not isinstance(bundle, ContextualReportBundle):
+        raise TypeError("contextual-report-required")
+    payload = bundle.as_dict()
+    if not isinstance(payload, dict):
+        raise TypeError("analysis-export-payload-invalid")
+    _validate_contextual_payload(payload)
+    return payload
+
+
+def _validate_contextual_payload(payload: Mapping[str, Any]) -> None:
+    _require_keys(payload, {"status", "period", "taxes", "payments", "quality"})
+    _require_status(payload["status"])
+    period = payload["period"]
+    if not isinstance(period, dict) or set(period) != {"start_month", "end_month"}:
+        raise ValueError("analysis-export-payload-invalid")
+    for value in period.values():
+        if value is not None:
+            _require_text(value, pattern=_MONTH)
+    if (period["start_month"] is None) != (period["end_month"] is None):
+        raise ValueError("analysis-export-payload-invalid")
+
+    for section in ("taxes", "payments"):
+        value = payload[section]
+        if not isinstance(value, dict) or set(value) != {"status", "contexts"}:
+            raise ValueError("analysis-export-payload-invalid")
+        _require_status(value["status"])
+        _validate_contexts(value["contexts"], section)
+
+    quality = payload["quality"]
+    if not isinstance(quality, dict) or set(quality) != {"source_status", "completeness", "contexts"}:
+        raise ValueError("analysis-export-payload-invalid")
+    _require_status(quality["source_status"])
+    _require_status(quality["completeness"])
+    _validate_contexts(quality["contexts"], "quality")
+
+
+def _validate_contexts(value: object, section: str) -> None:
+    if not isinstance(value, list):
+        raise TypeError("analysis-export-payload-invalid")
+    for context in value:
+        if not isinstance(context, dict):
+            raise TypeError("analysis-export-payload-invalid")
+        if section == "taxes":
+            _require_keys(context, {"month", "direction", "currency", "status", "incomplete_count", "rows"})
+            _validate_context_header(context, direction=True, currency=True)
+            _require_int(context["incomplete_count"], nonnegative=True)
+            _validate_rows(context["rows"], "taxes")
+        elif section == "payments":
+            _require_keys(
+                context,
+                {"month", "direction", "currency", "payment_form", "status", "incomplete_count", "rows"},
+            )
+            _validate_context_header(context, direction=True, currency=True, payment_form=True)
+            _require_int(context["incomplete_count"], nonnegative=True)
+            _validate_rows(context["rows"], "payments")
+        else:
+            allowed = {
+                "month",
+                "source_status",
+                "completeness",
+                "total_observations",
+                "counts",
+                "direction",
+                "currency",
+            }
+            if not isinstance(context, dict) or not set(context).issubset(allowed):
+                raise ValueError("analysis-export-payload-invalid")
+            if set(context) - {"direction", "currency"} != {
+                "month",
+                "source_status",
+                "completeness",
+                "total_observations",
+                "counts",
+            }:
+                raise ValueError("analysis-export-payload-invalid")
+            _require_text(context["month"], pattern=_MONTH)
+            _require_status(context["source_status"])
+            _require_status(context["completeness"])
+            for key in ("direction", "currency"):
+                if key in context:
+                    _require_text(
+                        context[key],
+                        choices={"received", "issued", "unknown"} if key == "direction" else None,
+                        pattern=None if key == "direction" else _CURRENCY,
+                    )
+            _require_int(context["total_observations"], nonnegative=True)
+            counts = context["counts"]
+            if not isinstance(counts, dict) or tuple(counts) != QUALITY_CATEGORIES:
+                raise ValueError("analysis-export-payload-invalid")
+            for count in counts.values():
+                _require_int(count, nonnegative=True)
+
+
+def _validate_context_header(
+    context: Mapping[str, Any], *, direction: bool = False, currency: bool = False, payment_form: bool = False
+) -> None:
+    _require_text(context["month"], pattern=_MONTH)
+    if direction:
+        _require_text(context["direction"], choices={"received", "issued", "unknown"})
+    if currency:
+        _require_text(context["currency"], pattern=_CURRENCY)
+    if payment_form:
+        _require_text(context["payment_form"], pattern=_PAYMENT_FORM)
 
 
 def _validate_payload(payload: Mapping[str, Any]) -> None:
@@ -397,3 +559,44 @@ def _csv_rows(payload: Mapping[str, Any]) -> Iterator[dict[str, Any]]:
             yield summary
             for category in QUALITY_CATEGORIES:
                 yield {**base, "row_kind": "category", "metric": category, "count": value["counts"][category]}
+
+
+def _contextual_csv_rows(payload: Mapping[str, Any]) -> Iterator[dict[str, Any]]:
+    for section in ("taxes", "payments", "quality"):
+        value = payload[section]
+        status = value.get("status", value.get("source_status"))
+        completeness = value.get("completeness", status)
+        contexts = value["contexts"]
+        base = {"section": section, "status": status, "completeness": completeness}
+        if section in {"taxes", "payments"}:
+            count = sum(row["count"] for context in contexts for row in context["rows"])
+            yield {**base, "row_kind": "summary", "metric": "rows", "count": count}
+            for context in contexts:
+                context_base = {**base, "row_kind": "context", **_context_dimensions(context)}
+                context_base["incomplete_count"] = context["incomplete_count"]
+                yield context_base
+                for row in context["rows"]:
+                    yield {**context_base, "row_kind": "aggregate", **row}
+            continue
+
+        total = sum(context["total_observations"] for context in contexts)
+        yield {**base, "row_kind": "summary", "metric": "observations", "total_observations": total}
+        for context in contexts:
+            context_base = {
+                **base,
+                "row_kind": "context",
+                **_context_dimensions(context),
+                "total_observations": context["total_observations"],
+            }
+            yield context_base
+            for category in QUALITY_CATEGORIES:
+                yield {
+                    **context_base,
+                    "row_kind": "category",
+                    "category": category,
+                    "count": context["counts"][category],
+                }
+
+
+def _context_dimensions(context: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: context[key] for key in ("month", "direction", "currency", "payment_form") if key in context}
