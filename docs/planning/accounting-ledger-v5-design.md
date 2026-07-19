@@ -45,6 +45,77 @@ The source reference is canonicalized from the evidence hash prefix; replacing
 that reference without a matching hash is rejected before a mapper can use the
 intent.
 
+## Maintainer approval checklist
+
+**Action required:** review and record every decision below before any V5
+migration, model, mapper, worker, CLI, queue, or SAT behavior is implemented.
+This document remains a proposal until the checklist is approved. A partial
+approval is a **NO-GO** for implementation; it does not authorize a narrower
+schema or an implicit fallback.
+
+### Review path
+
+1. Review the [proposed V5 boundary](#2-proposed-v5-boundary-not-approved)
+   and [identity rules](#3-proposed-identity-and-uniqueness-rules).
+2. Confirm the [nullable-field policy](#4-missing-payroll-and-payment-fields),
+   [worker boundaries](#5-transaction-and-worker-boundaries), and
+   [rollback/retention policy](#6-rollback-and-reprocess-policy).
+3. Confirm the [pre-approval evidence](#pre-approval-evidence-required-before-authorization)
+   before recording an implementation decision. The migration, mapper,
+   worker, and rollback tests in §8 are **post-approval completion gates**;
+   they cannot be evidence that an unapproved implementation already works.
+4. Record one exact decision per row in the table below. Blank or mixed
+   decisions remain **NO-GO**.
+
+### Decision checklist
+
+| Decision | Maintainer must confirm | Decision (GO/NO-GO) |
+|---|---|---|
+| Scope | V5 is additive, Flyway-owned, synthetic/offline first, and does not copy raw XML, ZIP/TXT bytes, secrets, or unbounded payloads. | |
+| Tenant boundary | Parent keys and every child reference use same-tenant composite keys; ambiguous legacy backfill stops for review. | |
+| Evidence and idempotency | Evidence hash, source reference, ordinal, generation, and exact-key idempotency are required; conflicts preserve prior evidence. | |
+| Payroll fields | Source amounts remain nullable; missing values stay `NULL`; no net-pay arithmetic or employee identity is inferred. | |
+| Payment fields | Exchange rate is conditionally required by currency; missing related identity is incomplete; no paid/tax conclusion is inferred. | |
+| Worker boundary | Claims and short DB transactions surround external effects; SAT/storage/queue I/O is outside transactions; outbox publication follows commit. | |
+| Rollback and retention | Writers stop, queues drain, backup/counts are captured, and reverse-order rollback retains evidence, legacy rows, and audit history. | |
+| Public redaction | Status/report output is aggregate-only and excludes tenant/row identifiers, hashes, storage references, raw payloads, SOAP, credentials, and external error text. | |
+| Pre-approval evidence | Design review, pure contract/intent tests, redaction/security scans, and no-runtime-change gates pass on a clean tree. | |
+
+### Pre-approval evidence (required before authorization)
+
+The maintainer must attach or record evidence for each item before choosing
+`GO` in the decision column:
+
+- the design review has no unresolved scope, identity, nullable-field,
+  transaction, retention, or redaction decision;
+- existing synthetic tests cover the pure normalizers, report DTOs, ledger
+  write intents, source-reference binding, and forbidden-data serialization;
+- sensitive/SAT scanners, markdown diff-check, and the existing full suite pass;
+- the diff contains no V5 migration, model, mapper, worker, queue, CLI, or
+  runtime behavior change.
+
+### Post-approval completion gates
+
+After authorization, implementation is complete only when the synthetic
+PostgreSQL and Compose evidence in §8 passes. This includes additive Flyway
+application and reverse-order rollback, tenant isolation and unambiguous
+backfill, exact-key concurrency/idempotency, claim/outbox transaction
+boundaries, parser-worker restart, nullable payroll/payment rules, public
+redaction, and the final Ruff, full-suite, scanner, Compose, and diff checks.
+These are implementation results, not prerequisites that can be claimed before
+the maintainer authorizes the change.
+
+### Exact authorization rule
+
+The implementation decision is **GO** only when every decision row above is
+explicitly `GO`, all pre-approval evidence is recorded, and the maintainer
+records the approved commit/digest in the review record. Otherwise the
+decision is **NO-GO** and the only permitted work is documentation, tests, or
+corrections that do not change runtime behavior. After a `GO`, the post-
+approval gates remain mandatory; a failed gate reopens **NO-GO** for completion
+and does not authorize bypasses. Approval of this checklist does not authorize
+SAT contact or production credentials; those remain a separate human gate.
+
 These facts are a boundary, not an assertion that the accounting ledgers are
 already populated.
 
@@ -243,10 +314,13 @@ keys/paths, raw payloads, SOAP, credentials, and error text from external
 responses. Private operator exports require an explicit authorization boundary,
 and even those exports must not contain raw artifacts or secrets.
 
-## 8. Acceptance tests before implementation approval
+## 8. Post-approval implementation acceptance tests
 
-The migration and mapper are accepted only when all tests below pass using a
-clean synthetic PostgreSQL database and no SAT contact:
+After the maintainer records an explicit **GO**, the migration, mapper, and
+worker are completion-ready only when all tests below pass using a clean
+synthetic PostgreSQL database and no SAT contact. These are post-approval
+implementation gates; they do not authorize the implementation or replace the
+pre-approval evidence in the maintainer checklist:
 
 1. Flyway applies V5 additively; a documented reverse-order rollback is
    validated on a disposable database and leaves V1–V4 untouched.
