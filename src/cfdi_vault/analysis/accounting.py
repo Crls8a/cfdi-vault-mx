@@ -15,12 +15,25 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from cfdi_vault.analysis.payments import PaymentRecord
+from cfdi_vault.analysis.payroll_accounting import PayrollSummaryReport, PayrollSummaryRow, summarize_payroll
 from cfdi_vault.analysis.taxes import TaxRecord
 
 _ZERO = Decimal("0")
 _KNOWN_TAX_TYPES = frozenset({"transferred", "withheld"})
 _KNOWN_TAXES = frozenset({"001", "002", "003"})
 _KNOWN_FACTORS = {"tasa": "Tasa", "cuota": "Cuota", "exento": "Exento"}
+
+__all__ = [
+    "TaxSummaryRow",
+    "TaxSummaryReport",
+    "summarize_taxes",
+    "PaymentSummaryRow",
+    "PaymentSummaryReport",
+    "summarize_payments",
+    "PayrollSummaryRow",
+    "PayrollSummaryReport",
+    "summarize_payroll",
+]
 
 
 @dataclass(frozen=True)
