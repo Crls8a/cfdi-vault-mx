@@ -1,11 +1,11 @@
 # Financial and accounting analysis modules plan
 
 Status: phased implementation. The pure monthly, normalization, accounting,
-quality, report-composition, and in-memory XML projection contracts are
-implemented and unit-tested;
-database ingestion, normalized ledgers, private exports, and operator CLI
-remain pending. This document does not enable SAT access, change the database
-schema, or make a tax determination.
+quality, report-composition, in-memory XML projection, and in-memory private
+export contracts are implemented and unit-tested; database ingestion,
+normalized ledgers, private storage delivery, and operator CLI remain pending.
+This document does not enable SAT access, change the database schema, or make a
+tax determination.
 
 ## Purpose and boundary
 
@@ -43,7 +43,7 @@ deliberately narrower than claiming that the full financial product exists.
 | Accounting summary slice | `analysis.accounting.summarize_taxes()`, `summarize_payments()`, and `summarize_payroll()` aggregate normalized tax/payment/payroll DTOs with source-status propagation and incomplete-data counts. | Implemented as pure, unit-tested contracts; they consume only in-memory normalized records and return aggregate DTOs. They do not read/write PostgreSQL, enqueue jobs, or contact SAT. Persistence mapping, tax period/currency/direction dimensions, payment reconciliation, payroll ledger mapping, and private reporting remain pending. |
 | Worker handoff | `RecoveryService` consumes reference-only metadata/XML jobs and updates PostgreSQL. | Implemented and synthetic-worker tested; financial aggregates are not emitted by the worker. |
 | In-memory accounting projection | `analysis.projection.project_accounting_xml()` dispatches one stored XML value to the four pure normalizers and returns typed records, parser statuses, counts, and opaque deterministic references. | Implemented and unit-tested only; process-local duplicate suppression is not durable idempotency and no DB/worker/queue integration exists yet. |
-| Reporting/export | `analysis.reporting.FinancialAnalysisReport` composes monthly, tax, payment, optional payroll, and quality DTOs with UTC/period validation and aggregate-only JSON projection. Supplying `PayrollSummaryReport` adds a bounded payroll section (month, `O`/`E`/`UNKNOWN`, counts, and Decimal totals); omitting it preserves the legacy four-section projection. | Implemented as a pure, unit-tested contract; PostgreSQL queries, private exports, and CLI integration remain pending. |
+| Reporting/export | `analysis.reporting.FinancialAnalysisReport` composes monthly, tax, payment, optional payroll, and quality DTOs with UTC/period validation and aggregate-only JSON projection. Supplying `PayrollSummaryReport` adds a bounded payroll section (month, `O`/`E`/`UNKNOWN`, counts, and Decimal totals); omitting it preserves the legacy four-section projection. `analysis.export` provides deterministic in-memory JSON/CSV adapters with fail-closed validation. | Pure report composition and in-memory private exports are implemented and unit-tested; PostgreSQL queries, private storage delivery, and CLI integration remain pending. |
 
 ### Important limitation
 
