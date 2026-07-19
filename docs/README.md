@@ -31,6 +31,7 @@ This repository is split into the current PostgreSQL-backed CFDI recovery refere
 25. Read [Offline/local SAT download operations](sat-download/offline-local-operations.md) before validating issue #51.
 26. Read the [productive SAT campaign runbook](runbooks/sat-campaign.md) before requesting any human-gated live SAT operation.
 27. Read the [SAT code/documentation audit](audits/sat-code-doc-audit-2026-07-19.md) before treating a live result as evidence.
+28. Read the [financial and accounting analysis modules plan](planning/financial-analysis-modules-plan.md) before adding financial reports, tax/payment analysis, or accounting-oriented CLI commands.
 
 ## Documentation map
 
@@ -75,6 +76,7 @@ This repository is split into the current PostgreSQL-backed CFDI recovery refere
 | Planned library | [Offline/local SAT download operations](sat-download/offline-local-operations.md) | Fake/offline runbook for issue #51: demo path, backup/restore, observability, and #50 boundary. |
 | Reference system | [SAT campaign runbook](runbooks/sat-campaign.md) | PostgreSQL campaign, grants, due VERIFY, package storage, worker handoff, and redaction rules. |
 | Audit | [SAT code/documentation audit](audits/sat-code-doc-audit-2026-07-19.md) | Current code↔docs traceability, evidence boundary, findings, and open cleanup. |
+| Planning | [Financial and accounting analysis modules plan](planning/financial-analysis-modules-plan.md) | Module boundaries, current gaps, phased delivery, analytical contracts, and safety gates for financial reporting. |
 | Planned library | [Implementation plan](sat-download/implementation-plan.md) | Proposed library modules, persistence, and roadmap. |
 | Planned library | [Examples](sat-download/examples.md) | Transport examples and payload templates. |
 | Planned library | [Sources](sat-download/sources.md) | Official and community references. |
