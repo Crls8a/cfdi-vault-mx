@@ -7,10 +7,10 @@ without external services.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from collections import defaultdict, deque
-from datetime import datetime, timezone
 import json
+from collections import defaultdict, deque
+from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Deque
 
 from cfdi_vault.domain import QueueMessage, QueueName
@@ -18,11 +18,10 @@ from cfdi_vault.queue_contract import (
     DeadLetterRecord,
     DeliveryAction,
     DeliveryOutcome,
-    RetryPolicy,
     RetryableQueueError,
+    RetryPolicy,
     TerminalQueueError,
 )
-
 
 _DEAD_LETTER_QUEUE = "dead.letter.v1"
 
@@ -45,8 +44,9 @@ class InMemoryQueue:
         self.retry_policy = retry_policy or RetryPolicy()
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
-    def publish(self, message: QueueMessage) -> None:
+    def publish(self, message: QueueMessage) -> bool:
         self._messages[message.queue.value].append(message)
+        return True
 
     def peek(self, queue_name: str) -> QueueMessage | None:
         """Inspect the head without acknowledging or removing it."""
@@ -130,7 +130,7 @@ class RabbitMqQueue:
         self.exchange = exchange
         self.retry_policy = retry_policy or RetryPolicy()
 
-    def publish(self, message: QueueMessage) -> None:
+    def publish(self, message: QueueMessage) -> bool:
         pika = _load_pika()
         parameters = pika.URLParameters(self.url)
         connection = pika.BlockingConnection(parameters)
@@ -154,7 +154,7 @@ class RabbitMqQueue:
                     properties=self._message_properties(pika, message),
                     mandatory=True,
                 )
-                if confirmed is False:
+                if confirmed is not True:
                     raise RuntimeError("queue initial publish was not confirmed")
             except RuntimeError:
                 raise
@@ -162,6 +162,7 @@ class RabbitMqQueue:
                 raise RuntimeError("queue initial publish failed") from None
         finally:
             connection.close()
+        return True
 
     def pending_count(self, queue_name: str | None = None) -> int:
         pika = _load_pika()
@@ -239,7 +240,7 @@ class RabbitMqQueue:
                         properties=self._message_properties(pika, retry),
                         mandatory=True,
                     )
-                    if confirmed is False:
+                    if confirmed is not True:
                         raise RuntimeError("retry publish was not confirmed")
                 except Exception:
                     channel.basic_nack(delivery_tag=method_frame.delivery_tag, requeue=True)
@@ -252,9 +253,7 @@ class RabbitMqQueue:
                     delay_seconds=delay,
                 )
             except TerminalQueueError as exc:
-                return self._dead_letter_delivery(
-                    pika, channel, method_frame.delivery_tag, message, exc.reason_code
-                )
+                return self._dead_letter_delivery(pika, channel, method_frame.delivery_tag, message, exc.reason_code)
             except Exception:
                 return self._dead_letter_delivery(
                     pika, channel, method_frame.delivery_tag, message, "unclassified_failure"
@@ -382,7 +381,7 @@ class RabbitMqQueue:
                 properties=pika.BasicProperties(**property_values),
                 mandatory=True,
             )
-            if confirmed is False:
+            if confirmed is not True:
                 raise RuntimeError("dead-letter publish was not confirmed")
         except Exception:
             channel.basic_nack(delivery_tag=delivery_tag, requeue=True)

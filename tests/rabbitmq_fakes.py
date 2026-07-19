@@ -28,7 +28,9 @@ class Properties:
 
 
 class Channel:
-    def __init__(self, envelope: QueueMessage, *, fail_publish: bool = False, confirm_result: bool = True) -> None:
+    def __init__(
+        self, envelope: QueueMessage, *, fail_publish: bool = False, confirm_result: bool | None = True
+    ) -> None:
         self.body = json.dumps(envelope.as_dict()).encode()
         self.fail_publish = fail_publish
         self.confirm_result = confirm_result
@@ -93,7 +95,7 @@ def rabbit(
     envelope: QueueMessage,
     *,
     fail_publish: bool = False,
-    confirm_result: bool = True,
+    confirm_result: bool | None = True,
 ) -> tuple[RabbitMqQueue, Channel]:
     channel = Channel(envelope, fail_publish=fail_publish, confirm_result=confirm_result)
     monkeypatch.setattr("cfdi_vault.queueing._load_pika", lambda: Pika(channel))

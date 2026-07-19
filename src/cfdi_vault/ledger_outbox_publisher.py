@@ -19,6 +19,8 @@ _REFERENCE_LIMITS = {
     "event_id": 96,
     "job_id": 96,
     "tenant_id": 64,
+    "event_type": 64,
+    "routing_key": 128,
     "job_type": 64,
     "artifact_ref": 192,
     "idempotency_key": 192,
@@ -41,52 +43,6 @@ def _reason(value: str) -> str:
     return validate_reason_code(value)
 
 
-@dataclass(frozen=True, slots=True, repr=False)
-class LedgerOutboxEnvelope(QueueMessage):
-    """Reference-only queue envelope for a ledger outbox event.
-
-    The additional fields are deliberately kept in this adapter envelope
-    rather than changing the existing queue contract before consumer work is
-    ready.  ``RabbitMqQueue`` and ``InMemoryQueue`` only require the existing
-    ``QueueMessage`` attributes and ``as_dict`` method, so both adapters can
-    publish this object without a transport fork.
-    """
-
-    event_id: str = ""
-    job_type: str = ""
-    artifact_ref: str = ""
-    schema_version: int = 1
-
-    def __post_init__(self) -> None:
-        # Explicit dispatch avoids the zero-argument ``super()`` closure bug
-        # produced by ``@dataclass(slots=True)`` on Python 3.12 subclasses.
-        QueueMessage.__post_init__(self)
-        _reference("event_id", self.event_id)
-        _reference("job_id", self.job_id)
-        _reference("tenant_id", self.tenant_id)
-        _reference("job_type", self.job_type)
-        _reference("artifact_ref", self.artifact_ref)
-        _reference("idempotency_key", self.idempotency_key)
-        _reference("correlation_id", self.correlation_id)
-        if type(self.schema_version) is not int or self.schema_version <= 0:
-            raise ValueError("outbox schema_version must be positive")
-
-    def __repr__(self) -> str:
-        return "LedgerOutboxEnvelope(references_redacted=True)"
-
-    def as_dict(self) -> dict[str, object]:
-        transport = QueueMessage.as_dict(self)
-        transport.update(
-            {
-                "event_id": self.event_id,
-                "job_type": self.job_type,
-                "artifact_ref": self.artifact_ref,
-                "schema_version": self.schema_version,
-            }
-        )
-        return transport
-
-
 class OutboxPublisherStore(Protocol):
     """Minimal durable store port used by the publisher."""
 
@@ -106,7 +62,7 @@ class OutboxPublisherStore(Protocol):
 class ReferenceQueuePublisher(Protocol):
     """Queue adapter port accepting reference-only envelopes."""
 
-    def publish(self, message: QueueMessage) -> None: ...
+    def publish(self, message: QueueMessage) -> bool: ...
 
 
 class OutboxPublishFailure(Exception):
@@ -153,7 +109,12 @@ class PublisherReport:
 
 @dataclass(slots=True)
 class LedgerOutboxPublisher:
-    """Publish at most one durable outbox event per one-shot invocation."""
+    """Publish at most one durable outbox event per one-shot invocation.
+
+    Dispatch metadata and artifact references remain in PostgreSQL.  Consumers
+    will resolve them by ``job_id`` in the worker phase; the wire envelope is
+    intentionally the existing v1 ``QueueMessage`` contract.
+    """
 
     store: OutboxPublisherStore
     publisher: ReferenceQueuePublisher
@@ -174,22 +135,29 @@ class LedgerOutboxPublisher:
         try:
             envelope = self._envelope(claim, now)
         except (TypeError, ValueError):
-            self.store.mark_outbox_failed(claim.event_id, claim.claim_id, "invalid_reference", now=now)
+            if not self.store.mark_outbox_failed(claim.event_id, claim.claim_id, "invalid_reference", now=now):
+                return PublisherReport("stale", "stale_claim")
             return PublisherReport("invalid", "invalid_reference")
 
         try:
-            self.publisher.publish(envelope)
+            confirmed = self.publisher.publish(envelope)
+            if confirmed is not True:
+                if not self.store.mark_outbox_uncertain(claim.event_id, claim.claim_id, "publish_uncertain", now=now):
+                    return PublisherReport("stale", "stale_claim")
+                return PublisherReport("uncertain", "publish_uncertain")
         except OutboxPublishFailure as exc:
-            self.store.mark_outbox_failed(claim.event_id, claim.claim_id, exc.reason_code, now=now)
+            if not self.store.mark_outbox_failed(claim.event_id, claim.claim_id, exc.reason_code, now=now):
+                return PublisherReport("stale", "stale_claim")
             return PublisherReport("failed", exc.reason_code)
         except (OutboxPublishAmbiguous, TimeoutError):
-            self.store.mark_outbox_uncertain(claim.event_id, claim.claim_id, "publish_uncertain", now=now)
+            if not self.store.mark_outbox_uncertain(claim.event_id, claim.claim_id, "publish_uncertain", now=now):
+                return PublisherReport("stale", "stale_claim")
             return PublisherReport("uncertain", "publish_uncertain")
-        except RuntimeError:
-            # RabbitMqQueue deliberately collapses transport errors to
-            # RuntimeError.  The outcome may be accepted by the broker, so it
-            # is unsafe to classify this as a retryable failure.
-            self.store.mark_outbox_uncertain(claim.event_id, claim.claim_id, "publish_uncertain", now=now)
+        except Exception:
+            # Any transport exception can happen after the broker accepted the
+            # message.  Never retry automatically or claim it was published.
+            if not self.store.mark_outbox_uncertain(claim.event_id, claim.claim_id, "publish_uncertain", now=now):
+                return PublisherReport("stale", "stale_claim")
             return PublisherReport("uncertain", "publish_uncertain")
 
         if not self.store.mark_outbox_published(claim.event_id, claim.claim_id, now=now):
@@ -203,12 +171,25 @@ class LedgerOutboxPublisher:
         return value
 
     @staticmethod
-    def _envelope(claim: OutboxClaim, now: datetime) -> LedgerOutboxEnvelope:
-        queue = QueueName(claim.queue_name)
-        if claim.artifact_ref is None:
-            raise ValueError("outbox artifact_ref is required")
+    def _envelope(claim: OutboxClaim, now: datetime) -> QueueMessage:
+        if type(claim.schema_version) is not int or claim.schema_version != 1:
+            raise ValueError("unsupported outbox schema_version")
+        _reference("event_id", claim.event_id)
+        _reference("job_id", claim.job_id)
+        _reference("tenant_id", claim.tenant_id)
+        _reference("event_type", claim.event_type)
+        _reference("routing_key", claim.routing_key)
+        _reference("job_type", claim.job_type)
+        _reference("idempotency_key", claim.idempotency_key)
+        if claim.event_type in {"metadata_parse", "xml_parse"} and claim.artifact_ref is None:
+            raise ValueError("parse outbox artifact_ref is required")
+        if claim.artifact_ref is not None:
+            _reference("artifact_ref", claim.artifact_ref)
+        if claim.event_type != claim.job_type or claim.routing_key != claim.queue_name:
+            raise ValueError("outbox dispatch metadata mismatch")
+        queue = QueueName(claim.routing_key)
         correlation_id = claim.job_id
-        return LedgerOutboxEnvelope(
+        return QueueMessage(
             queue=queue,
             tenant_id=claim.tenant_id,
             job_id=claim.job_id,
@@ -220,8 +201,4 @@ class LedgerOutboxPublisher:
             idempotency_key=claim.idempotency_key,
             envelope_version=1,
             not_before=None,
-            event_id=claim.event_id,
-            job_type=claim.job_type,
-            artifact_ref=claim.artifact_ref,
-            schema_version=claim.schema_version,
         )

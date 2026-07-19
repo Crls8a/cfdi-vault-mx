@@ -91,6 +91,8 @@ class OutboxClaim:
     event_id: str
     job_id: str
     claim_id: str
+    event_type: str
+    routing_key: str
     tenant_id: str
     job_type: str
     artifact_ref: str | None
@@ -179,6 +181,8 @@ class LedgerOutboxStoreMixin:
                 row.event_id,
                 row.job_id,
                 claim_id,
+                row.event_type,
+                row.routing_key,
                 row.tenant_id,
                 row.job_type,
                 row.artifact_ref,
