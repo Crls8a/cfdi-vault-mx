@@ -39,6 +39,15 @@ _OUTBOX = Table(
     Column("claim_id", String(96)),
     Column("claimed_by", String(128)),
 )
+_JOBS = Table(
+    "ledger_jobs",
+    _METADATA,
+    Column("job_id", String(96)),
+    Column("tenant_id", String(64)),
+    Column("job_type", String(64)),
+    Column("queue_name", String(128)),
+    Column("artifact_ref", String(192)),
+)
 _INBOX = Table(
     "ledger_inbox",
     _METADATA,
@@ -82,6 +91,12 @@ class OutboxClaim:
     event_id: str
     job_id: str
     claim_id: str
+    tenant_id: str
+    job_type: str
+    artifact_ref: str | None
+    queue_name: str
+    idempotency_key: str
+    schema_version: int
 
     def __repr__(self) -> str:
         return "OutboxClaim(references_redacted=True)"
@@ -132,7 +147,14 @@ class LedgerOutboxStoreMixin:
                 .values(status="queued", lease_until=None, claim_id=None, claimed_by=None, updated_at=now)
             )
             row = connection.execute(
-                select(_OUTBOX)
+                select(
+                    _OUTBOX,
+                    _JOBS.c.tenant_id,
+                    _JOBS.c.job_type,
+                    _JOBS.c.artifact_ref,
+                    _JOBS.c.queue_name,
+                )
+                .join(_JOBS, _JOBS.c.job_id == _OUTBOX.c.job_id)
                 .where(_OUTBOX.c.status.in_(("queued", "failed")), _OUTBOX.c.available_at <= now)
                 .order_by(_OUTBOX.c.available_at, _OUTBOX.c.event_id)
                 .limit(1)
@@ -153,7 +175,17 @@ class LedgerOutboxStoreMixin:
                     updated_at=now,
                 )
             )
-            return OutboxClaim(row.event_id, row.job_id, claim_id)
+            return OutboxClaim(
+                row.event_id,
+                row.job_id,
+                claim_id,
+                row.tenant_id,
+                row.job_type,
+                row.artifact_ref,
+                row.queue_name,
+                row.idempotency_key,
+                row.schema_version,
+            )
 
     def mark_outbox_published(self, event_id: str, claim_id: str, *, now: datetime | None = None) -> bool:
         """Close a claimed event after broker confirmation."""
@@ -205,6 +237,35 @@ class LedgerOutboxStoreMixin:
                         claim_id=None,
                         claimed_by=None,
                         available_at=stamp,
+                        updated_at=stamp,
+                    )
+                ).rowcount
+                == 1
+            )
+
+    def mark_outbox_uncertain(
+        self, event_id: str, claim_id: str, reason_code: str, *, now: datetime | None = None
+    ) -> bool:
+        """Close a fenced claim when publish confirmation is ambiguous."""
+        stamp = _stamp(now)
+        event_id = _ref("event_id", event_id, 96)
+        claim_id = _ref("claim_id", claim_id, 96)
+        reason_code = _reason(reason_code)
+        with self._engine.begin() as connection:
+            return (
+                connection.execute(
+                    update(_OUTBOX)
+                    .where(
+                        _OUTBOX.c.event_id == event_id,
+                        _OUTBOX.c.claim_id == claim_id,
+                        _OUTBOX.c.status == "claimed",
+                    )
+                    .values(
+                        status="uncertain",
+                        last_error_code=reason_code,
+                        lease_until=None,
+                        claim_id=None,
+                        claimed_by=None,
                         updated_at=stamp,
                     )
                 ).rowcount
