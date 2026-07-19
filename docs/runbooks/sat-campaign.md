@@ -80,3 +80,9 @@ arrives, the runner stores it once outside PostgreSQL, validates it, publishes
 only an opaque parsing reference, and the worker consumes `cfdi.parse.metadata`.
 Re-delivery of that reference must be acknowledged as a duplicate. Do not
 create the `cfdi-proof` grant until a real TXT has been processed successfully.
+
+The two-operation ceiling counts persisted requests in `submitted`,
+`waiting_verify`, `package`, or `uncertain` state, as well as an unbound submit
+claim. A later one-shot wake must stop before selecting another planned
+window whenever the ceiling is occupied; an expired or uncertain request is
+never replaced automatically.

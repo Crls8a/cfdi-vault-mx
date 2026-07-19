@@ -256,6 +256,54 @@ def test_runner_submits_planned_window_after_grant_bound_claim() -> None:
     assert repository.submissions[0]["id_solicitud"] == "request-submit"
 
 
+def test_runner_does_not_submit_when_two_sat_operations_are_open() -> None:
+    class Window:
+        work_ref = "window-submit-later"
+        direction = "issued"
+
+    class Repository:
+        def list_submission_windows(self, campaign_ref: str, *, limit: int):
+            assert campaign_ref == "campaign-submit"
+            assert limit == 2
+            return (Window(),)
+
+        def count_open_operations(self, campaign_ref: str) -> int:
+            assert campaign_ref == "campaign-submit"
+            return 2
+
+        def claim_operation(self, **kwargs):
+            raise AssertionError("a third SAT operation must not be claimed")
+
+        def claim_due_operations(self, *args, **kwargs):
+            return ()
+
+        def get_campaign_status(self, campaign_ref: str):
+            return {}
+
+    calls: list[str] = []
+    query = DownloadQuery(
+        tenant_id="tenant-submit", requester_rfc="SYNTHETIC",
+        direction=DownloadDirection.ISSUED, request_type=RequestType.METADATA,
+        period=None,
+    )
+
+    class Submitter:
+        def submit_request(self, _query):
+            calls.append("submit")
+            raise AssertionError("SAT submitter must not be called")
+
+    report = SatCampaignRunner(
+        Repository(), lambda _: object(), campaign_ref="campaign-submit",
+        submitter_factory=lambda _value: Submitter(),
+        query_factory=lambda _window: query,
+        grant_ref="grant-submit",
+    ).run(now=NOW)
+
+    assert report.submitted_count == 0
+    assert report.submission_categories == {}
+    assert calls == []
+
+
 @pytest.mark.integration
 def test_runner_persists_one_submission_before_future_verify(runner_context) -> None:
     repository, campaign_ref, _add_request = runner_context

@@ -83,6 +83,34 @@ class SatCampaignRepository(SatCampaignRepositoryCampaignMixin, SatCampaignStatu
                 SatRequestRecord.request_type == request_type,
             ))
 
+    def count_open_operations(self, campaign_ref: str) -> int:
+        """Count durable SAT operations that still occupy campaign capacity.
+
+        Submitted requests remain open until SAT returns a terminal result. An
+        unbound submit claim is also counted because its external effect may
+        still be in flight. This prevents a later one-shot wake from opening
+        replacement requests after the original request's submit claim has
+        already been completed.
+        """
+
+        open_request_statuses = (
+            "outstanding", "recovery_linked", "submitted", "waiting_verify",
+            "package", "uncertain",
+        )
+        with self._session_factory() as session:
+            campaign = self._campaign(session, campaign_ref)
+            request_count = session.scalar(select(func.count(SatRequestRecord.id)).where(
+                SatRequestRecord.campaign_id == campaign.id,
+                SatRequestRecord.status.in_(open_request_statuses),
+            ))
+            unbound_claim_count = session.scalar(select(func.count(SatClaimRecord.id)).where(
+                SatClaimRecord.campaign_id == campaign.id,
+                SatClaimRecord.operation_kind == "submit",
+                SatClaimRecord.request_id.is_(None),
+                SatClaimRecord.active.is_(True),
+            ))
+            return int(request_count or 0) + int(unbound_claim_count or 0)
+
     def list_submission_windows(
         self, campaign_ref: str, *, limit: int = 2, eligible_only: bool = False,
     ) -> tuple[SatCampaignWindowRecord, ...]:

@@ -71,6 +71,46 @@ def test_campaign_window_grant_and_sanitized_status(sat_repository: SatCampaignR
 
 
 @pytest.mark.integration
+def test_count_open_operations_includes_submitted_requests_and_unbound_claims(
+    sat_repository: SatCampaignRepository,
+) -> None:
+    campaign = _campaign(sat_repository)
+    window = sat_repository.reserve_window(
+        campaign_ref=campaign.campaign_ref,
+        work_ref="work-open-count",
+        direction="received",
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 14),
+        now=NOW,
+    )
+    assert sat_repository.count_open_operations(campaign.campaign_ref) == 0
+    claim = sat_repository.claim_operation(
+        campaign_ref=campaign.campaign_ref,
+        window_ref=window.work_ref,
+        operation_kind="submit",
+        idempotency_key="submit:work-open-count",
+        worker_ref="worker-a",
+        now=NOW,
+        lease_until=NOW + timedelta(minutes=5),
+    )
+    assert sat_repository.count_open_operations(campaign.campaign_ref) == 1
+    sat_repository.record_submission(
+        claim_ref=claim.claim_ref,
+        campaign_ref=campaign.campaign_ref,
+        work_ref=window.work_ref,
+        tenant_id="repo-tenant",
+        id_solicitud="synthetic-open-count",
+        criteria_hash=MANIFEST,
+        direction="received",
+        request_type="Metadata",
+        requested_at=NOW,
+        next_check_at=NOW + timedelta(minutes=5),
+        service_window_expires_at=NOW + timedelta(hours=48),
+    )
+    assert sat_repository.count_open_operations(campaign.campaign_ref) == 1
+
+
+@pytest.mark.integration
 def test_claim_submission_verify_history_is_idempotent(sat_repository: SatCampaignRepository) -> None:
     campaign = _campaign(sat_repository)
     window = sat_repository.reserve_window(

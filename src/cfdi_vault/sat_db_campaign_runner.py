@@ -164,6 +164,12 @@ class SatCampaignRunner:
 
         if self._submitter_factory is None or self._query_factory is None or not self._campaign_ref:
             return 0, {}
+        count_open = getattr(self._repository, "count_open_operations", None)
+        if callable(count_open):
+            open_operations = max(0, int(count_open(self._campaign_ref)))
+            limit = min(limit, max(0, 2 - open_operations))
+            if limit == 0:
+                return 0, {}
         counts: Counter[str] = Counter()
         submitted = 0
         if self._package_kind == "cfdi_zip":
