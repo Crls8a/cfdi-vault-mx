@@ -12,7 +12,7 @@ import re
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
 from cfdi_vault.parser import CfdiParseError
@@ -23,11 +23,10 @@ PARSER_STATUS_PARTIAL = "partial"
 PARSER_STATUS_UNSUPPORTED_ERROR = "unsupported-error"
 SUPPORTED_CFDI_VERSIONS = frozenset({"3.2", "3.3", "4.0"})
 SUPPORTED_PAYMENT_VERSIONS = frozenset({"1.0", "2.0"})
+_EXPECTED_PAYMENT_VERSIONS = {"3.2": "1.0", "3.3": "1.0", "4.0": "2.0"}
 _MAX_PROVENANCE_LENGTH = 128
 _OPAQUE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-_UUID_REF = re.compile(
-    r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
-)
+_UUID_REF = re.compile(r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
 _RFC_REF = re.compile(r"^[A-Z&Ñ]{3,4}[0-9]{6}[A-Z0-9]{3}$", re.IGNORECASE)
 _SAT_ID_REF = re.compile(
     r"^(?:SAT|IDSOLICITUD|IDPAQUETE|SOLICITUD|PAQUETE)[-_.:]?[A-Z0-9]+$",
@@ -123,8 +122,8 @@ def normalize_payments(
     if cfdi_version not in SUPPORTED_CFDI_VERSIONS:
         return PaymentNormalizationResult((), cfdi_version, None, PARSER_STATUS_UNSUPPORTED_ERROR, False)
 
-    complement = _find_payment_complement(root)
-    if complement is None:
+    complements = _find_payment_complements(root)
+    if not complements:
         has_unknown_complement = any(
             _local_name(child.tag) != _STAMP_COMPLEMENT
             for container in _direct_children(root, "Complemento")
@@ -133,43 +132,77 @@ def normalize_payments(
         status = PARSER_STATUS_PARTIAL if has_unknown_complement else PARSER_STATUS_EMPTY
         return PaymentNormalizationResult((), cfdi_version, None, status, False)
 
+    if len(complements) > 1:
+        versions = {item.attrib.get("Version") or item.attrib.get("version") for item in complements}
+        payment_version = versions.pop() if len(versions) == 1 else None
+        return PaymentNormalizationResult((), cfdi_version, payment_version, PARSER_STATUS_PARTIAL, True)
+
+    complement = complements[0]
+
     payment_version = complement.attrib.get("Version") or complement.attrib.get("version")
     if payment_version not in SUPPORTED_PAYMENT_VERSIONS:
-        return PaymentNormalizationResult(
-            (), cfdi_version, payment_version, PARSER_STATUS_UNSUPPORTED_ERROR, True
-        )
+        return PaymentNormalizationResult((), cfdi_version, payment_version, PARSER_STATUS_UNSUPPORTED_ERROR, True)
+    if payment_version != _EXPECTED_PAYMENT_VERSIONS[cfdi_version]:
+        return PaymentNormalizationResult((), cfdi_version, payment_version, PARSER_STATUS_UNSUPPORTED_ERROR, True)
 
-    records = tuple(_normalize_payment(payment, provenance) for payment in _direct_children(complement, "Pago"))
+    payment_elements = _direct_children(complement, "Pago")
+    totals_elements = _direct_children(complement, "Totales")
+    if not payment_elements or (payment_version == "2.0" and len(totals_elements) != 1):
+        return PaymentNormalizationResult((), cfdi_version, payment_version, PARSER_STATUS_PARTIAL, True)
+    if payment_version == "2.0":
+        child_names = tuple(_local_name(child.tag) for child in complement)
+        if child_names[0] != "Totales" or any(name != "Pago" for name in child_names[1:]):
+            return PaymentNormalizationResult((), cfdi_version, payment_version, PARSER_STATUS_PARTIAL, True)
+        try:
+            totals_amount = _required_attr(totals_elements[0], "MontoTotalPagos")
+        except CfdiParseError:
+            return PaymentNormalizationResult((), cfdi_version, payment_version, PARSER_STATUS_PARTIAL, True)
+        _decimal(totals_amount, "payment-total-amount")
+
+    records = tuple(_normalize_payment(payment, provenance) for payment in payment_elements)
+    valid_children = {"Pago"}
+    if payment_version == "2.0":
+        valid_children.add("Totales")
     has_unknown_complement = any(
         _local_name(child.tag) not in {_STAMP_COMPLEMENT, "Pagos"}
         for container in _direct_children(root, "Complemento")
         for child in container
     )
-    has_unknown_payment_child = any(_local_name(child.tag) != "Pago" for child in complement)
+    has_unknown_payment_child = any(_local_name(child.tag) not in valid_children for child in complement)
     status = PARSER_STATUS_COMPLETE
     if cfdi_version != "4.0" or has_unknown_complement or has_unknown_payment_child:
         status = PARSER_STATUS_PARTIAL
     return PaymentNormalizationResult(records, cfdi_version, payment_version, status, True)
 
 
-def _find_payment_complement(root: ET.Element) -> ET.Element | None:
+def _find_payment_complements(root: ET.Element) -> tuple[ET.Element, ...]:
+    complements: list[ET.Element] = []
     for container in _direct_children(root, "Complemento"):
-        for child in _direct_children(container, "Pagos"):
-            return child
-    return None
+        complements.extend(_direct_children(container, "Pagos"))
+    return tuple(complements)
 
 
 def _normalize_payment(element: ET.Element, provenance: str) -> PaymentRecord:
-    payment_date = _parse_date(element.attrib.get("FechaPago"))
-    amount = _decimal(element.attrib.get("Monto"), "payment-amount")
+    payment_date = _parse_date(_required_attr(element, "FechaPago"))
+    amount = _decimal(_required_attr(element, "Monto"), "payment-amount")
+    currency = _required_attr(element, "MonedaP").upper()
+    payment_form = _required_attr(element, "FormaDePagoP")
+    if currency == "XXX":
+        raise CfdiParseError("payment-currency-invalid")
+    if payment_form == "99":
+        raise CfdiParseError("payment-form-invalid")
+    if currency == "MXN" and "TipoCambioP" in element.attrib:
+        raise CfdiParseError("payment-exchange-rate-forbidden")
     exchange_rate = _decimal(element.attrib.get("TipoCambioP"), "payment-exchange-rate")
-    currency = _optional_text(element.attrib.get("MonedaP"))
-    payment_form = _optional_text(element.attrib.get("FormaDePagoP"))
+    if currency != "MXN" and exchange_rate is None:
+        raise CfdiParseError("payment-exchange-rate-required")
+    if exchange_rate is not None and exchange_rate <= 0:
+        raise CfdiParseError("payment-exchange-rate-nonpositive")
     related_count = sum(_local_name(child.tag) == "DoctoRelacionado" for child in element)
     return PaymentRecord(
         payment_date=payment_date,
         payment_form=payment_form,
-        currency=currency.upper() if currency else None,
+        currency=currency,
         amount=amount,
         exchange_rate=exchange_rate,
         related_document_count=related_count,
@@ -177,13 +210,23 @@ def _normalize_payment(element: ET.Element, provenance: str) -> PaymentRecord:
     )
 
 
-def _parse_date(value: str | None) -> datetime | None:
+def _required_attr(element: ET.Element, name: str) -> str:
+    value = element.attrib.get(name)
     if value is None or not value.strip():
-        return None
+        raise CfdiParseError("payment-required-attribute-missing")
+    return value.strip()
+
+
+def _parse_date(value: str) -> datetime:
+    if "T" not in value:
+        raise CfdiParseError("payment-date-invalid")
     try:
-        return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         raise CfdiParseError("payment-date-invalid") from None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _decimal(value: str | None, field_name: str) -> Decimal | None:
@@ -198,13 +241,6 @@ def _decimal(value: str | None, field_name: str) -> Decimal | None:
     if parsed < 0:
         raise CfdiParseError(f"{field_name}-decimal-negative")
     return parsed
-
-
-def _optional_text(value: str | None) -> str | None:
-    if value is None:
-        return None
-    normalized = value.strip()
-    return normalized or None
 
 
 def _validate_provenance(value: str) -> str:
