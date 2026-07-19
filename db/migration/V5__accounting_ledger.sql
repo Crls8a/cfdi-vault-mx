@@ -10,6 +10,11 @@
 -- keys, and child columns in reverse dependency order; remove the parent keys
 -- from xml_evidence and cfdi_documents last. Never remove evidence, artifacts,
 -- legacy rows, or audit history. V1–V4 are not modified by rollback.
+-- Before restoring legacy NOT NULL, audit/backfill NULLs in
+-- cfdi_concepts.raw_payload, cfdi_payments.document_uuid/raw_payload,
+-- cfdi_payroll.document_uuid/raw_payload, cfdi_taxes.document_uuid, and
+-- cfdi_related_documents.document_uuid. If any V5 row remains NULL, rollback
+-- stops for manual review and does not restore the legacy constraint.
 
 ALTER TABLE cfdi_documents
     ADD CONSTRAINT uq_cfdi_documents_tenant_id UNIQUE (tenant_id, id);
@@ -196,6 +201,14 @@ ALTER TABLE cfdi_related_documents
             AND source_sha256 IS NOT NULL AND related_ordinal IS NOT NULL
             AND normalization_generation IS NOT NULL AND idempotency_key IS NOT NULL
             AND (payment_ordinal IS NULL OR payment_ordinal > 0)) NOT VALID;
+
+-- V5 writers use tenant/document/evidence columns and keep legacy payload and
+-- document UUID fields nullable during the explicit backfill transition.
+ALTER TABLE cfdi_concepts ALTER COLUMN raw_payload DROP NOT NULL;
+ALTER TABLE cfdi_payments ALTER COLUMN document_uuid DROP NOT NULL, ALTER COLUMN raw_payload DROP NOT NULL;
+ALTER TABLE cfdi_payroll ALTER COLUMN document_uuid DROP NOT NULL, ALTER COLUMN raw_payload DROP NOT NULL;
+ALTER TABLE cfdi_taxes ALTER COLUMN document_uuid DROP NOT NULL;
+ALTER TABLE cfdi_related_documents ALTER COLUMN document_uuid DROP NOT NULL;
 
 CREATE UNIQUE INDEX uq_cfdi_concepts_v5_identity
     ON cfdi_concepts (tenant_id, document_id, source_sha256, normalization_generation, source_ordinal);

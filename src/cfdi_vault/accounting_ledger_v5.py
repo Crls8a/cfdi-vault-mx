@@ -157,6 +157,7 @@ class TaxWrite(_Redacted):
         return _values(
             self.evidence,
             source_ordinal=self.source_ordinal,
+            tax_type=self.tax_type,
             scope=self.scope,
             concept_id=self.concept_id,
             concept_ordinal=self.concept_ordinal,
@@ -318,6 +319,6 @@ def _mapping_values(values: Mapping[str, Any], table: Table, ordinal: str) -> di
         "applied_amount",
     ):
         _decimal(values.get(name))
-    if table is RELATED and not isinstance(values.get("related_uuid"), str):
-        raise ValueError("ledger-v5-related-identity-required")
+    if table is RELATED:
+        _text(values.get("related_uuid"), "ledger-v5-related-identity-required", 64)
     return dict(values)

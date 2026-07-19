@@ -16,16 +16,30 @@ def _normalized_sql() -> str:
 
 def test_v5_migration_is_additive_and_has_manual_rollback() -> None:
     migration = _sql()
-    executable = "\n".join(
-        line for line in migration.splitlines() if not line.lstrip().startswith("--")
-    )
+    executable = "\n".join(line for line in migration.splitlines() if not line.lstrip().startswith("--"))
 
     assert "ALTER TABLE cfdi_documents" in executable
     assert "ALTER TABLE xml_evidence" in executable
     assert "CREATE TABLE" not in executable
-    assert not re.search(r"\b(DROP|TRUNCATE|DELETE)\b", executable, re.IGNORECASE)
+    rollback_safe = "\n".join(line for line in executable.splitlines() if "DROP NOT NULL" not in line)
+    assert not re.search(r"\b(DROP|TRUNCATE|DELETE)\b", rollback_safe, re.IGNORECASE)
     assert "Manual rollback" in migration
     assert "V1–V4" in migration
+    assert all(
+        field in migration
+        for field in (
+            "cfdi_concepts.raw_payload",
+            "cfdi_payments.document_uuid/raw_payload",
+            "cfdi_payroll.document_uuid/raw_payload",
+            "cfdi_taxes.document_uuid",
+            "cfdi_related_documents.document_uuid",
+            "audit/backfill NULLs",
+            "restore the legacy constraint",
+            "legacy NOT NULL",
+            "stops for manual review",
+        )
+    )
+
 
 def test_v5_adds_tenant_evidence_provenance_to_each_ledger() -> None:
     normalized = _normalized_sql()
@@ -123,7 +137,10 @@ def test_v5_uses_same_tenant_composite_foreign_keys_and_payment_rules() -> None:
     normalized = _normalized_sql()
     assert "FOREIGN KEY (tenant_id, document_id) REFERENCES cfdi_documents (tenant_id, id)" in normalized
     assert "FOREIGN KEY (tenant_id, source_evidence_id) REFERENCES xml_evidence (tenant_id, id)" in normalized
-    assert "FOREIGN KEY (tenant_id, concept_id, document_id) REFERENCES cfdi_concepts (tenant_id, id, document_id)" in normalized
+    assert (
+        "FOREIGN KEY (tenant_id, concept_id, document_id) REFERENCES cfdi_concepts (tenant_id, id, document_id)"
+        in normalized
+    )
     assert "currency IS NULL OR (currency = 'MXN' AND exchange_rate IS NULL)" in normalized
     assert "currency <> 'MXN' AND exchange_rate IS NOT NULL AND exchange_rate > 0" in normalized
     assert "NOT VALID" in normalized
@@ -140,9 +157,10 @@ def test_v5_related_and_payroll_identities_match_approved_scope_rules() -> None:
     assert "WHERE payment_ordinal IS NOT NULL" in normalized
     assert "uq_cfdi_payroll_v5_identity" in normalized
     assert "payroll_ordinal" in normalized
-    assert "source_ordinal" not in normalized.split("ALTER TABLE cfdi_payroll", 1)[1].split(
-        "ALTER TABLE cfdi_related_documents", 1
-    )[0]
+    assert (
+        "source_ordinal"
+        not in normalized.split("ALTER TABLE cfdi_payroll", 1)[1].split("ALTER TABLE cfdi_related_documents", 1)[0]
+    )
 
 
 def test_v5_documents_legacy_standalone_fk_transition() -> None:
