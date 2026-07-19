@@ -86,3 +86,25 @@ The two-operation ceiling counts persisted requests in `submitted`,
 claim. A later one-shot wake must stop before selecting another planned
 window whenever the ceiling is occupied; an expired or uncertain request is
 never replaced automatically.
+
+## Code traceability
+
+The runbook maps to the implementation below. This is the shortest path for a
+human reviewer to follow one operation from the CLI to PostgreSQL and back:
+
+| Runbook step | Implementation | Durable contract |
+|---|---|---|
+| `campaign create`, `authorize`, `status` | `src/cfdi_vault/adapters/cli/sat_campaign_*.py` → `sat_campaign_db_cli.py` | Campaign, windows, grants, and sanitized aggregates are PostgreSQL-backed. |
+| `campaign run` | `sat_campaign_run.py` → `run_from_environment()` | A grant and commit-bound campaign are validated before any live factory is built. |
+| Select due work | `SatCampaignRepository.claim_due_operations()` | `next_check_at` must be due and `service_window_expires_at` must still be future; `FOR UPDATE SKIP LOCKED` creates the VERIFY claim. |
+| Prevent replacement requests | `SatCampaignRunner._submit_windows()` + `count_open_operations()` | Persisted open requests and unbound submit claims consume the two-operation ceiling. |
+| Contact and classify SAT | `SatCampaignRunner._verify_claim()` | One sanitized `sat_verify_attempts` row is appended per claim; `5000`, `5004`, expiry, timeout, and package outcomes remain categorized. |
+| Schedule the next wake | `next_local_check()` and `_merge_next_check()` | The next minimum interval starts at the actual run time; a later SAT-provided time wins. Due is not the same as expired. |
+| Download and hand off a package | `_download_packages()` → `sat_campaign_artifacts.py` → `sat_campaign_download_effects.py` | ZIP bytes stay in external storage; PostgreSQL stores references and validation state; RabbitMQ carries only an opaque job reference. |
+| Parse in a worker | `recovery_service.process_queue_message_for_worker()` and `worker.py` | `cfdi.parse.metadata` is acknowledged idempotently and updates durable progress; Redis is only transient heartbeat/state. |
+
+The schema that supports this path is `db/migration/V3__sat_campaign_state.sql`
+plus `V4__sat_claim_grants.sql`. The source-policy and package-safety boundaries
+are documented in `docs/sat-download/async-verify-scheduler.md` and
+`docs/api/sat-v15-public-api.md`. Real SAT state and artifacts are intentionally
+not copied into this repository; only sanitized aggregates may be documented.

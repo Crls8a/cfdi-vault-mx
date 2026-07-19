@@ -26,6 +26,10 @@ between contacts. A later SAT-provided time always wins. No request is
 contacted after its service window expires, and no timeout creates a
 replacement request.
 
+`next_check_at` being due is not an expiration. It means the request is now
+eligible for one VERIFY attempt. `service_window_expires_at` is the independent
+48-hour deadline; only that deadline produces `service_window_exceeded`.
+
 ## Worker behavior
 
 The runner claims VERIFY before contacting SAT and appends one sanitized result
