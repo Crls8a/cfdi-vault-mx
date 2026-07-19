@@ -1,7 +1,9 @@
 # Financial and accounting analysis modules plan
 
-Status: planning only. This document does not enable SAT access, change the
-database schema, or make a tax determination.
+Status: phased implementation. The pure monthly aggregation contract is now
+implemented and unit-tested; database ingestion, normalized ledgers, and
+operator reporting remain pending. This document does not enable SAT access,
+change the database schema, or make a tax determination.
 
 ## Purpose and boundary
 
@@ -34,6 +36,7 @@ deliberately narrower than claiming that the full financial product exists.
 | Concepts, taxes, payments, payroll | Tables exist in `recovery_db.py`, but campaign XML ingestion currently records concept descriptions in payload and does not yet populate the dedicated concept/tax/payment/payroll ledgers. | Schema present; end-to-end normalization is missing. |
 | Reconciliation | `reconciliation.py` classifies metadata versus XML as pending, downloaded, cancelled, state-check, or retry/permanent outcomes. | Implemented decision rules and tests; quality dashboard is missing. |
 | Existing summary | `VaultService.summary()` groups the legacy invoice model by month, issuer, and comprobante type; CLI `summary` prints counts, subtotal, and total. | Implemented for the legacy path; not yet the PostgreSQL recovery analytics contract. |
+| Monthly contract slice | `analysis.monthly.analyze_monthly()` produces deterministic month/direction/currency aggregates from typed metadata/XML evidence records. | Implemented as a pure, unit-tested contract; DB query adapter, effect/type breakdowns, deltas, and private reporting are pending. |
 | Worker handoff | `RecoveryService` consumes reference-only metadata/XML jobs and updates PostgreSQL. | Implemented and synthetic-worker tested; financial aggregates are not emitted by the worker. |
 | Reporting/export | Search, show, CSV export, and basic summary exist. | Useful operational surfaces; no accounting report schema, period filters, or quality report. |
 
