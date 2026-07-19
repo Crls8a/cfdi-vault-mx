@@ -28,6 +28,13 @@ from cfdi_vault.analysis.postgres import (
     MonthlyAnalysisPostgresAdapter,
     monthly_records_statement,
 )
+from cfdi_vault.analysis.quality import (
+    QUALITY_CATEGORIES,
+    QualityBucket,
+    QualityObservation,
+    QualitySnapshot,
+    snapshot_quality,
+)
 from cfdi_vault.analysis.taxes import (
     TaxNormalizationResult,
     TaxRecord,
@@ -47,6 +54,11 @@ __all__ = [
     "summarize_payments",
     "MonthlyAnalysisPostgresAdapter",
     "monthly_records_statement",
+    "QUALITY_CATEGORIES",
+    "QualityObservation",
+    "QualityBucket",
+    "QualitySnapshot",
+    "snapshot_quality",
     "ConceptNormalizationResult",
     "ConceptRecord",
     "normalize_concepts",

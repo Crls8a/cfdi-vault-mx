@@ -1,9 +1,9 @@
 # Financial and accounting analysis modules plan
 
-Status: phased implementation. The pure monthly aggregation contract is now
-implemented and unit-tested; database ingestion, normalized ledgers, and
-operator reporting remain pending. This document does not enable SAT access,
-change the database schema, or make a tax determination.
+Status: phased implementation. The pure monthly aggregation and quality
+snapshot contracts are now implemented and unit-tested; database ingestion,
+normalized ledgers, and operator reporting remain pending. This document does
+not enable SAT access, change the database schema, or make a tax determination.
 
 ## Purpose and boundary
 
@@ -35,6 +35,7 @@ deliberately narrower than claiming that the full financial product exists.
 | CFDI header normalization | `CfdiDocument` and the common parser store version, parties, dates, currency, subtotal, total, type, payment method/form, parser status, and raw JSON payload. | Implemented for common fields; version/complement coverage remains partial. |
 | Concepts, taxes, payments, payroll | Tables exist in `recovery_db.py`; pure concept, tax, and payment normalizers now extract bounded CFDI evidence in memory, while campaign XML ingestion still does not populate the dedicated ledgers. | Concept, tax, and payment contracts implemented and unit-tested; DB mapping, payroll, payment-to-invoice reconciliation, and end-to-end normalization remain pending. |
 | Reconciliation | `reconciliation.py` classifies metadata versus XML as pending, downloaded, cancelled, state-check, or retry/permanent outcomes. | Implemented decision rules and tests; quality dashboard is missing. |
+| Quality snapshot contract | `analysis.quality.snapshot_quality()` classifies identifier-free observations into fixed redacted buckets using existing reconciliation states and parser status mappings. | Implemented as a pure, unit-tested contract; PostgreSQL/worker joins and quality reporting remain pending. |
 | Existing summary | `VaultService.summary()` groups the legacy invoice model by month, issuer, and comprobante type; CLI `summary` prints counts, subtotal, and total. | Implemented for the legacy path; not yet the PostgreSQL recovery analytics contract. |
 | Monthly contract slice | `analysis.monthly.analyze_monthly()` plus `analysis.postgres.MonthlyAnalysisPostgresAdapter` produce deterministic month/direction/currency aggregates from typed metadata/XML evidence records and tenant-scoped PostgreSQL rows. | Implemented and unit-tested for UTC date bounds, metadata/XML precedence, partial-header fallback, and sanitized DTOs; effect/type breakdowns, deltas, and private reporting are pending. |
 | Accounting summary slice | `analysis.accounting.summarize_taxes()` and `summarize_payments()` aggregate normalized tax/payment DTOs with source-status propagation and incomplete-data counts. | Implemented as a pure, unit-tested contract; persistence mapping, tax period/currency/direction dimensions, payment reconciliation, payroll, and private reporting remain pending. |
