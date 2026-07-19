@@ -124,6 +124,27 @@ def test_runner_uses_posterior_sat_check_and_timeout_keeps_request_due(runner_co
 
 
 @pytest.mark.integration
+def test_runner_schedules_next_verify_from_actual_contact_time(runner_context) -> None:
+    repository, campaign_ref, add_request = runner_context
+    request_before = add_request(next_check_at=NOW)
+    contacted_at = NOW + timedelta(hours=1)
+
+    class Verifier:
+        def verify_request(self, request_id: str):
+            return _result("5000")
+
+    report = SatCampaignRunner(
+        repository, lambda _: Verifier(), campaign_ref=campaign_ref,
+        clock=lambda: contacted_at,
+    ).run(now=contacted_at)
+
+    request = repository.get_request(request_before.id)
+    assert report.categories == {"pending": 1}
+    assert request is not None
+    assert request.next_check_at == contacted_at + timedelta(minutes=15)
+
+
+@pytest.mark.integration
 def test_runner_timeout_keeps_request_pending(runner_context) -> None:
     repository, campaign_ref, add_request = runner_context
     add_request()

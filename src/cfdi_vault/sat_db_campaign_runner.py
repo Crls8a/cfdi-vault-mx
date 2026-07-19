@@ -293,7 +293,10 @@ class SatCampaignRunner:
             result_code = "verify_adapter_error"
         if category == "pending":
             next_check = _merge_next_check(
-                next_local_check(scheduled_at, request.verify_attempts + 1),
+                # Base the minimum interval on the actual contact, not the
+                # stale due timestamp.  A delayed one-shot wake must never
+                # make the next SAT call immediately due.
+                next_local_check(current, request.verify_attempts + 1),
                 sat_next, request.service_window_expires_at,
             )
             if next_check is None:

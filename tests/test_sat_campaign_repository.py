@@ -111,6 +111,64 @@ def test_count_open_operations_includes_submitted_requests_and_unbound_claims(
 
 
 @pytest.mark.integration
+def test_claim_due_operations_assigns_distinct_slots_for_two_requests(
+    sat_repository: SatCampaignRepository,
+) -> None:
+    campaign = _campaign(sat_repository)
+    grant = sat_repository.create_grant(
+        campaign_ref=campaign.campaign_ref,
+        grant_ref="grant-two-due",
+        phase="metadata-proof",
+        reason="synthetic test",
+        budget=2,
+        expires_at=NOW + timedelta(days=1),
+        now=NOW,
+    )
+
+    for ordinal, direction in enumerate(("received", "issued"), start=1):
+        window = sat_repository.reserve_window(
+            campaign_ref=campaign.campaign_ref,
+            work_ref=f"work-two-due-{ordinal}",
+            direction=direction,
+            start_date=date(2026, 1, 1 if ordinal == 1 else 15),
+            end_date=date(2026, 1, 14 if ordinal == 1 else 28),
+            now=NOW,
+        )
+        submit_claim = sat_repository.claim_operation(
+            campaign_ref=campaign.campaign_ref,
+            window_ref=window.work_ref,
+            operation_kind="submit",
+            idempotency_key=f"submit:two-due-{ordinal}",
+            worker_ref="worker-a",
+            now=NOW,
+            lease_until=NOW + timedelta(minutes=5),
+            grant_ref=grant.grant_ref,
+            require_grant=True,
+        )
+        sat_repository.record_submission(
+            claim_ref=submit_claim.claim_ref,
+            campaign_ref=campaign.campaign_ref,
+            work_ref=window.work_ref,
+            tenant_id="repo-tenant",
+            id_solicitud=f"synthetic-two-due-{ordinal}",
+            criteria_hash=MANIFEST,
+            direction=direction,
+            request_type="Metadata",
+            requested_at=NOW,
+            next_check_at=NOW,
+            service_window_expires_at=NOW + timedelta(hours=48),
+            grant_ref=grant.grant_ref,
+        )
+
+    claims = sat_repository.claim_due_operations(
+        NOW, worker_ref="worker-a", limit=2, require_grant=True,
+    )
+
+    assert len(claims) == 2
+    assert {claim.operation_slot for claim in claims} == {1, 2}
+
+
+@pytest.mark.integration
 def test_claim_submission_verify_history_is_idempotent(sat_repository: SatCampaignRepository) -> None:
     campaign = _campaign(sat_repository)
     window = sat_repository.reserve_window(

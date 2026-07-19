@@ -330,6 +330,7 @@ class SatCampaignRepository(SatCampaignRepositoryCampaignMixin, SatCampaignStatu
             )
             requests = session.scalars(request_stmt).all()
             claims: list[SatClaimRecord] = []
+            claimed_slots: dict[int, set[int]] = {}
             for request in requests:
                 if len(claims) >= limit:
                     break
@@ -351,6 +352,7 @@ class SatCampaignRepository(SatCampaignRepositoryCampaignMixin, SatCampaignStatu
                 slots = set(session.scalars(select(SatClaimRecord.operation_slot).where(
                     SatClaimRecord.campaign_id == campaign.id, SatClaimRecord.active.is_(True),
                 ).with_for_update()).all())
+                slots.update(claimed_slots.get(campaign.id, set()))
                 slot = next((value for value in (1, 2) if value not in slots), None)
                 if slot is None:
                     continue
@@ -364,6 +366,7 @@ class SatCampaignRepository(SatCampaignRepositoryCampaignMixin, SatCampaignStatu
                     lease_until=now + timedelta(seconds=lease_seconds), active=True)
                 session.add(claim)
                 claims.append(claim)
+                claimed_slots.setdefault(campaign.id, set()).add(slot)
             try:
                 session.commit()
             except IntegrityError as error:
