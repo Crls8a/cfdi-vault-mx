@@ -211,6 +211,12 @@ or SAT transport boundary. A future persistence mapper must use the normalized
 `PayrollRecord` values and durable idempotency keys; it must not move database
 or worker behavior into this aggregate module.
 
+The pending tenant-safe schema, evidence references, idempotency keys, payroll
+amount fields, payment exchange-rate/related-document identity, and worker
+transaction boundary are specified (without implementation) in
+[`accounting-ledger-v5-design.md`](accounting-ledger-v5-design.md). The design
+requires human approval before any Flyway migration or durable mapper work.
+
 The pure projection slice is now implemented in
 `analysis.projection.project_accounting_xml()`. It accepts one already-stored
 XML byte sequence, rejects non-UTF-8/`DOCTYPE`/`ENTITY` input, invokes the
