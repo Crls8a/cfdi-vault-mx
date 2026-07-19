@@ -17,6 +17,7 @@ from typing import Any, Mapping
 
 from cfdi_vault.analysis.accounting import PaymentSummaryReport, TaxSummaryReport
 from cfdi_vault.analysis.monthly import MonthlyAnalysisReport, MonthlyTrend
+from cfdi_vault.analysis.payroll_accounting import PayrollSummaryReport
 from cfdi_vault.analysis.quality import QualitySnapshot
 
 _SECTION_STATUSES = frozenset({"complete", "partial", "empty", "unsupported"})
@@ -27,6 +28,7 @@ _DIRECTIONS = frozenset({"received", "issued", "unknown"})
 _TAX_TYPES = frozenset({"transferred", "withheld", "UNKNOWN"})
 _TAXES = frozenset({"001", "002", "003", "UNKNOWN"})
 _FACTORS = frozenset({"Tasa", "Cuota", "Exento", "UNKNOWN"})
+_PAYROLL_TYPES = frozenset({"O", "E", "UNKNOWN"})
 
 __all__ = ["AnalysisPeriod", "FinancialAnalysisReport"]
 
@@ -54,9 +56,12 @@ class AnalysisPeriod:
 class FinancialAnalysisReport:
     """Immutable composition of monthly, accounting, and quality aggregates.
 
-    The four analysis sections are mandatory.  ``period`` accepts an
-    :class:`AnalysisPeriod`, a two-date tuple, or ``None``.  ``generated_at``
-    must be timezone-aware UTC when supplied and is normalized to UTC.
+    The monthly, tax, payment, and quality sections are mandatory.  The
+    payroll section is optional so existing four-section callers retain their
+    projection shape; when supplied it is validated and serialized as a fifth
+    aggregate-only section.  ``period`` accepts an :class:`AnalysisPeriod`, a
+    two-date tuple, or ``None``.  ``generated_at`` must be timezone-aware UTC
+    when supplied and is normalized to UTC.
     """
 
     monthly: MonthlyAnalysisReport
@@ -65,6 +70,7 @@ class FinancialAnalysisReport:
     quality: QualitySnapshot
     period: AnalysisPeriod | tuple[date, date] | None = None
     generated_at: datetime | None = None
+    payroll: PayrollSummaryReport | None = None
 
     def __post_init__(self) -> None:
         required = (
@@ -76,6 +82,8 @@ class FinancialAnalysisReport:
         for name, value, expected in required:
             if not isinstance(value, expected):
                 raise TypeError(f"analysis-{name}-section-required")
+        if self.payroll is not None and not isinstance(self.payroll, PayrollSummaryReport):
+            raise TypeError("analysis-payroll-section-required")
         object.__setattr__(self, "period", _normalize_period(self.period))
         object.__setattr__(self, "generated_at", _normalize_generated_at(self.generated_at))
         _validate_reports(self)
@@ -139,6 +147,25 @@ class FinancialAnalysisReport:
                     )
                 ],
             },
+            **(
+                {
+                    "payroll": {
+                        "status": statuses["payroll"],
+                        "completeness": completeness["payroll"],
+                        "record_count": self.payroll.record_count,
+                        "incomplete_count": self.payroll.incomplete_count,
+                        "rows": [
+                            _payroll_row(row)
+                            for row in sorted(
+                                self.payroll.rows,
+                                key=lambda item: (item.month, item.payroll_type),
+                            )
+                        ],
+                    }
+                }
+                if self.payroll is not None
+                else {}
+            ),
             "quality": {
                 "status": statuses["quality"],
                 "completeness": completeness["quality"],
@@ -171,12 +198,16 @@ class FinancialAnalysisReport:
         tax_status = _normalized_status(self.taxes.source_status)
         payment_status = _normalized_status(self.payments.source_status)
         quality_status = "empty" if self.quality.total_observations == 0 else "complete"
-        return {
+        states = {
             "monthly": (monthly_status, monthly_status),
             "taxes": (tax_status, tax_status),
             "payments": (payment_status, payment_status),
-            "quality": (quality_status, quality_status),
         }
+        if self.payroll is not None:
+            payroll_status = _normalized_status(self.payroll.source_status)
+            states["payroll"] = (payroll_status, payroll_status)
+        states["quality"] = (quality_status, quality_status)
+        return states
 
 
 def _normalize_period(value: AnalysisPeriod | tuple[date, date] | None) -> AnalysisPeriod | None:
@@ -240,6 +271,19 @@ def _validate_reports(report: FinancialAnalysisReport) -> None:
         _require_nonnegative_int(row.related_document_count, "analysis-count-invalid")
         _require_nonnegative_int(row.incomplete_count, "analysis-count-invalid")
         _decimal_optional_text(row.amount)
+    if report.payroll is not None:
+        _normalized_status(report.payroll.source_status)
+        _require_nonnegative_int(report.payroll.incomplete_count, "analysis-count-invalid")
+        _require_nonnegative_int(report.payroll.record_count, "analysis-count-invalid")
+        for row in report.payroll.rows:
+            _require_dimension(row.month, _MONTH, "analysis-month-invalid")
+            _require_choice(row.payroll_type, _PAYROLL_TYPES, "analysis-payroll-type-invalid")
+            _require_nonnegative_int(row.count, "analysis-count-invalid")
+            _require_nonnegative_int(row.incomplete_count, "analysis-count-invalid")
+            _decimal_optional_text(row.paid_days)
+            _decimal_optional_text(row.total_perceptions)
+            _decimal_optional_text(row.total_deductions)
+            _decimal_optional_text(row.total_other_payments)
 
 
 def _require_nonnegative_int(value: object, error: str) -> None:
@@ -368,4 +412,17 @@ def _payment_row(row: object) -> dict[str, Any]:
         "amount": _decimal_optional_text(row.amount),
         "related_document_count": row.related_document_count,
         "incomplete_count": row.incomplete_count,
+    }
+
+
+def _payroll_row(row: object) -> dict[str, Any]:
+    return {
+        "month": row.month,
+        "payroll_type": row.payroll_type,
+        "count": row.count,
+        "incomplete_count": row.incomplete_count,
+        "paid_days": _decimal_optional_text(row.paid_days),
+        "total_perceptions": _decimal_optional_text(row.total_perceptions),
+        "total_deductions": _decimal_optional_text(row.total_deductions),
+        "total_other_payments": _decimal_optional_text(row.total_other_payments),
     }
