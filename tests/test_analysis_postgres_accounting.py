@@ -17,6 +17,7 @@ from cfdi_vault.analysis.postgres_accounting import (
     tax_records_statement,
 )
 from cfdi_vault.analysis.postgres_payroll import PayrollReadRow
+from cfdi_vault.analysis.quality import QualityObservation
 
 
 class _Result:
@@ -137,6 +138,106 @@ def test_quality_adapter_returns_only_redacted_observations() -> None:
     assert observations[0].parser_status == "partial"
     assert observations[0].payment_evidence_available is False
     assert "tenant" not in repr(observations[0])
+
+
+def test_quality_context_records_use_metadata_direction_and_document_currency() -> None:
+    factory, session = _factory(
+        [
+            _row(
+                metadata_present=True,
+                xml_present=True,
+                cancelled_metadata=False,
+                xml_conflict=False,
+                payment_expected=False,
+                payment_present=False,
+                parser_status="complete",
+                reconciliation_state="state_checked",
+                observed_at=datetime(2026, 1, 14, 23, 30, tzinfo=timezone.utc),
+                direction="received",
+                currency="MXN",
+            )
+        ]
+    )
+    records = AccountingPostgresAdapter(factory).quality_context_records(
+        "tenant", start=date(2026, 1, 1), end=date(2026, 1, 31)
+    )
+    assert len(records) == 1
+    assert records[0].observed_at == date(2026, 1, 14)
+    assert records[0].direction == "received"
+    assert records[0].currency == "MXN"
+    assert records[0].observation.xml_present
+    sql = str(session.statement.compile(dialect=postgresql.dialect()))
+    assert "AS observed_at" in sql and "AS direction" in sql and "AS currency" in sql
+    assert "issue_date" in sql and "tenant_id" in sql
+
+
+def test_quality_context_xml_only_rows_keep_currency_and_unknown_direction() -> None:
+    factory, _ = _factory(
+        [
+            _row(
+                metadata_present=False,
+                xml_present=True,
+                cancelled_metadata=False,
+                xml_conflict=False,
+                payment_expected=False,
+                payment_present=False,
+                parser_status="complete",
+                reconciliation_state="unknown",
+                observed_at=date(2026, 2, 1),
+                direction=None,
+                currency="USD",
+            )
+        ]
+    )
+    records = AccountingPostgresAdapter(factory).quality_context_records("tenant")
+    assert [(record.direction, record.currency) for record in records] == [(None, "USD")]
+
+
+def test_quality_context_missing_optional_dimensions_map_to_none() -> None:
+    factory, _ = _factory(
+        [
+            _row(
+                metadata_present=True,
+                xml_present=False,
+                cancelled_metadata=False,
+                xml_conflict=False,
+                payment_expected=False,
+                payment_present=False,
+                parser_status="partial",
+                reconciliation_state="unknown",
+                observed_at=date(2026, 3, 1),
+            )
+        ]
+    )
+    records = AccountingPostgresAdapter(factory).quality_context_records("tenant")
+    assert len(records) == 1
+    assert records[0].direction is None and records[0].currency is None
+
+
+def test_quality_observations_remains_compatible_with_rows_without_context_fields() -> None:
+    factory, _ = _factory(
+        [
+            _row(
+                metadata_present=True,
+                xml_present=False,
+                cancelled_metadata=False,
+                xml_conflict=False,
+                payment_expected=False,
+                payment_present=False,
+                parser_status="partial",
+                reconciliation_state="unknown",
+            )
+        ]
+    )
+    observations = AccountingPostgresAdapter(factory).quality_observations("tenant")
+    assert observations == (
+        QualityObservation(
+            metadata_present=True,
+            parser_status="partial",
+            reconciliation_state="unknown",
+            payment_evidence_available=False,
+        ),
+    )
 
 
 def test_quality_statement_is_union_and_does_not_select_identifiers() -> None:

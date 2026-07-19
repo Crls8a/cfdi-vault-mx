@@ -43,6 +43,9 @@ def _metadata_quality_statement(tenant_id: str, start: date | None, end: date | 
             literal(False).label("payment_present"),
             func.coalesce(CfdiDocument.parser_status, "partial").label("parser_status"),
             func.coalesce(CfdiMetadataLedger.reconciliation_state, "unknown").label("reconciliation_state"),
+            CfdiMetadataLedger.issue_date.label("observed_at"),
+            CfdiMetadataLedger.direction.label("direction"),
+            CfdiDocument.currency.label("currency"),
         )
         .select_from(CfdiMetadataLedger)
         .outerjoin(CfdiDocument, and_(CfdiDocument.tenant_id == tenant_column, CfdiDocument.uuid == uuid_column))
@@ -67,6 +70,9 @@ def _document_quality_statement(tenant_id: str, start: date | None, end: date | 
             literal(False).label("payment_present"),
             func.coalesce(CfdiDocument.parser_status, "partial").label("parser_status"),
             literal("unknown").label("reconciliation_state"),
+            CfdiDocument.issue_date.label("observed_at"),
+            literal(None).label("direction"),
+            CfdiDocument.currency.label("currency"),
         )
         .select_from(CfdiDocument)
         .where(*conditions)

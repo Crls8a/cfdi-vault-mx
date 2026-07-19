@@ -22,6 +22,7 @@ from cfdi_vault.analysis.payments import PaymentRecord
 from cfdi_vault.analysis.postgres_payroll import PayrollReadRow
 from cfdi_vault.analysis.postgres_quality import quality_observations_statement
 from cfdi_vault.analysis.quality import QualityObservation
+from cfdi_vault.analysis.quality_context import QualityAnalysisRecord
 from cfdi_vault.analysis.taxes import TaxRecord
 
 SessionFactory = Callable[[], Session]
@@ -158,20 +159,37 @@ class AccountingPostgresAdapter:
         """Read redacted metadata/XML quality observations only."""
 
         rows = self._execute(quality_observations_statement(tenant_id, start=start, end=end))
-        return tuple(
-            QualityObservation(
-                metadata_present=bool(_value(row, "metadata_present")),
-                xml_present=bool(_value(row, "xml_present")),
-                cancelled_metadata=bool(_value(row, "cancelled_metadata")),
-                xml_conflict=bool(_value(row, "xml_conflict")),
-                payment_expected=bool(_value(row, "payment_expected")),
-                payment_present=bool(_value(row, "payment_present")),
-                payment_evidence_available=False,
-                parser_status=_optional_text(row, "parser_status") or "partial",
-                reconciliation_state=_optional_text(row, "reconciliation_state") or "unknown",
+        return tuple(_quality_observation_from_row(row) for row in rows)
+
+    def quality_context_records(
+        self, tenant_id: str, *, start: date | None = None, end: date | None = None
+    ) -> tuple[QualityAnalysisRecord, ...]:
+        """Read dated quality records with only explicit context dimensions.
+
+        Metadata rows provide their stored direction and may use the joined
+        document currency. XML-only rows deliberately have no direction; a
+        document currency is retained when present. Missing optional fields in
+        legacy row doubles become ``None``. This is read-only and does not
+        infer dimensions from status, reconciliation text, or party fields.
+        """
+
+        rows = self._execute(quality_observations_statement(tenant_id, start=start, end=end))
+        records: list[QualityAnalysisRecord] = []
+        for row in rows:
+            observed_at = _optional_value(row, "observed_at")
+            if observed_at is None:
+                # SQL predicates exclude undated rows; keep compatibility with
+                # old row doubles that do not expose the new optional field.
+                continue
+            records.append(
+                QualityAnalysisRecord(
+                    observed_at=observed_at,
+                    observation=_quality_observation_from_row(row),
+                    direction=_optional_value(row, "direction"),
+                    currency=_optional_value(row, "currency"),
+                )
             )
-            for row in rows
-        )
+        return tuple(records)
 
     def _execute(self, statement: Any) -> list[Any]:
         with self._session_factory() as session:
@@ -204,9 +222,32 @@ def _value(row: object, name: str) -> Any:
     return getattr(row, name)
 
 
+def _optional_value(row: object, name: str) -> Any:
+    """Read a newly added query field without breaking legacy row doubles."""
+
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return mapping.get(name)
+    return getattr(row, name, None)
+
+
 def _optional_text(row: object, name: str) -> str | None:
     value = _value(row, name)
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _quality_observation_from_row(row: object) -> QualityObservation:
+    return QualityObservation(
+        metadata_present=bool(_value(row, "metadata_present")),
+        xml_present=bool(_value(row, "xml_present")),
+        cancelled_metadata=bool(_value(row, "cancelled_metadata")),
+        xml_conflict=bool(_value(row, "xml_conflict")),
+        payment_expected=bool(_value(row, "payment_expected")),
+        payment_present=bool(_value(row, "payment_present")),
+        payment_evidence_available=False,
+        parser_status=_optional_text(row, "parser_status") or "partial",
+        reconciliation_state=_optional_text(row, "reconciliation_state") or "unknown",
+    )
 
 
 def _guard_v5_statement(tenant_id: str, start: date | None, end: date | None) -> NoReturn:
