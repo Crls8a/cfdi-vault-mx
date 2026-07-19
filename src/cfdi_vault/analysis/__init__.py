@@ -15,6 +15,11 @@ from cfdi_vault.analysis.postgres import (
     MonthlyAnalysisPostgresAdapter,
     monthly_records_statement,
 )
+from cfdi_vault.analysis.taxes import (
+    TaxNormalizationResult,
+    TaxRecord,
+    normalize_taxes,
+)
 
 __all__ = [
     "MonthlyAggregate",
@@ -26,4 +31,7 @@ __all__ = [
     "ConceptNormalizationResult",
     "ConceptRecord",
     "normalize_concepts",
+    "TaxNormalizationResult",
+    "TaxRecord",
+    "normalize_taxes",
 ]
