@@ -270,6 +270,13 @@ Join metadata ledger, XML evidence, normalized records, SAT/job states, and
 payment expectations. **Measure:** every finding maps to one documented state,
 has an aggregate count, and can be resolved/recomputed idempotently.
 
+The pure ``analysis.projection_quality`` bridge now maps an in-memory
+``AccountingProjection`` into one identifier-free ``QualityObservation``. It
+marks XML as present, derives payment presence only from normalized payment
+records, and requires metadata, cancellation, conflict, payment expectation,
+reconciliation, and evidence-availability facts from its caller. PostgreSQL,
+worker reconciliation, and durable tenant-safe joins remain pending.
+
 ### Phase 5 — Private reports and exports
 
 Expose report DTOs and private CSV/JSON exports with date, direction, status,
