@@ -40,7 +40,7 @@ deliberately narrower than claiming that the full financial product exists.
 | Quality snapshot contract | `analysis.quality.snapshot_quality()` classifies identifier-free observations into fixed redacted buckets using existing reconciliation states and parser status mappings. | Implemented as a pure, unit-tested contract; PostgreSQL/worker joins and quality reporting remain pending. |
 | Existing summary | `VaultService.summary()` groups the legacy invoice model by month, issuer, and comprobante type; CLI `summary` prints counts, subtotal, and total. | Implemented for the legacy path; not yet the PostgreSQL recovery analytics contract. |
 | Monthly contract slice | `analysis.monthly.analyze_monthly()` plus `analysis.postgres.MonthlyAnalysisPostgresAdapter` produce deterministic month/direction/currency aggregates from typed metadata/XML evidence records and tenant-scoped PostgreSQL rows. | Implemented and unit-tested for UTC date bounds, metadata/XML precedence, partial-header fallback, sanitized DTOs, bounded active/cancelled/unknown status counts, and month-over-month deltas. Effect/type dimensions remain deferred because the current typed input and PostgreSQL read model do not expose those fields; private reporting is pending. |
-| Accounting summary slice | `analysis.accounting.summarize_taxes()` and `summarize_payments()` aggregate normalized tax/payment DTOs with source-status propagation and incomplete-data counts. | Implemented as a pure, unit-tested contract; persistence mapping, tax period/currency/direction dimensions, payment reconciliation, payroll, and private reporting remain pending. |
+| Accounting summary slice | `analysis.accounting.summarize_taxes()`, `summarize_payments()`, and `summarize_payroll()` aggregate normalized tax/payment/payroll DTOs with source-status propagation and incomplete-data counts. | Implemented as pure, unit-tested contracts; they consume only in-memory normalized records and return aggregate DTOs. They do not read/write PostgreSQL, enqueue jobs, or contact SAT. Persistence mapping, tax period/currency/direction dimensions, payment reconciliation, payroll ledger mapping, and private reporting remain pending. |
 | Worker handoff | `RecoveryService` consumes reference-only metadata/XML jobs and updates PostgreSQL. | Implemented and synthetic-worker tested; financial aggregates are not emitted by the worker. |
 | In-memory accounting projection | `analysis.projection.project_accounting_xml()` dispatches one stored XML value to the four pure normalizers and returns typed records, parser statuses, counts, and opaque deterministic references. | Implemented and unit-tested only; process-local duplicate suppression is not durable idempotency and no DB/worker/queue integration exists yet. |
 | Reporting/export | `analysis.reporting.FinancialAnalysisReport` composes monthly, tax, payment, and quality DTOs with UTC/period validation and aggregate-only JSON projection, including bounded monthly status counts and trend deltas. | Implemented as a pure, unit-tested contract; PostgreSQL queries, private exports, and CLI integration remain pending. |
@@ -203,7 +203,13 @@ valid, malformed, duplicate, unknown-version, and reprocess tests; normalized
 rows retain evidence provenance.
 The pure payroll slice is now implemented; its amount coverage is limited to
 direct Nomina totals and child counts until a separate schema/worker mapping is
-approved.
+approved. `analysis.payroll_accounting.summarize_payroll()` groups those
+records by UTC payment month and `TipoNomina` (`O`/`E`) and preserves missing
+values as incomplete rather than zero. This function is deliberately pure: it
+has no database session, storage reference, queue message, worker side effect,
+or SAT transport boundary. A future persistence mapper must use the normalized
+`PayrollRecord` values and durable idempotency keys; it must not move database
+or worker behavior into this aggregate module.
 
 The pure projection slice is now implemented in
 `analysis.projection.project_accounting_xml()`. It accepts one already-stored

@@ -3,9 +3,12 @@
 from cfdi_vault.analysis.accounting import (
     PaymentSummaryReport,
     PaymentSummaryRow,
+    PayrollSummaryReport,
+    PayrollSummaryRow,
     TaxSummaryReport,
     TaxSummaryRow,
     summarize_payments,
+    summarize_payroll,
     summarize_taxes,
 )
 from cfdi_vault.analysis.monthly import (
@@ -66,6 +69,9 @@ __all__ = [
     "PaymentSummaryRow",
     "PaymentSummaryReport",
     "summarize_payments",
+    "PayrollSummaryRow",
+    "PayrollSummaryReport",
+    "summarize_payroll",
     "MonthlyAnalysisPostgresAdapter",
     "monthly_records_statement",
     "QUALITY_CATEGORIES",
