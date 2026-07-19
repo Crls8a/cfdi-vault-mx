@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
 from cfdi_vault.parser import CfdiParseError
@@ -23,6 +23,9 @@ SUPPORTED_CFDI_VERSIONS = frozenset({"3.2", "3.3", "4.0"})
 _MAX_PROVENANCE_LENGTH = 128
 _MAX_TEXT_LENGTH = 4096
 _OPAQUE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_UUID_REF = re.compile(r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
+_RFC_REF = re.compile(r"^[A-Z&Ñ]{3,4}[0-9]{6}[A-Z0-9]{3}$", re.IGNORECASE)
+_SAT_ID_REF = re.compile(r"^(?:SAT|IDSOLICITUD|IDPAQUETE|SOLICITUD|PAQUETE)[-_.:]?[A-Z0-9]+$", re.IGNORECASE)
 _STAMP_COMPLEMENT = "TimbreFiscalDigital"
 
 
@@ -36,16 +39,16 @@ class ConceptRecord:
     floating-point rounding is introduced.
     """
 
-    product_service_key: str
-    unit_key: str
-    description: str
-    quantity: Decimal
-    unit_value: Decimal
-    amount: Decimal
-    discount: Decimal | None
-    tax_object: str
+    product_service_key: str = field(repr=False)
+    unit_key: str = field(repr=False)
+    description: str = field(repr=False)
+    quantity: Decimal = field(repr=False)
+    unit_value: Decimal = field(repr=False)
+    amount: Decimal = field(repr=False)
+    discount: Decimal | None = field(repr=False)
+    tax_object: str = field(repr=False)
     ordinal: int
-    provenance: str
+    provenance: str = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -165,7 +168,18 @@ def _decimal(element: ET.Element, name: str, *, required: bool) -> Decimal | Non
 def _validate_provenance(value: str) -> str:
     if not isinstance(value, str):
         raise TypeError("concept-document-ref-required")
-    if not value or len(value) > _MAX_PROVENANCE_LENGTH or not _OPAQUE_REF.fullmatch(value):
+    if (
+        not value
+        or len(value) > _MAX_PROVENANCE_LENGTH
+        or not _OPAQUE_REF.fullmatch(value)
+        or "/" in value
+        or "\\" in value
+        or re.match(r"^[A-Za-z]:", value)
+        or _UUID_REF.fullmatch(value)
+        or _RFC_REF.fullmatch(value)
+        or value.isdecimal()
+        or _SAT_ID_REF.fullmatch(value)
+    ):
         raise ValueError("concept-document-ref-invalid")
     return value
 

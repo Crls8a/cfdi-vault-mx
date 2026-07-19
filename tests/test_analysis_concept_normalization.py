@@ -109,6 +109,31 @@ def test_reprocess_is_deterministic_and_does_not_duplicate_records() -> None:
     assert len(first) == 2
 
 
+@pytest.mark.parametrize(
+    "document_ref",
+    [
+        "00000000-0000-4000-8000-000000000001",
+        "AAA010101AAA",
+        "123456",
+        "SAT-123",
+        "IdSolicitud-123",
+        r"C:\\private\\artifact",
+        "run/ref",
+    ],
+)
+def test_provenance_rejects_identifier_like_or_path_values(document_ref: str) -> None:
+    with pytest.raises(ValueError, match="concept-document-ref-invalid"):
+        normalize_concepts(_xml(concepts=_concept()), document_ref=document_ref)
+
+
+def test_concept_repr_does_not_expose_provenance_or_description() -> None:
+    record = normalize_concepts(_xml(concepts=_concept()), document_ref="run-1").records[0]
+
+    rendered = repr(record)
+    assert "run-1" not in rendered
+    assert "Service" not in rendered
+
+
 def test_unknown_version_and_business_complement_are_explicitly_partial() -> None:
     unknown = normalize_concepts(_xml(version="9.9", concepts=_concept()))
     partial = normalize_concepts(
