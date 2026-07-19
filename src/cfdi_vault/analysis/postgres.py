@@ -62,9 +62,11 @@ def monthly_records_statement(
         select(
             CfdiMetadataLedger.direction.label("direction"),
             CfdiMetadataLedger.issue_date.label("issue_date"),
+            CfdiMetadataLedger.effect.label("metadata_effect"),
             CfdiMetadataLedger.total.label("metadata_total"),
             CfdiMetadataLedger.status.label("metadata_status"),
             xml_backed,
+            CfdiDocument.document_type.label("document_type"),
             CfdiDocument.currency.label("document_currency"),
             CfdiDocument.subtotal.label("document_subtotal"),
             CfdiDocument.total.label("document_total"),
@@ -123,6 +125,7 @@ def _record_from_row(row: object) -> MonthlyAnalysisRecord:
             total=_row_value(row, "metadata_total"),
             status=_row_value(row, "metadata_status"),
             source_kind="metadata",
+            effect=_optional_row_value(row, "metadata_effect"),
         )
     document_total = _row_value(row, "document_total")
     metadata_total = _row_value(row, "metadata_total")
@@ -134,6 +137,8 @@ def _record_from_row(row: object) -> MonthlyAnalysisRecord:
         total=document_total if document_total is not None else metadata_total,
         status=_row_value(row, "document_status") or _row_value(row, "metadata_status"),
         source_kind="xml",
+        effect=_optional_row_value(row, "metadata_effect"),
+        document_type=_optional_row_value(row, "document_type"),
     )
 
 
@@ -142,6 +147,15 @@ def _row_value(row: object, name: str) -> Any:
     if mapping is not None:
         return mapping[name]
     return getattr(row, name)
+
+
+def _optional_row_value(row: object, name: str) -> Any:
+    """Read an optional query field without breaking older row doubles."""
+
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return mapping.get(name)
+    return getattr(row, name, None)
 
 
 def _utc_date(value: object) -> date:

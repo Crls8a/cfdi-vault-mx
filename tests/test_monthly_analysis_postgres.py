@@ -52,6 +52,7 @@ def test_adapter_keeps_metadata_without_document_and_maps_xml_fields() -> None:
             _row(
                 direction="received",
                 issue_date=datetime(2026, 1, 14, 23, 30, tzinfo=timezone(timedelta(hours=-6))),
+                metadata_effect="E",
                 metadata_total=Decimal("120.00"),
                 metadata_status="Vigente",
                 xml_backed=False,
@@ -63,6 +64,7 @@ def test_adapter_keeps_metadata_without_document_and_maps_xml_fields() -> None:
             _row(
                 direction="issued",
                 issue_date=datetime(2026, 1, 15, 2, 0, tzinfo=timezone.utc),
+                metadata_effect="I",
                 metadata_total=Decimal("999.00"),
                 metadata_status="Vigente",
                 xml_backed=True,
@@ -82,11 +84,55 @@ def test_adapter_keeps_metadata_without_document_and_maps_xml_fields() -> None:
     assert records[0].subtotal is None
     assert records[0].total == Decimal("120.00")
     assert records[0].issue_date == date(2026, 1, 15)
+    assert records[0].effect == "E"
+    assert records[0].document_type is None
     assert records[1].source_kind == "xml"
     assert records[1].currency == "USD"
     assert records[1].subtotal == Decimal("10.00")
     assert records[1].total == Decimal("12.00")
     assert records[1].status == "Cancelado"
+    assert records[1].effect == "I"
+    assert records[1].document_type is None
+
+
+def test_xml_record_maps_document_type_without_inference_or_optional_row_breakage() -> None:
+    factory, _ = _factory(
+        [
+            _row(
+                direction="received",
+                issue_date=date(2026, 1, 15),
+                metadata_effect="I",
+                metadata_total=Decimal("45.00"),
+                metadata_status="Vigente",
+                xml_backed=True,
+                document_type="I",
+                document_currency="MXN",
+                document_subtotal=Decimal("40.00"),
+                document_total=Decimal("45.00"),
+                document_status="Vigente",
+            ),
+            _row(
+                direction="issued",
+                issue_date=date(2026, 1, 15),
+                metadata_total=Decimal("12.00"),
+                metadata_status="Cancelado",
+                xml_backed=True,
+                document_currency="MXN",
+                document_subtotal=Decimal("10.00"),
+                document_total=Decimal("12.00"),
+                document_status="Cancelado",
+            ),
+        ]
+    )
+
+    records = MonthlyAnalysisPostgresAdapter(factory).records_for_period("tenant")
+
+    assert records[0].effect == "I"
+    assert records[0].document_type == "I"
+    # Missing optional metadata effect/document type stays absent; no inference
+    # from direction or status is allowed.
+    assert records[1].effect is None
+    assert records[1].document_type is None
 
 
 def test_statement_uses_tenant_join_and_inclusive_utc_bounds_without_sensitive_selects() -> None:
@@ -101,6 +147,8 @@ def test_statement_uses_tenant_join_and_inclusive_utc_bounds_without_sensitive_s
     assert "WHERE cfdi_metadata_ledger.tenant_id =" in sql
     assert "cfdi_documents.tenant_id = cfdi_metadata_ledger.tenant_id" in sql
     assert "cfdi_documents.uuid = cfdi_metadata_ledger.uuid" in sql
+    assert "cfdi_metadata_ledger.effect AS metadata_effect" in sql
+    assert "cfdi_documents.document_type AS document_type" in sql
     assert "xml_evidence.tenant_id = cfdi_metadata_ledger.tenant_id" in sql
     assert "EXISTS (SELECT 1" in sql
     assert "FROM xml_evidence" in sql
