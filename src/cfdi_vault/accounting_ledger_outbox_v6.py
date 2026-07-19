@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from sqlalchemy import Column, DateTime, Integer, MetaData, SmallInteger, String, Table, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -35,6 +36,8 @@ _OUTBOX = Table(
     Column("last_error_code", String(64)),
     Column("created_at", DateTime(timezone=True)),
     Column("updated_at", DateTime(timezone=True)),
+    Column("claim_id", String(96)),
+    Column("claimed_by", String(128)),
 )
 _INBOX = Table(
     "ledger_inbox",
@@ -68,12 +71,17 @@ def _reason(value: str) -> str:
     return value
 
 
+def _opaque(prefix: str) -> str:
+    return f"{prefix}-{uuid4().hex}"
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class OutboxClaim:
     """Opaque outbox lease returned before broker I/O."""
 
     event_id: str
     job_id: str
+    claim_id: str
 
     def __repr__(self) -> str:
         return "OutboxClaim(references_redacted=True)"
@@ -121,7 +129,7 @@ class LedgerOutboxStoreMixin:
             connection.execute(
                 update(_OUTBOX)
                 .where(_OUTBOX.c.status == "claimed", _OUTBOX.c.lease_until <= now)
-                .values(status="queued", lease_until=None, updated_at=now)
+                .values(status="queued", lease_until=None, claim_id=None, claimed_by=None, updated_at=now)
             )
             row = connection.execute(
                 select(_OUTBOX)
@@ -132,43 +140,70 @@ class LedgerOutboxStoreMixin:
             ).first()
             if row is None:
                 return None
+            claim_id = _opaque("outbox-claim")
             connection.execute(
                 update(_OUTBOX)
                 .where(_OUTBOX.c.event_id == row.event_id)
                 .values(
-                    status="claimed", lease_until=now + lease, publish_attempts=row.publish_attempts + 1, updated_at=now
+                    status="claimed",
+                    lease_until=now + lease,
+                    publish_attempts=row.publish_attempts + 1,
+                    claim_id=claim_id,
+                    claimed_by=worker_ref,
+                    updated_at=now,
                 )
             )
-            return OutboxClaim(row.event_id, row.job_id)
+            return OutboxClaim(row.event_id, row.job_id, claim_id)
 
-    def mark_outbox_published(self, event_id: str, *, now: datetime | None = None) -> bool:
+    def mark_outbox_published(self, event_id: str, claim_id: str, *, now: datetime | None = None) -> bool:
         """Close a claimed event after broker confirmation."""
         stamp = _stamp(now)
         event_id = _ref("event_id", event_id, 96)
+        claim_id = _ref("claim_id", claim_id, 96)
         with self._engine.begin() as connection:
             return (
                 connection.execute(
                     update(_OUTBOX)
-                    .where(_OUTBOX.c.event_id == event_id, _OUTBOX.c.status == "claimed")
-                    .values(status="published", published_at=stamp, lease_until=None, updated_at=stamp)
+                    .where(
+                        _OUTBOX.c.event_id == event_id,
+                        _OUTBOX.c.claim_id == claim_id,
+                        _OUTBOX.c.status == "claimed",
+                    )
+                    .values(
+                        status="published",
+                        published_at=stamp,
+                        lease_until=None,
+                        claim_id=None,
+                        claimed_by=None,
+                        updated_at=stamp,
+                    )
                 ).rowcount
                 == 1
             )
 
-    def mark_outbox_failed(self, event_id: str, reason_code: str, *, now: datetime | None = None) -> bool:
+    def mark_outbox_failed(
+        self, event_id: str, claim_id: str, reason_code: str, *, now: datetime | None = None
+    ) -> bool:
         """Record a retryable, categorized publish failure."""
         stamp = _stamp(now)
         event_id = _ref("event_id", event_id, 96)
+        claim_id = _ref("claim_id", claim_id, 96)
         reason_code = _reason(reason_code)
         with self._engine.begin() as connection:
             return (
                 connection.execute(
                     update(_OUTBOX)
-                    .where(_OUTBOX.c.event_id == event_id, _OUTBOX.c.status == "claimed")
+                    .where(
+                        _OUTBOX.c.event_id == event_id,
+                        _OUTBOX.c.claim_id == claim_id,
+                        _OUTBOX.c.status == "claimed",
+                    )
                     .values(
                         status="failed",
                         last_error_code=reason_code,
                         lease_until=None,
+                        claim_id=None,
+                        claimed_by=None,
                         available_at=stamp,
                         updated_at=stamp,
                     )

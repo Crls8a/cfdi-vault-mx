@@ -54,11 +54,11 @@ def test_outbox_and_inbox_are_idempotent_and_reason_codes_are_redacted(reset_pos
     assert not store.create_outbox_event(**kwargs)
     claim = store.claim_outbox_event(now=NOW, worker_ref="publisher-synthetic", lease=timedelta(minutes=5))
     assert claim is not None and "event-synthetic" not in repr(claim)
-    assert store.mark_outbox_failed(claim.event_id, "publish.v1-failed", now=NOW)
+    assert store.mark_outbox_failed(claim.event_id, claim.claim_id, "publish.v1-failed", now=NOW)
     retry = store.claim_outbox_event(now=NOW, worker_ref="publisher-synthetic", lease=timedelta(minutes=5))
     assert retry is not None
-    assert store.mark_outbox_published(retry.event_id, now=NOW)
-    assert not store.mark_outbox_published(retry.event_id, now=NOW)
+    assert store.mark_outbox_published(retry.event_id, retry.claim_id, now=NOW)
+    assert not store.mark_outbox_published(retry.event_id, retry.claim_id, now=NOW)
     assert store.register_inbox_event(retry.event_id, "ledger-worker", received_at=NOW)
     assert not store.register_inbox_event(retry.event_id, "ledger-worker", received_at=NOW)
     assert store.mark_inbox_processed(retry.event_id, "ledger-worker", "parse.v1-failed", now=NOW)
@@ -76,3 +76,21 @@ def test_outbox_does_not_claim_before_availability(reset_postgres_database: str)
         available_at=NOW + timedelta(hours=1),
     )
     assert store.claim_outbox_event(now=NOW, worker_ref="publisher-synthetic", lease=timedelta(minutes=5)) is None
+
+
+def test_expired_outbox_claim_cannot_fence_new_owner(reset_postgres_database: str) -> None:
+    store = _seed(reset_postgres_database)
+    assert store.create_outbox_event(
+        event_id="fenced-event",
+        job_id="outbox-job",
+        event_type="xml_parse",
+        routing_key="cfdi.parse.xml",
+        idempotency_key="fenced-idem",
+        available_at=NOW,
+    )
+    first = store.claim_outbox_event(NOW, "publisher-one", timedelta(minutes=1))
+    assert first is not None
+    second = store.claim_outbox_event(NOW + timedelta(minutes=2), "publisher-two", timedelta(minutes=5))
+    assert second is not None and second.claim_id != first.claim_id
+    assert not store.mark_outbox_published(first.event_id, first.claim_id, now=NOW + timedelta(minutes=2))
+    assert store.mark_outbox_published(second.event_id, second.claim_id, now=NOW + timedelta(minutes=2))

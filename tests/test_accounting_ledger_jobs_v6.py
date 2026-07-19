@@ -71,6 +71,8 @@ def test_expired_claim_is_closed_before_retry_and_uncertain_is_not_retried(reset
     assert first is not None
     second = store.claim_job(now=NOW + timedelta(minutes=2), worker_ref="worker-two", lease=timedelta(minutes=1))
     assert second is not None and second.claim_id != first.claim_id and second.attempt == 2
+    assert not store.mark_running(first.claim_id, now=NOW + timedelta(minutes=2))
+    assert not store.complete_job(first.claim_id, LedgerParseAggregate(records_seen=9), now=NOW + timedelta(minutes=2))
     assert store.mark_uncertain(second.claim_id, "download.v1-uncertain", now=NOW + timedelta(minutes=2))
     assert (
         store.claim_job(now=NOW + timedelta(minutes=3), worker_ref="worker-three", lease=timedelta(minutes=1)) is None
@@ -84,7 +86,7 @@ def test_worker_protocol_claims_exact_artifact_and_uses_v5_aggregate(reset_postg
     assert store.create_job(
         job_id="job-protocol",
         tenant_id=job.tenant_id,
-        job_type=job.queue.value,
+        job_type="metadata_parse",
         queue_name=job.queue.value,
         artifact_ref=job.artifact_ref,
         idempotency_key=job.idempotency_key,
@@ -98,6 +100,22 @@ def test_worker_protocol_claims_exact_artifact_and_uses_v5_aggregate(reset_postg
     assert claim.accepted
     store.complete_parse_job(claim.claim_ref, LedgerParseAggregate(concepts=1), now=NOW)
     assert store.get_job_status("job-protocol").status == "succeeded"  # type: ignore[union-attr]
+
+
+def test_parse_identity_requires_canonical_job_type(reset_postgres_database: str) -> None:
+    _tenant(reset_postgres_database)
+    store = _store(reset_postgres_database)
+    assert store.create_job(
+        job_id="job-wrong-type",
+        tenant_id="ledger-synthetic",
+        job_type="other_parse",
+        queue_name="cfdi.parse.metadata",
+        artifact_ref="artifact-collision",
+        idempotency_key="idem-collision",
+        available_at=NOW,
+    )
+    job = LedgerParseJob("ledger-synthetic", "artifact-collision", QueueName.CFDI_PARSE_METADATA, "idem-collision")
+    assert not store.claim_parse_job(job, worker_ref="worker-synthetic", now=NOW).accepted
 
 
 def test_two_workers_claim_distinct_jobs(reset_postgres_database: str) -> None:

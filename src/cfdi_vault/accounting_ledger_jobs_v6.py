@@ -1,9 +1,4 @@
-"""Internal PostgreSQL repository for the V6 ledger job boundary.
-
-The repository owns short job and claim transactions. Outbox and inbox methods
-are provided by the focused V6 outbox mixin. It stores opaque references and aggregate counters only; parsing and broker I/O
-must run after the transaction commits. Live SAT behavior is outside this module.
-"""
+"""Internal PostgreSQL repository for durable V6 jobs and claims."""
 
 from __future__ import annotations
 
@@ -55,6 +50,7 @@ _COUNTS = frozenset(
     }
 )
 _TERMINAL = ("succeeded", "duplicate", "failed", "uncertain", "dead_letter")
+_PARSE_JOB_TYPES = {"cfdi.parse.metadata": "metadata_parse", "cfdi.parse.xml": "xml_parse"}
 _JOBS = Table(
     "ledger_jobs",
     _METADATA,
@@ -300,6 +296,7 @@ class LedgerJobStoreV6(LedgerOutboxStoreMixin, LedgerJobStore):
                 .where(
                     _JOBS.c.tenant_id == _ref("tenant_id", job.tenant_id, 64),
                     _JOBS.c.queue_name == job.queue.value,
+                    _JOBS.c.job_type == _PARSE_JOB_TYPES[job.queue.value],
                     _JOBS.c.artifact_ref == _ref("artifact_ref", job.artifact_ref, 192),
                     _JOBS.c.idempotency_key == _ref("idempotency_key", job.idempotency_key, 192),
                 )
@@ -322,7 +319,9 @@ class LedgerJobStoreV6(LedgerOutboxStoreMixin, LedgerJobStore):
         claim_id = _ref("claim_id", claim_id, 96)
         with self._engine.begin() as connection:
             job = connection.execute(
-                select(_CLAIMS.c.job_id).where(_CLAIMS.c.claim_id == claim_id, _CLAIMS.c.completed_at.is_(None))
+                select(_CLAIMS.c.job_id)
+                .where(_CLAIMS.c.claim_id == claim_id, _CLAIMS.c.completed_at.is_(None))
+                .with_for_update()
             ).scalar_one_or_none()
             if job is None:
                 return False
@@ -347,7 +346,9 @@ class LedgerJobStoreV6(LedgerOutboxStoreMixin, LedgerJobStore):
         claim_id = _ref("claim_id", claim_id, 96)
         with self._engine.begin() as connection:
             job_id = connection.execute(
-                select(_CLAIMS.c.job_id).where(_CLAIMS.c.claim_id == claim_id, _CLAIMS.c.completed_at.is_(None))
+                select(_CLAIMS.c.job_id)
+                .where(_CLAIMS.c.claim_id == claim_id, _CLAIMS.c.completed_at.is_(None))
+                .with_for_update()
             ).scalar_one_or_none()
             if job_id is None:
                 return False
@@ -367,9 +368,6 @@ class LedgerJobStoreV6(LedgerOutboxStoreMixin, LedgerJobStore):
                 .values(completed_at=now, result_code=_reason(reason or status))
             )
             return True
-
-    def mark_running_parse_job(self, claim_id: str, *, now: datetime | None = None) -> bool:
-        return self.mark_running(claim_id, now=now)
 
     def complete_job(
         self, claim_id: str, aggregate: LedgerParseAggregate | Mapping[str, Any], *, now: datetime | None = None
