@@ -7,6 +7,7 @@ normalized database rows into ``MonthlyAnalysisRecord`` values later.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -15,6 +16,9 @@ from typing import Iterable
 
 _ZERO = Decimal("0")
 _CANCELLED = frozenset({"cancelado", "cancelled", "canceled"})
+_ACTIVE = frozenset({"vigente", "active", "activo", "valid"})
+_DIRECTIONS = frozenset({"received", "issued", "unknown"})
+_CURRENCY = re.compile(r"^[A-Z]{3}$")
 
 
 @dataclass(frozen=True)
@@ -43,6 +47,32 @@ class MonthlyAggregate:
     cancelled_count: int
     metadata_count: int
     xml_count: int
+    active_count: int = 0
+    unknown_status_count: int = 0
+
+
+@dataclass(frozen=True)
+class MonthlyTrend:
+    """Month-over-month deltas for one bounded month/direction/currency key.
+
+    Deltas are ``None`` when the immediately preceding calendar month has no
+    aggregate for the same key.  This distinguishes missing evidence from a
+    measured zero and avoids inventing a baseline outside the requested data.
+    """
+
+    month: str
+    direction: str
+    currency: str
+    prior_month: str
+    prior_available: bool
+    count_delta: int | None
+    subtotal_delta: Decimal | None
+    total_delta: Decimal | None
+    cancelled_count_delta: int | None
+    active_count_delta: int | None
+    unknown_status_count_delta: int | None
+    metadata_count_delta: int | None
+    xml_count_delta: int | None
 
 
 @dataclass(frozen=True)
@@ -50,6 +80,7 @@ class MonthlyAnalysisReport:
     """Sanitized monthly report with no row-level identifiers."""
 
     rows: tuple[MonthlyAggregate, ...]
+    trends: tuple[MonthlyTrend, ...] = ()
 
 
 def analyze_monthly(
@@ -76,6 +107,8 @@ def analyze_monthly(
             "cancelled_count": 0,
             "metadata_count": 0,
             "xml_count": 0,
+            "active_count": 0,
+            "unknown_status_count": 0,
         }
     )
     for record in records:
@@ -84,8 +117,8 @@ def analyze_monthly(
             continue
         if end is not None and issue_date > end:
             continue
-        direction = str(record.direction).strip().lower() or "unknown"
-        currency = str(record.currency or "unknown").strip().upper() or "UNKNOWN"
+        direction = _normalize_direction(record.direction)
+        currency = _normalize_currency(record.currency)
         source_kind = str(record.source_kind).strip().lower()
         if source_kind not in {"metadata", "xml"}:
             raise ValueError("analysis-source-invalid")
@@ -94,8 +127,13 @@ def analyze_monthly(
         bucket["count"] = int(bucket["count"]) + 1
         bucket["subtotal"] = bucket["subtotal"] + _decimal(record.subtotal)
         bucket["total"] = bucket["total"] + _decimal(record.total)
-        if str(record.status or "").strip().lower() in _CANCELLED:
+        status_bucket = _status_bucket(record.status)
+        if status_bucket == "cancelled":
             bucket["cancelled_count"] = int(bucket["cancelled_count"]) + 1
+        elif status_bucket == "active":
+            bucket["active_count"] = int(bucket["active_count"]) + 1
+        else:
+            bucket["unknown_status_count"] = int(bucket["unknown_status_count"]) + 1
         if source_kind == "xml":
             bucket["xml_count"] = int(bucket["xml_count"]) + 1
         else:
@@ -112,10 +150,87 @@ def analyze_monthly(
             cancelled_count=int(values["cancelled_count"]),
             metadata_count=int(values["metadata_count"]),
             xml_count=int(values["xml_count"]),
+            active_count=int(values["active_count"]),
+            unknown_status_count=int(values["unknown_status_count"]),
         )
         for (month, direction, currency), values in sorted(buckets.items())
     )
-    return MonthlyAnalysisReport(rows=rows)
+    return MonthlyAnalysisReport(rows=rows, trends=_build_trends(rows))
+
+
+def _build_trends(rows: tuple[MonthlyAggregate, ...]) -> tuple[MonthlyTrend, ...]:
+    by_key = {(row.month, row.direction, row.currency): row for row in rows}
+    trends: list[MonthlyTrend] = []
+    for row in rows:
+        prior_month = _previous_month(row.month)
+        prior = by_key.get((prior_month, row.direction, row.currency))
+        if prior is None:
+            trends.append(
+                MonthlyTrend(
+                    month=row.month,
+                    direction=row.direction,
+                    currency=row.currency,
+                    prior_month=prior_month,
+                    prior_available=False,
+                    count_delta=None,
+                    subtotal_delta=None,
+                    total_delta=None,
+                    cancelled_count_delta=None,
+                    active_count_delta=None,
+                    unknown_status_count_delta=None,
+                    metadata_count_delta=None,
+                    xml_count_delta=None,
+                )
+            )
+            continue
+        trends.append(
+            MonthlyTrend(
+                month=row.month,
+                direction=row.direction,
+                currency=row.currency,
+                prior_month=prior_month,
+                prior_available=True,
+                count_delta=row.count - prior.count,
+                subtotal_delta=row.subtotal - prior.subtotal,
+                total_delta=row.total - prior.total,
+                cancelled_count_delta=row.cancelled_count - prior.cancelled_count,
+                active_count_delta=row.active_count - prior.active_count,
+                unknown_status_count_delta=row.unknown_status_count - prior.unknown_status_count,
+                metadata_count_delta=row.metadata_count - prior.metadata_count,
+                xml_count_delta=row.xml_count - prior.xml_count,
+            )
+        )
+    return tuple(trends)
+
+
+def _previous_month(month: str) -> str:
+    year, month_number = (int(value) for value in month.split("-"))
+    if month_number == 1:
+        return f"{year - 1:04d}-12"
+    return f"{year:04d}-{month_number - 1:02d}"
+
+
+def _normalize_direction(value: object) -> str:
+    normalized = str(value).strip().lower() or "unknown"
+    if normalized not in _DIRECTIONS:
+        raise ValueError("analysis-direction-invalid")
+    return normalized
+
+
+def _normalize_currency(value: object) -> str:
+    normalized = str(value or "unknown").strip().upper() or "UNKNOWN"
+    if normalized != "UNKNOWN" and not _CURRENCY.fullmatch(normalized):
+        raise ValueError("analysis-currency-invalid")
+    return normalized
+
+
+def _status_bucket(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in _CANCELLED:
+        return "cancelled"
+    if normalized in _ACTIVE:
+        return "active"
+    return "unknown"
 
 
 def _as_date(value: date | datetime) -> date:

@@ -16,7 +16,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from cfdi_vault.analysis.accounting import PaymentSummaryReport, TaxSummaryReport
-from cfdi_vault.analysis.monthly import MonthlyAnalysisReport
+from cfdi_vault.analysis.monthly import MonthlyAnalysisReport, MonthlyTrend
 from cfdi_vault.analysis.quality import QualitySnapshot
 
 _SECTION_STATUSES = frozenset({"complete", "partial", "empty", "unsupported"})
@@ -110,6 +110,13 @@ class FinancialAnalysisReport:
                 "rows": [
                     _monthly_row(row)
                     for row in sorted(self.monthly.rows, key=lambda item: (item.month, item.direction, item.currency))
+                ],
+                "trends": [
+                    _monthly_trend(trend)
+                    for trend in sorted(
+                        self.monthly.trends,
+                        key=lambda item: (item.month, item.direction, item.currency),
+                    )
                 ],
             },
             "taxes": {
@@ -210,8 +217,12 @@ def _validate_reports(report: FinancialAnalysisReport) -> None:
         _require_nonnegative_int(row.cancelled_count, "analysis-count-invalid")
         _require_nonnegative_int(row.metadata_count, "analysis-count-invalid")
         _require_nonnegative_int(row.xml_count, "analysis-count-invalid")
+        _require_nonnegative_int(row.active_count, "analysis-count-invalid")
+        _require_nonnegative_int(row.unknown_status_count, "analysis-count-invalid")
         _decimal_text(row.subtotal)
         _decimal_text(row.total)
+    for trend in report.monthly.trends:
+        _validate_monthly_trend(trend)
     for row in report.taxes.rows:
         _require_choice(row.tax_type, _TAX_TYPES, "analysis-tax-type-invalid")
         _require_choice(row.tax, _TAXES, "analysis-tax-invalid")
@@ -233,6 +244,11 @@ def _validate_reports(report: FinancialAnalysisReport) -> None:
 
 def _require_nonnegative_int(value: object, error: str) -> None:
     if type(value) is not int or value < 0:
+        raise TypeError(error)
+
+
+def _require_optional_int(value: object, error: str) -> None:
+    if value is not None and type(value) is not int:
         raise TypeError(error)
 
 
@@ -273,7 +289,61 @@ def _monthly_row(row: object) -> dict[str, Any]:
         "cancelled_count": row.cancelled_count,
         "metadata_count": row.metadata_count,
         "xml_count": row.xml_count,
+        "active_count": row.active_count,
+        "unknown_status_count": row.unknown_status_count,
     }
+
+
+def _monthly_trend(trend: MonthlyTrend) -> dict[str, Any]:
+    return {
+        "month": trend.month,
+        "direction": trend.direction,
+        "currency": trend.currency,
+        "prior_month": trend.prior_month,
+        "prior_available": trend.prior_available,
+        "count_delta": trend.count_delta,
+        "subtotal_delta": _decimal_optional_text(trend.subtotal_delta),
+        "total_delta": _decimal_optional_text(trend.total_delta),
+        "cancelled_count_delta": trend.cancelled_count_delta,
+        "active_count_delta": trend.active_count_delta,
+        "unknown_status_count_delta": trend.unknown_status_count_delta,
+        "metadata_count_delta": trend.metadata_count_delta,
+        "xml_count_delta": trend.xml_count_delta,
+    }
+
+
+def _validate_monthly_trend(trend: MonthlyTrend) -> None:
+    _require_dimension(trend.month, _MONTH, "analysis-month-invalid")
+    _require_choice(trend.direction, _DIRECTIONS, "analysis-direction-invalid")
+    _require_dimension(trend.currency, _CURRENCY, "analysis-currency-invalid")
+    _require_dimension(trend.prior_month, _MONTH, "analysis-month-invalid")
+    if type(trend.prior_available) is not bool:
+        raise TypeError("analysis-trend-baseline-invalid")
+    for value in (
+        trend.count_delta,
+        trend.cancelled_count_delta,
+        trend.active_count_delta,
+        trend.unknown_status_count_delta,
+        trend.metadata_count_delta,
+        trend.xml_count_delta,
+    ):
+        _require_optional_int(value, "analysis-trend-delta-invalid")
+    _decimal_optional_text(trend.subtotal_delta)
+    _decimal_optional_text(trend.total_delta)
+    if not trend.prior_available and any(
+        value is not None
+        for value in (
+            trend.count_delta,
+            trend.subtotal_delta,
+            trend.total_delta,
+            trend.cancelled_count_delta,
+            trend.active_count_delta,
+            trend.unknown_status_count_delta,
+            trend.metadata_count_delta,
+            trend.xml_count_delta,
+        )
+    ):
+        raise ValueError("analysis-trend-baseline-invalid")
 
 
 def _tax_row(row: object) -> dict[str, Any]:
