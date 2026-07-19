@@ -45,7 +45,7 @@ deliberately narrower than claiming that the full financial product exists.
 | Payment reconciliation slice | `analysis.payment_reconciliation.reconcile_payment_applications()` allocates typed payment applications only within matching invoice/currency candidates and emits fixed aggregate categories. | Implemented as a pure, unit-tested contract. It separates currencies, rejects cross-currency netting, exposes applied/unapplied/missing-identity/duplicate-conflict/invalid-partial categories, and never infers paid or legal status. It does not query PostgreSQL, persist links, or replace durable worker idempotency. |
 | Worker handoff | `RecoveryService` consumes reference-only metadata/XML jobs and updates PostgreSQL. | Implemented and synthetic-worker tested; financial aggregates are not emitted by the worker. |
 | In-memory accounting projection | `analysis.projection.project_accounting_xml()` dispatches one stored XML value to the four pure normalizers and returns typed records, parser statuses, counts, and opaque deterministic references. | Implemented and unit-tested only; process-local duplicate suppression is not durable idempotency and no DB/worker/queue integration exists yet. |
-| Reporting/export | `analysis.reporting.FinancialAnalysisReport` composes monthly, tax, payment, optional payroll, and quality DTOs with UTC/period validation and aggregate-only JSON projection. Supplying `PayrollSummaryReport` adds a bounded payroll section (month, `O`/`E`/`UNKNOWN`, counts, and Decimal totals); omitting it preserves the legacy four-section projection. `analysis.export` provides deterministic in-memory JSON/CSV adapters with fail-closed validation. | Pure report composition and in-memory private exports are implemented and unit-tested; PostgreSQL queries, private storage delivery, and CLI integration remain pending. |
+| Reporting/export | `analysis.reporting.FinancialAnalysisReport` composes monthly, tax, payment, optional payroll, and quality DTOs with UTC/period validation and aggregate-only JSON projection. `analysis.postgres_report.PostgresFinancialAnalysisService` now composes the four-section report from the existing tenant-scoped PostgreSQL read adapters, preserving explicit partial tax/payment status and omitting payroll until V5. `analysis.export` provides deterministic in-memory JSON/CSV adapters with fail-closed validation. | Pure report composition, read-only PostgreSQL wiring, and in-memory private exports are implemented and unit-tested; V5 child-ledger/worker mapping, private storage delivery, and CLI integration remain pending. |
 
 ### Important limitation
 
@@ -278,8 +278,8 @@ available through `analysis.reporting`; the in-memory export adapter is now
 available through the internal `analysis.export` module. Its JSON and CSV
 functions accept only the validated report DTO, use fixed schemas, and never
 write files or include provenance, identifiers, hashes, paths, raw XML/ZIP,
-credentials, or SOAP. Database query wiring, private storage delivery, and CLI
-integration remain pending. Add operator-facing aggregate status only after
+credentials, or SOAP. Database writes, V5 child-ledger/worker mapping, private
+storage delivery, and CLI integration remain pending. Add operator-facing aggregate status only after
 redaction tests. **Measure:** no default output contains RFC, UUID, raw XML,
 package bytes, storage paths, credentials, or SOAP.
 
