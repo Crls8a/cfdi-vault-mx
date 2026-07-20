@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from cfdi_vault.cache_contract import ProgressObservation, WorkerHeartbeat
+from cfdi_vault.cache_contract import ProgressObservation, WorkerEvent, WorkerHeartbeat
 from cfdi_vault.domain import CfdiStatusQuery, CfdiStatusResult, DownloadQuery, QueueMessage, UserFacingError
 from cfdi_vault.sat_contract import SatAuthResult, SatDownloadResult, SatRequestResult, SatVerificationResult
 from cfdi_vault.secrets import CredentialAccessAuditEvent, CredentialReference, SecretValue
@@ -121,6 +121,12 @@ class CachePort(Protocol):
 
     def get_heartbeat(self, worker_id: str) -> WorkerHeartbeat | None:
         """Return a transient heartbeat, or None when absent/expired."""
+
+    def publish_worker_event(self, event: WorkerEvent, ttl_seconds: int) -> None:
+        """Publish a redacted, expiring worker lifecycle event."""
+
+    def get_worker_event(self, worker_id: str, event_type: str) -> WorkerEvent | None:
+        """Return one transient lifecycle event, or None when absent/expired."""
 
 
 class StoragePort(Protocol):

@@ -6,17 +6,15 @@ queue-audit, or evidence state in PostgreSQL.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
-import re
-
 
 _SAFE_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_PROGRESS_FIELDS = frozenset(
-    {"job_id", "tenant_id", "worker_ref", "status", "percent", "updated_at"}
-)
+_PROGRESS_FIELDS = frozenset({"job_id", "tenant_id", "worker_ref", "status", "percent", "updated_at"})
 _HEARTBEAT_FIELDS = frozenset({"worker_id", "updated_at"})
+_WORKER_EVENT_FIELDS = frozenset({"worker_id", "event_type", "occurred_at"})
 
 
 class CacheKeys:
@@ -39,6 +37,12 @@ class CacheKeys:
         """Return the heartbeat key for one opaque worker identifier."""
 
         return f"heartbeat:{_reference(worker_id)}"
+
+    @staticmethod
+    def worker_event(worker_id: str, event_type: str) -> str:
+        """Return the transient key for one worker lifecycle event type."""
+
+        return f"worker-event:{_reference(worker_id)}:{_reference(event_type)}"
 
 
 class ProgressStatus(StrEnum):
@@ -148,6 +152,64 @@ class WorkerHeartbeat:
             )
         except (TypeError, ValueError) as exc:
             raise ValueError("invalid heartbeat payload") from exc
+
+
+class WorkerEventType(StrEnum):
+    """Lifecycle events that may be observed transiently for a worker."""
+
+    STARTED = "worker_started"
+    HEARTBEAT = "worker_heartbeat"
+    IDLE = "worker_idle"
+    STOPPED = "worker_stopped"
+
+
+@dataclass(frozen=True)
+class WorkerEvent:
+    """Reference-only lifecycle event stored in the transient cache.
+
+    The event deliberately contains no queue, tenant, job, artifact, or SAT
+    identifiers. PostgreSQL remains the durable source of job truth; this
+    observation is safe to expire and is intended only for operations views.
+    """
+
+    worker_id: str
+    event_type: WorkerEventType
+    occurred_at: datetime
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "worker_id", _reference(self.worker_id))
+        try:
+            event_type = WorkerEventType(self.event_type)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid worker event type") from exc
+        object.__setattr__(self, "event_type", event_type)
+        object.__setattr__(self, "occurred_at", _aware_utc(self.occurred_at))
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the exact redacted JSON-safe event payload."""
+
+        return {
+            "worker_id": self.worker_id,
+            "event_type": self.event_type.value,
+            "occurred_at": self.occurred_at.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, object]) -> "WorkerEvent":
+        """Validate and decode one transient lifecycle event payload."""
+
+        if frozenset(value) != _WORKER_EVENT_FIELDS:
+            raise ValueError("unknown worker event fields or required fields missing")
+        try:
+            occurred_at = datetime.fromisoformat(str(value["occurred_at"]))
+            event_type = WorkerEventType(value["event_type"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid worker event payload") from exc
+        return cls(
+            worker_id=value["worker_id"],  # type: ignore[arg-type]
+            event_type=event_type,
+            occurred_at=occurred_at,
+        )
 
 
 class HeartbeatState(StrEnum):

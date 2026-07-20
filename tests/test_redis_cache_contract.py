@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
+from datetime import datetime, timezone
 
 import pytest
 
 import cfdi_vault.cache as cache_module
 from cfdi_vault.cache import RedisCache
-from cfdi_vault.cache_contract import ProgressObservation, ProgressStatus, WorkerHeartbeat
+from cfdi_vault.cache_contract import ProgressObservation, ProgressStatus, WorkerEvent, WorkerEventType, WorkerHeartbeat
 
 
 class _RedisClient:
@@ -94,6 +94,22 @@ def test_redis_progress_and_heartbeat_round_trip_typed_payloads(monkeypatch: pyt
     stored = json.loads(client.values["test-cache:progress:tenant-demo:job-001"])
     assert set(stored) == {"job_id", "tenant_id", "worker_ref", "status", "percent", "updated_at"}
     assert client.ttls["test-cache:heartbeat:worker-001"] == 30
+
+
+def test_redis_worker_event_round_trip_is_reference_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    cache, client = _cache(monkeypatch)
+    event = WorkerEvent(
+        worker_id="worker-001",
+        event_type=WorkerEventType.HEARTBEAT,
+        occurred_at=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+    )
+
+    cache.publish_worker_event(event, 30)
+
+    assert cache.get_worker_event("worker-001", WorkerEventType.HEARTBEAT.value) == event
+    stored = json.loads(client.values["test-cache:worker-event:worker-001:worker_heartbeat"])
+    assert set(stored) == {"worker_id", "event_type", "occurred_at"}
+    assert client.ttls["test-cache:worker-event:worker-001:worker_heartbeat"] == 30
 
 
 def test_redis_adapter_rejects_invalid_owner_and_ttl_before_io(monkeypatch: pytest.MonkeyPatch) -> None:

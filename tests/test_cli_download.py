@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+import cfdi_vault.adapters.cli.download as download_cli
 from cfdi_vault import setup as setup_flow
 from cfdi_vault.cli import app
 
@@ -45,6 +46,42 @@ def test_download_plan_prints_safe_plan_and_criteria_hash(tmp_path: Path) -> Non
     assert re.fullmatch(r"[0-9a-f]{64}", lines["criteria_hash"])
     assert "request_id" not in lines
     _assert_no_profile_secrets_or_paths(result.output, appdata_root)
+
+
+def test_worker_run_one_shot_uses_lifecycle_wrapper(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class FakeWorker:
+        instance: "FakeWorker | None" = None
+
+        def __init__(self, _service: object, *, ledger_consumer: object | None = None) -> None:
+            self.one_shot_calls: list[str] = []
+            self.forever_calls = 0
+            FakeWorker.instance = self
+
+        def run_one_shot(self, *, queue_name: str):
+            self.one_shot_calls.append(queue_name)
+            return type("Report", (), {"processed": 0, "detail": "No synthetic work."})()
+
+        def run_forever(self, **_kwargs: object) -> None:
+            self.forever_calls += 1
+
+    monkeypatch.setattr(download_cli, "_service", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(download_cli, "_build_ledger_consumer", lambda _service: None)
+    monkeypatch.setattr(download_cli, "RecoveryWorker", FakeWorker)
+
+    download_cli.worker_run(
+        loop=False,
+        poll_seconds=5.0,
+        queue_name="all",
+        database_url=None,
+        storage=None,
+    )
+
+    assert FakeWorker.instance is not None
+    assert FakeWorker.instance.one_shot_calls == ["all"]
+    assert FakeWorker.instance.forever_calls == 0
+    assert "processed=0 detail=No synthetic work." in capsys.readouterr().out
 
 
 def test_download_request_prints_synthetic_accepted_result(tmp_path: Path) -> None:

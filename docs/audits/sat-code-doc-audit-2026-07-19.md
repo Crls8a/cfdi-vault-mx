@@ -50,7 +50,7 @@ flowchart LR
 | Download | `sat_db_campaign_runner.py::_download_packages` | A download claim is persisted before the external effect; uncertain downloads are not retried automatically. |
 | Package safety | `sat_campaign_artifacts.py`, `sat_campaign_download_effects.py` | ZIP/TXT/XML are external; limits, traversal, duplicates, encoding, and XML safety are validated. |
 | Handoff | `ledger_outbox_publisher.py`, `ledger_job_consumer.py`, `ledger_job_dispatch_store.py`, `accounting_ledger_worker.py` | V6/V7 persist outbox/inbox/claims; RabbitMQ carries opaque references; the worker hydrates from PostgreSQL and completes before ACK. |
-| Monitor | `sat_monitor_service.py`, `docker-compose.yml` | Five-minute wake uses an owner-fenced Redis lease when configured, PostgreSQL advisory fallback otherwise, and Redis heartbeat; SAT contact stays disabled unless explicitly enabled. |
+| Monitor/worker operations | `sat_monitor_service.py`, `worker.py`, `cache.py`, `docker-compose.yml` | Five-minute monitor wake uses an owner-fenced Redis lease when configured, PostgreSQL advisory fallback otherwise; workers publish expiring redacted lifecycle events and heartbeat; SAT contact stays disabled unless explicitly enabled. |
 
 ## Findings and disposition
 
@@ -112,11 +112,18 @@ profile, campaign, and grant.
 
 ## What is tested versus what is SAT evidence
 
-The local full suite completed with **2340 passed, 86 skipped**. Targeted Ruff on
-the changed V6/V7/monitor files passed. The skips are environment/integration-
-gated and do not become SAT evidence. The sensitive-fixture scanner, SAT
-context scanner, `docker compose config`, and `git diff --check` also passed
-for this audit.
+The local full suite completed with **2356 passed, 87 skipped** after the
+worker lifecycle and durable-handoff changes. Targeted Ruff and format checks
+on the changed worker/cache/ledger/CLI-test files passed. The skips are
+environment/integration-gated and do not become SAT evidence. The
+sensitive-fixture scanner, SAT-context scanner, and `git diff --check` passed.
+The Docker CLI is not installed in this environment, so `docker compose
+config` and PostgreSQL/RabbitMQ container checks remain unverified rather than
+being treated as passed.
+The repository-wide Ruff command still reports the pre-existing legacy CLI
+star-import baseline; this patch does not widen that unrelated cleanup. Only
+the changed worker/cache/ledger/CLI-test files are covered by the passing
+targeted Ruff gates.
 
 | Area | Current evidence | Classification |
 |---|---|---|
@@ -124,7 +131,7 @@ for this audit.
 | PostgreSQL claims, idempotency, two-operation ceiling | Repository integration tests | `confirmed` |
 | VERIFY schedule and error categories | Runner tests with fake adapter | `confirmed` |
 | ZIP/TXT/XML limits and external storage | Synthetic artifact/worker tests | `confirmed` for code, not SAT behavior |
-| Compose dependencies and disabled monitor defaults | Compose/config checks | `confirmed` |
+| Compose dependencies and disabled monitor defaults | Source inspection; Docker CLI unavailable for config/runtime check | `confirmed` for source, container gate unverified |
 | SAT authentication, submission, VERIFY, package response | No new contact in this audit | `inconclusive` |
 | Real ZIP/TXT and worker inventory | No artifact available | `inconclusive` |
 
@@ -148,7 +155,7 @@ storage paths, or credential references into Git, issues, or chat.
 
 ## Open actions
 
-1. Run the required local gates after the durable runtime-wiring correction.
+1. Run the remaining container gates on a host with Docker Compose and clean PostgreSQL/RabbitMQ/Redis services.
 2. Keep the existing requests; do not create replacements while their 48-hour
    service windows are active.
 3. Execute the next real `campaign run` only under the already approved human

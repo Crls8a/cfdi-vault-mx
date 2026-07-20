@@ -6,15 +6,14 @@ SAT workflows deterministic.
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import json
-import re
 from typing import Any
 
-from cfdi_vault.cache_contract import CacheKeys, ProgressObservation, WorkerHeartbeat
-
+from cfdi_vault.cache_contract import CacheKeys, ProgressObservation, WorkerEvent, WorkerHeartbeat
 
 _RELEASE_LOCK_SCRIPT = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
@@ -132,6 +131,21 @@ class InMemoryCache:
         value = self.get_json(CacheKeys.heartbeat(worker_id))
         return WorkerHeartbeat.from_dict(value) if value is not None else None
 
+    def publish_worker_event(self, event: WorkerEvent, ttl_seconds: int) -> None:
+        """Publish one redacted worker lifecycle event with a finite TTL."""
+
+        self.set_json(
+            CacheKeys.worker_event(event.worker_id, event.event_type.value),
+            event.as_dict(),
+            ttl_seconds,
+        )
+
+    def get_worker_event(self, worker_id: str, event_type: str) -> WorkerEvent | None:
+        """Return one transient lifecycle event, or None after expiry."""
+
+        value = self.get_json(CacheKeys.worker_event(worker_id, event_type))
+        return WorkerEvent.from_dict(value) if value is not None else None
+
     def _expiry(self, ttl_seconds: int, *, now: datetime | None = None) -> datetime:
         _positive_ttl(ttl_seconds)
         return (now or self.clock()) + timedelta(seconds=ttl_seconds)
@@ -223,6 +237,21 @@ class RedisCache:
 
         value = self.get_json(CacheKeys.heartbeat(worker_id))
         return WorkerHeartbeat.from_dict(value) if value is not None else None
+
+    def publish_worker_event(self, event: WorkerEvent, ttl_seconds: int) -> None:
+        """Publish one validated redacted worker lifecycle event with a TTL."""
+
+        self.set_json(
+            CacheKeys.worker_event(event.worker_id, event.event_type.value),
+            event.as_dict(),
+            ttl_seconds,
+        )
+
+    def get_worker_event(self, worker_id: str, event_type: str) -> WorkerEvent | None:
+        """Return one transient lifecycle event, or None when absent/expired."""
+
+        value = self.get_json(CacheKeys.worker_event(worker_id, event_type))
+        return WorkerEvent.from_dict(value) if value is not None else None
 
     def _key(self, key: str) -> str:
         return f"{self.prefix}:{key}"

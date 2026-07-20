@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from threading import Event, Lock, Thread
-import time
 
 import pytest
 
@@ -180,8 +180,7 @@ def test_long_handler_renews_heartbeat_and_prevents_false_abandonment() -> None:
     clock.advance(6)
     deadline = time.monotonic() + 1
     while (
-        cache.get_heartbeat("worker-001") is None
-        or cache.get_heartbeat("worker-001").updated_at != clock()  # type: ignore[union-attr]
+        cache.get_heartbeat("worker-001") is None or cache.get_heartbeat("worker-001").updated_at != clock()  # type: ignore[union-attr]
     ) and time.monotonic() < deadline:
         time.sleep(0.01)
 
@@ -195,7 +194,7 @@ def test_long_handler_renews_heartbeat_and_prevents_false_abandonment() -> None:
     assert not thread.is_alive()
 
 
-def test_heartbeat_renewal_failure_is_classified_and_releases_idempotency(
+def test_heartbeat_renewal_failure_does_not_retry_successful_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = _Service(InMemoryCache())
@@ -204,9 +203,7 @@ def test_heartbeat_renewal_failure_is_classified_and_releases_idempotency(
     worker = RecoveryWorker(
         service,  # type: ignore[arg-type]
         heartbeat_interval_seconds=0.01,
-        classify_failure=lambda error: (
-            classified.append(error) or RetryableQueueError("heartbeat_renewal_failed")
-        ),
+        classify_failure=lambda error: classified.append(error) or RetryableQueueError("heartbeat_renewal_failed"),
     )
     heartbeat_attempts = 0
 
@@ -228,11 +225,6 @@ def test_heartbeat_renewal_failure_is_classified_and_releases_idempotency(
 
     report = worker.run_once()
 
-    assert report.processed == 0
-    assert report.detail == "Retry scheduled after classified reason: heartbeat_renewal_failed."
-    assert str(classified[0]) == "worker heartbeat renewal failed"
-    assert service.queue.pending_count(QueueName.SAT_REQUEST.value) == 1
-    assert worker.idempotency.acquire(message.idempotency_key) is True
-    worker.idempotency.release(message.idempotency_key)
-    worker.idempotency.release(message.idempotency_key)
-    assert worker.idempotency.acquire(message.idempotency_key) is True
+    assert report.processed == 1
+    assert classified == []
+    assert service.queue.pending_count(QueueName.SAT_REQUEST.value) == 0

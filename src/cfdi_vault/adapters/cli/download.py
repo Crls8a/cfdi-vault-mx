@@ -81,7 +81,7 @@ def worker_run(
     if loop:
         worker.run_forever(poll_seconds=poll_seconds, queue_name=queue_name)
         return
-    report = worker.run_once(queue_name=queue_name)
+    report = worker.run_one_shot(queue_name=queue_name)
     typer.echo(f"processed={report.processed} detail={report.detail}")
 
 

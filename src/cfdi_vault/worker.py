@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from threading import Event, Thread
 from uuid import uuid4
 
-from cfdi_vault.cache_contract import CacheKeys, WorkerHeartbeat
+from cfdi_vault.cache_contract import CacheKeys, WorkerEvent, WorkerEventType, WorkerHeartbeat
 from cfdi_vault.domain import QueueMessage, QueueName
 from cfdi_vault.ledger_job_consumer import LedgerConsumerReport, LedgerJobConsumer
 from cfdi_vault.queue_contract import (
@@ -126,12 +126,31 @@ class RecoveryWorker:
         self.heartbeat_interval_seconds = float(interval)
         self.heartbeat_cache = getattr(service, "cache", None)
         self.ledger_consumer = ledger_consumer
+        self._started_event_emitted = False
 
     def run_once(self, *, queue_name: str = QueueName.SAT_REQUEST.value) -> WorkerReport:
+        self._emit_started_event()
         self._record_heartbeat()
+        report = self._run_once(queue_name=queue_name)
+        if report.processed == 0 and report.detail.startswith("No "):
+            self._publish_worker_event(WorkerEventType.IDLE)
+        return report
+
+    def run_one_shot(self, *, queue_name: str = QueueName.SAT_REQUEST.value) -> WorkerReport:
+        """Run one poll as a worker lifecycle and emit exactly one stop event."""
+
+        self._emit_started_event()
+        try:
+            return self.run_once(queue_name=queue_name)
+        finally:
+            self._publish_worker_event(WorkerEventType.STOPPED)
+
+    def _run_once(self, *, queue_name: str) -> WorkerReport:
+        """Execute one poll after lifecycle/heartbeat bookkeeping."""
+
         if queue_name == "all":
             for candidate in QueueName:
-                report = self.run_once(queue_name=candidate.value)
+                report = self._run_once(queue_name=candidate.value)
                 if report.processed or not report.detail.startswith("No "):
                     return report
             return WorkerReport(processed=0, detail="No worker queue message available.")
@@ -161,7 +180,18 @@ class RecoveryWorker:
         consume_reliably = getattr(self.service.queue, "consume_one_reliably", None)
         if consume_reliably is None:
             raise RuntimeError("Queue adapter does not support reliable consumption.")
-        outcome = consume_reliably(queue_name, self.ledger_consumer.handle)
+        heartbeat_stop = Event()
+        heartbeat_thread = Thread(
+            target=self._renew_heartbeat_until_stopped,
+            args=(heartbeat_stop,),
+            daemon=True,
+        )
+        heartbeat_thread.start()
+        try:
+            outcome = consume_reliably(queue_name, self.ledger_consumer.handle)
+        finally:
+            heartbeat_stop.set()
+            heartbeat_thread.join()
         if outcome is None:
             return WorkerReport(processed=0, detail=f"No {queue_name} message available.")
         if outcome.action is DeliveryAction.ACK:
@@ -173,18 +203,25 @@ class RecoveryWorker:
                 )
             return WorkerReport(processed=1, detail="Ledger parse delivery acknowledged.")
         if outcome.action is DeliveryAction.RETRY:
-            return WorkerReport(processed=0, detail=f"Retry scheduled after classified reason: {outcome.reason_code or 'retry_scheduled'}.")
-        return WorkerReport(processed=0, detail=f"Delivery moved to dead letter with redacted reason: {outcome.reason_code or 'delivery_failed'}.")
+            return WorkerReport(
+                processed=0,
+                detail=f"Retry scheduled after classified reason: {outcome.reason_code or 'retry_scheduled'}.",
+            )
+        return WorkerReport(
+            processed=0,
+            detail=f"Delivery moved to dead letter with redacted reason: {outcome.reason_code or 'delivery_failed'}.",
+        )
 
     def _handle(self, message: QueueMessage) -> WorkerReport:
         envelope = WorkerJobEnvelope.from_message(message)
         if not self.idempotency.acquire(envelope.idempotency_key):
-            return WorkerReport(processed=0, detail="Duplicate delivery acknowledged; durable idempotency is not configured.")
+            return WorkerReport(
+                processed=0, detail="Duplicate delivery acknowledged; durable idempotency is not configured."
+            )
         heartbeat_stop = Event()
-        heartbeat_errors: list[Exception] = []
         heartbeat_thread = Thread(
             target=self._renew_heartbeat_until_stopped,
-            args=(heartbeat_stop, heartbeat_errors),
+            args=(heartbeat_stop,),
             daemon=True,
         )
         heartbeat_thread.start()
@@ -202,8 +239,6 @@ class RecoveryWorker:
             finally:
                 heartbeat_stop.set()
                 heartbeat_thread.join()
-            if heartbeat_errors:
-                raise RuntimeError("worker heartbeat renewal failed") from heartbeat_errors[0]
         except QueueHandlerError:
             self.idempotency.release(envelope.idempotency_key)
             raise
@@ -213,26 +248,70 @@ class RecoveryWorker:
         self.idempotency.complete(envelope.idempotency_key)
         return WorkerReport(processed=1, detail=f"Processed job {result.job_id} with status {result.status}.")
 
-    def _renew_heartbeat_until_stopped(self, stop: Event, errors: list[Exception]) -> None:
+    def _renew_heartbeat_until_stopped(self, stop: Event) -> None:
         while not stop.wait(self.heartbeat_interval_seconds):
             try:
                 self._record_heartbeat()
-            except Exception as exc:
-                errors.append(exc)
-                return
+            except Exception:
+                # Cache visibility is best effort. A transient Redis failure
+                # must not turn successful queue work into a retry or DLQ.
+                continue
 
     def _record_heartbeat(self) -> None:
         if self.heartbeat_cache is None:
             return
-        self.heartbeat_cache.record_heartbeat(
-            WorkerHeartbeat(worker_id=self.worker_id, updated_at=self.clock()),
-            self.heartbeat_ttl_seconds,
-        )
+        try:
+            self.heartbeat_cache.record_heartbeat(
+                WorkerHeartbeat(worker_id=self.worker_id, updated_at=self.clock()),
+                self.heartbeat_ttl_seconds,
+            )
+        except Exception:
+            # PostgreSQL and the queue remain authoritative for work state.
+            return
+        self._publish_worker_event(WorkerEventType.HEARTBEAT)
+
+    def _emit_started_event(self) -> None:
+        if self._started_event_emitted:
+            return
+        self._started_event_emitted = True
+        self._publish_worker_event(WorkerEventType.STARTED)
+
+    def _publish_worker_event(self, event_type: WorkerEventType) -> None:
+        """Best-effort cache publication that can never fail the work poll."""
+
+        if self.heartbeat_cache is None:
+            return
+        publish = getattr(self.heartbeat_cache, "publish_worker_event", None)
+        if publish is None:
+            return
+        try:
+            publish(
+                WorkerEvent(
+                    worker_id=self.worker_id,
+                    event_type=event_type,
+                    occurred_at=self.clock(),
+                ),
+                self.heartbeat_ttl_seconds,
+            )
+        except Exception:
+            # Redis/cache visibility is transient; queue work and durable state
+            # must continue even when the operational event cannot be written.
+            return
 
     def run_forever(
-        self, *, poll_seconds: float = 5.0, queue_name: str = QueueName.SAT_REQUEST.value,
+        self,
+        *,
+        poll_seconds: float = 5.0,
+        queue_name: str = QueueName.SAT_REQUEST.value,
+        stop: Callable[[], bool] | None = None,
     ) -> None:
-        while True:
-            report = self.run_once(queue_name=queue_name)
-            print(f"processed={report.processed} detail={report.detail}", flush=True)
-            time.sleep(poll_seconds)
+        """Poll until ``stop`` is true, publishing transient lifecycle events."""
+
+        self._emit_started_event()
+        try:
+            while stop is None or not stop():
+                report = self.run_once(queue_name=queue_name)
+                print(f"processed={report.processed} detail={report.detail}", flush=True)
+                time.sleep(poll_seconds)
+        finally:
+            self._publish_worker_event(WorkerEventType.STOPPED)

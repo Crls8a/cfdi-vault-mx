@@ -47,6 +47,15 @@ legacy request, `active` for a new 48-hour window, and `exceeded` after the loca
 window closes. An empty `next_check_at` means no bound recovery has a scheduled
 verification.
 
+The Compose worker publishes only transient, redacted lifecycle observations
+to Redis: `worker_started`, `worker_heartbeat`, `worker_idle`, and
+`worker_stopped`. Each event is keyed by the opaque worker reference and
+expires with the heartbeat TTL. Redis/heartbeat publication is best effort and
+its failure does not stop queue processing or turn successful work into a
+retry/dead-letter result; claims, results, inbox dedupe, and outbox state remain
+in PostgreSQL. Legacy process-local recovery may appear stale while Redis is
+unavailable, so its operational view must not override durable V6/V7 state.
+
 The command never prints RFCs, SAT request/package identifiers, work or recovery
 references, dates, hashes, rows, or storage paths. Missing or mismatched bound
 recovery state fails closed with `campaign-status-recovery-invalid`. Correct the
