@@ -55,10 +55,15 @@ def test_outbox_and_inbox_are_idempotent_and_reason_codes_are_redacted(reset_pos
     claim = store.claim_outbox_event(now=NOW, worker_ref="publisher-synthetic", lease=timedelta(minutes=5))
     assert claim is not None and "event-synthetic" not in repr(claim)
     assert store.mark_outbox_failed(claim.event_id, claim.claim_id, "publish.v1-failed", now=NOW)
-    retry = store.claim_outbox_event(now=NOW, worker_ref="publisher-synthetic", lease=timedelta(minutes=5))
+    retry_time = NOW + timedelta(seconds=5)
+    retry = store.claim_outbox_event(
+        now=retry_time,
+        worker_ref="publisher-synthetic",
+        lease=timedelta(minutes=5),
+    )
     assert retry is not None
-    assert store.mark_outbox_published(retry.event_id, retry.claim_id, now=NOW)
-    assert not store.mark_outbox_published(retry.event_id, retry.claim_id, now=NOW)
+    assert store.mark_outbox_published(retry.event_id, retry.claim_id, now=retry_time)
+    assert not store.mark_outbox_published(retry.event_id, retry.claim_id, now=retry_time)
     assert store.register_inbox_event(retry.event_id, "ledger-worker", received_at=NOW).status == "new"
     assert store.register_inbox_event(retry.event_id, "ledger-worker", received_at=NOW).status == "in_flight"
     assert store.mark_inbox_processed(retry.event_id, "ledger-worker", "parse.v1-failed", now=NOW)
