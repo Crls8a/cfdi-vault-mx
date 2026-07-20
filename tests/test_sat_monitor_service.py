@@ -5,7 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from cfdi_vault.sat_monitor_service import PostgresAdvisoryLease, SatMonitorService
+from cfdi_vault.sat_monitor_service import (
+    PostgresAdvisoryLease,
+    RedisMonitorLease,
+    SatMonitorService,
+    build_monitor_lease,
+)
 
 NOW = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -108,6 +113,35 @@ def test_advisory_lease_closes_connection_when_lock_query_fails() -> None:
     assert connection.closed is True
 
 
+def test_redis_monitor_lease_is_owner_fenced_and_releasable() -> None:
+    class Cache:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, int]] = []
+            self.released: list[tuple[str, str]] = []
+
+        def acquire_lock(self, key: str, owner: str, ttl: int) -> bool:
+            self.calls.append((key, owner, ttl))
+            return True
+
+        def release_lock(self, key: str, owner: str) -> bool:
+            self.released.append((key, owner))
+            return True
+
+    cache = Cache()
+    lease = RedisMonitorLease("redis://synthetic", "owner-synthetic", cache=cache)
+
+    assert lease.acquire() is True
+    lease.release()
+    assert cache.calls == [("lock:sat-monitor", "owner-synthetic", 600)]
+    assert cache.released == [("lock:sat-monitor", "owner-synthetic")]
+
+
+def test_monitor_lease_falls_back_to_postgres_without_redis() -> None:
+    engine = SimpleNamespace()
+    lease = build_monitor_lease(engine, None)
+    assert isinstance(lease, PostgresAdvisoryLease)
+
+
 def test_monitor_main_disposes_engine_when_schema_check_fails(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import cfdi_vault.db as db
     import cfdi_vault.sat_monitor_service as subject
@@ -141,8 +175,10 @@ def test_enabled_runner_uses_guarded_runtime_factories_without_contact(monkeypat
     from cfdi_vault.sat_live_worker_runtime import SatWorkerFactories
 
     factories = SatWorkerFactories(
-        submitter_factory=object(), verifier_factory=object(),
-        downloader_factory=object(), query_factory=object(),
+        submitter_factory=object(),
+        verifier_factory=object(),
+        downloader_factory=object(),
+        query_factory=object(),
         artifact_coordinator=object(),
     )
     runtime_calls: list[dict[str, object]] = []

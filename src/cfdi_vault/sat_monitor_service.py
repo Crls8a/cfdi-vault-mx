@@ -7,8 +7,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Mapping, Protocol
+from uuid import uuid4
 
 from sqlalchemy import text
+
+from cfdi_vault.queue_safety import validate_reference_string
 
 if TYPE_CHECKING:
     from cfdi_vault.runtime_settings import RuntimeSettings
@@ -87,9 +90,12 @@ class PostgresAdvisoryLease:
     def acquire(self) -> bool:
         connection = self._engine.connect()
         try:
-            acquired = bool(connection.execute(
-                text("SELECT pg_try_advisory_lock(hashtext(:key))"), {"key": self._key},
-            ).scalar())
+            acquired = bool(
+                connection.execute(
+                    text("SELECT pg_try_advisory_lock(hashtext(:key))"),
+                    {"key": self._key},
+                ).scalar()
+            )
         except Exception:
             try:
                 connection.close()
@@ -107,11 +113,56 @@ class PostgresAdvisoryLease:
             return
         try:
             self._connection.execute(
-                text("SELECT pg_advisory_unlock(hashtext(:key))"), {"key": self._key},
+                text("SELECT pg_advisory_unlock(hashtext(:key))"),
+                {"key": self._key},
             )
         finally:
             self._connection.close()
             self._connection = None
+
+
+class RedisMonitorLease:
+    """Transient process lease for the monitor, fenced by an opaque owner."""
+
+    def __init__(
+        self,
+        redis_url: str,
+        owner_id: str,
+        *,
+        ttl_seconds: int = 600,
+        cache: object | None = None,
+    ) -> None:
+        if not isinstance(redis_url, str) or not redis_url.strip():
+            raise ValueError("redis monitor lease requires a URL")
+        validate_reference_string("owner_id", owner_id)
+        if type(ttl_seconds) is not int or ttl_seconds < 60:
+            raise ValueError("redis monitor lease TTL must be at least one minute")
+        if cache is None:
+            from cfdi_vault.cache import RedisCache
+
+            cache = RedisCache(redis_url.strip())
+        self._cache = cache
+        self._owner_id = owner_id
+        self._ttl_seconds = ttl_seconds
+        self._key = "lock:sat-monitor"
+
+    def acquire(self) -> bool:
+        """Acquire the transient lease; the durable work limit remains in PostgreSQL."""
+
+        return bool(self._cache.acquire_lock(self._key, self._owner_id, self._ttl_seconds))
+
+    def release(self) -> None:
+        """Release only this process owner's lease."""
+
+        self._cache.release_lock(self._key, self._owner_id)
+
+
+def build_monitor_lease(engine: object, redis_url: str | None) -> MonitorLease:
+    """Prefer Redis for cross-container fencing and retain PostgreSQL fallback."""
+
+    if isinstance(redis_url, str) and redis_url.strip():
+        return RedisMonitorLease(redis_url, owner_id=f"sat-monitor-{uuid4().hex}")
+    return PostgresAdvisoryLease(engine)
 
 
 def _utc(value: datetime) -> datetime:
@@ -129,12 +180,17 @@ class DatabaseDueInspector:
         if self._runner is not None:
             return self._runner.run(now=_utc(now), limit=min(limit, 2))
         with self._engine.connect() as connection:
-            due = int(connection.execute(text(
-                """SELECT count(*) FROM sat_requests
+            due = int(
+                connection.execute(
+                    text(
+                        """SELECT count(*) FROM sat_requests
                    WHERE status IN ('submitted', 'waiting_verify')
                      AND next_check_at IS NOT NULL AND next_check_at <= :now
                      AND (service_window_expires_at IS NULL OR service_window_expires_at > :now)""",
-            ), {"now": _utc(now)}).scalar_one())
+                    ),
+                    {"now": _utc(now)},
+                ).scalar_one()
+            )
         return {"monitor_state": "awaiting_live_grant", "due_count": due, "contacted_count": 0}
 
 
@@ -215,9 +271,12 @@ def build_enabled_database_runner(
         )
         lane_phase = grant.phase
         if grant.phase == "continue":
-            lane_phase = str(repository.get_campaign_status(
-                campaign_ref, profile_ref=profile_id,
-            ).get("phase", ""))
+            lane_phase = str(
+                repository.get_campaign_status(
+                    campaign_ref,
+                    profile_ref=profile_id,
+                ).get("phase", "")
+            )
         if lane_phase == "metadata-proof":
             build_factories = build_metadata_worker_factories
         elif lane_phase == "cfdi-proof":
@@ -338,6 +397,7 @@ def main() -> None:
             raise RuntimeError("sat-monitor campaign configuration is incomplete")
         from cfdi_vault.db import create_session_factory
         from cfdi_vault.sat_campaign_repository import SatCampaignRepository
+
         repository = SatCampaignRepository(create_session_factory(engine))
         runner = build_enabled_database_runner(
             repository,
@@ -348,7 +408,7 @@ def main() -> None:
         )
         SatMonitorService(
             DatabaseDueInspector(engine, runner),
-            PostgresAdvisoryLease(engine),
+            build_monitor_lease(engine, settings.redis_url),
             heartbeat=redis_heartbeat_callback(
                 settings.redis_url,
                 environ=_effective_environment(),
