@@ -1,8 +1,8 @@
 # Durable ledger jobs V6/V7 architecture
 
-Status: implemented in the repository; PostgreSQL/RabbitMQ container
-verification remains an environment gate. This document describes the
-offline implementation boundary. It is not SAT integration evidence.
+Status: implemented in the repository; the PostgreSQL/RabbitMQ/Redis
+container gate has passed with synthetic references. This document describes
+the offline implementation boundary. It is not SAT integration evidence.
 
 ## Purpose
 
@@ -130,6 +130,9 @@ Local evidence currently available:
   Flyway V1-V7, RabbitMQ, and Redis;
 - synthetic outbox publication through RabbitMQ, worker consumption, and
   duplicate delivery deduplication in `ledger_inbox`.
+- a dedicated disposable PostgreSQL database named `cfdi_vault_test` with
+  Flyway V1-V7 applied and 43 focused persistence/consumer/migration tests
+  passing; the database was removed with the disposable Compose project.
 
 The repository-wide Ruff command still reports the pre-existing legacy lint
 baseline outside this unit; all touched files pass focused Ruff and format
