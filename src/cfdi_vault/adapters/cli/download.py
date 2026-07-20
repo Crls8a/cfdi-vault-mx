@@ -76,12 +76,54 @@ def worker_run(
 ) -> None:
     """Run the recovery worker shell."""
 
-    worker = RecoveryWorker(_service(database_url, storage))
+    service = _service(database_url, storage)
+    worker = RecoveryWorker(service, ledger_consumer=_build_ledger_consumer(service))
     if loop:
         worker.run_forever(poll_seconds=poll_seconds, queue_name=queue_name)
         return
     report = worker.run_once(queue_name=queue_name)
     typer.echo(f"processed={report.processed} detail={report.detail}")
+
+
+def _build_ledger_consumer(service: object) -> object | None:
+    """Build the durable parse consumer when PostgreSQL and Rabbit are present."""
+
+    queue = getattr(service, "queue", None)
+    factory = getattr(service, "session_factory", None)
+    engine = getattr(factory, "kw", {}).get("bind") if factory is not None else None
+    if queue is None or engine is None:
+        return None
+    from cfdi_vault.accounting_ledger_jobs_v6 import LedgerJobStoreV6
+    from cfdi_vault.accounting_ledger_worker import LedgerParseAggregate
+    from cfdi_vault.domain import QueueMessage
+    from cfdi_vault.ledger_job_consumer import LedgerJobConsumer
+
+    store = LedgerJobStoreV6(engine)
+
+    def parser(job: object) -> LedgerParseAggregate:
+        from datetime import datetime, timezone
+
+        queue_name = getattr(job, "queue")
+        tenant_id = str(getattr(job, "tenant_id"))
+        artifact_ref = str(getattr(job, "artifact_ref"))
+        message = QueueMessage(
+            queue=queue_name,
+            tenant_id=tenant_id,
+            job_id=artifact_ref,
+            correlation_id=artifact_ref,
+            idempotency_key=str(getattr(job, "idempotency_key")),
+            created_at=datetime.now(timezone.utc),
+        )
+        result = service.process_queue_message_for_worker(message, worker_ref="ledger-worker")  # type: ignore[attr-defined]
+        count = max(0, int(getattr(result, "metadata_count", 0)))
+        return LedgerParseAggregate(records_seen=count, records_written=count)
+
+    return LedgerJobConsumer(
+        store,
+        parser,
+        consumer_name="cfdi-vault-worker",
+        worker_ref="cfdi-vault-worker",
+    )
 
 def sync_metadata(
     rfc: str = typer.Option(..., "--rfc", help="Requester RFC."),

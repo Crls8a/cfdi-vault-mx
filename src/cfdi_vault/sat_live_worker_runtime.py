@@ -228,8 +228,22 @@ def _build_artifact_coordinator(
     if not storage_root or not rabbitmq_url:
         return None
     try:
-        from cfdi_vault.queueing import RabbitMqQueue
         from cfdi_vault.sat_campaign_artifacts import SatCampaignArtifactCoordinator
+
+        session_factory = getattr(repository, "_session_factory", None)
+        engine = getattr(session_factory, "kw", {}).get("bind") if session_factory is not None else None
+        if engine is not None:
+            from cfdi_vault.sat_campaign_ledger_handoff import build_durable_handoff
+
+            return SatCampaignArtifactCoordinator(
+                repository,
+                storage_root,
+                durable_handoff=build_durable_handoff(engine, rabbitmq_url),
+            )
+
+        # Explicitly retain the legacy publisher only for offline/fake
+        # repositories that have no durable SQLAlchemy bind.
+        from cfdi_vault.queueing import RabbitMqQueue
 
         publisher = RabbitMqQueue(rabbitmq_url).publish
         return SatCampaignArtifactCoordinator(

@@ -613,3 +613,117 @@ class SatCampaignRepository(SatCampaignRepositoryCampaignMixin, SatCampaignStatu
             session.add(artifact)
             session.commit()
             return artifact
+
+    def record_artifact_with_durable_handoff(
+        self,
+        *,
+        campaign_ref: str,
+        artifact_ref: str,
+        kind: str,
+        storage_key: str,
+        sha256: str,
+        size_bytes: int,
+        validation_status: str,
+        tenant_id: str,
+        handoff: Any,
+        counts: Mapping[str, object] | None = None,
+        window_ref: str | None = None,
+        now: datetime | None = None,
+    ) -> SatArtifactRecord:
+        """Commit artifact metadata and its durable parse handoff together.
+
+        ``handoff.persist_on_connection`` only writes ledger rows; the caller
+        must invoke ``publish_after_commit`` after this method returns. Any
+        failure before commit rolls back both the artifact and handoff rows.
+        """
+
+        stamp = now or datetime.now(timezone.utc)
+        normalized_counts = self._artifact_metadata(
+            kind=kind,
+            storage_key=storage_key,
+            sha256=sha256,
+            size_bytes=size_bytes,
+            validation_status=validation_status,
+            counts=counts,
+        )
+        with self._session_factory() as session:
+            campaign = self._campaign(session, campaign_ref)
+            window = self._window(session, campaign.id, window_ref) if window_ref else None
+            existing = session.scalar(
+                select(SatArtifactRecord).where(SatArtifactRecord.artifact_ref == artifact_ref)
+            )
+            if existing:
+                if (
+                    existing.campaign_id,
+                    existing.window_id,
+                    existing.artifact_scope,
+                    existing.kind,
+                    existing.storage_key,
+                    existing.sha256,
+                    existing.size_bytes,
+                    existing.validation_status,
+                    existing.counts,
+                ) != (
+                    campaign.id,
+                    window.id if window else None,
+                    "window" if window else "campaign",
+                    kind,
+                    storage_key,
+                    sha256,
+                    size_bytes,
+                    validation_status,
+                    normalized_counts,
+                ):
+                    raise ValueError("artifact identity conflict")
+                artifact = existing
+            else:
+                content = session.scalar(
+                    select(SatArtifactRecord).where(
+                        SatArtifactRecord.campaign_id == campaign.id,
+                        SatArtifactRecord.kind == kind,
+                        SatArtifactRecord.sha256 == sha256,
+                    )
+                )
+                if content:
+                    if (
+                        content.window_id,
+                        content.artifact_scope,
+                        content.storage_key,
+                        content.size_bytes,
+                        content.validation_status,
+                        content.counts,
+                    ) != (
+                        window.id if window else None,
+                        "window" if window else "campaign",
+                        storage_key,
+                        size_bytes,
+                        validation_status,
+                        normalized_counts,
+                    ):
+                        raise ValueError("artifact content conflict")
+                    artifact = content
+                else:
+                    artifact = SatArtifactRecord(
+                        campaign_id=campaign.id,
+                        window_id=window.id if window else None,
+                        artifact_scope="window" if window else "campaign",
+                        artifact_ref=artifact_ref,
+                        kind=kind,
+                        storage_key=storage_key,
+                        sha256=sha256,
+                        size_bytes=size_bytes,
+                        validation_status=validation_status,
+                        counts=normalized_counts,
+                        created_at=stamp,
+                    )
+                    session.add(artifact)
+                    session.flush()
+            handoff.persist_on_connection(
+                session.connection(),
+                tenant_id=tenant_id,
+                artifact_ref=artifact.artifact_ref,
+                kind=kind,
+                now=stamp,
+            )
+            session.commit()
+            return artifact

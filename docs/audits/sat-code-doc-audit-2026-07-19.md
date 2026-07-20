@@ -148,7 +148,7 @@ storage paths, or credential references into Git, issues, or chat.
 
 ## Open actions
 
-1. Run the required local gates after the output-contract correction.
+1. Run the required local gates after the durable runtime-wiring correction.
 2. Keep the existing requests; do not create replacements while their 48-hour
    service windows are active.
 3. Execute the next real `campaign run` only under the already approved human

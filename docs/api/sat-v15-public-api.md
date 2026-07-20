@@ -151,6 +151,7 @@ supported LIB-005B and LIB-005C rows are public library API.
 | `cfdi_vault.sat_campaign_repository_helpers` | Internal reference-system persistence | Private claim, artifact, and transaction validation helpers. |
 | `cfdi_vault.sat_campaign_repository_status` | Internal reference-system reporting | Database aggregate projection without fiscal rows or SAT identifiers. |
 | `cfdi_vault.sat_campaign_jobs` | Internal reference-system queue handoff | Publishes opaque artifact references to metadata/XML parsing queues; never embeds package bytes or fiscal rows. |
+| `cfdi_vault.sat_campaign_ledger_handoff` | Internal durable queue handoff | Registers reference-only parse jobs and outbox events in PostgreSQL; broker publication occurs only after the artifact transaction commits. |
 | `cfdi_vault.sat_campaign_status` | Internal reference-system reporting | Read-only manifest-bound recovery aggregates; not a supported import and never contacts SAT. |
 | `cfdi_vault.sat_campaign_submission_effects` | Internal live orchestration | Sequential grant-authorized Metadata submission effects; never selected implicitly. |
 | `cfdi_vault.sat_campaign_submission_projection` | Internal reference-system reconciliation | Read-only persisted-outcome validation with an atomic failure-only campaign transition; no SAT contact. |

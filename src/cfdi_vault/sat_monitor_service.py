@@ -218,14 +218,25 @@ def build_database_runner(
         # Queue publication is injected into the artifact coordinator, not
         # performed by the runner.  Construction only creates adapters; no
         # connection is opened until a package is durably claimed.
-        from cfdi_vault.queueing import RabbitMqQueue
         from cfdi_vault.sat_campaign_artifacts import SatCampaignArtifactCoordinator
+        from cfdi_vault.sat_campaign_ledger_handoff import build_durable_handoff
 
-        artifact_coordinator = SatCampaignArtifactCoordinator(
-            repository,
-            storage_root,
-            job_publisher=RabbitMqQueue(rabbitmq_url).publish,
-        )
+        durable_handoff = None
+        engine = _repository_engine(repository)
+        if engine is not None:
+            durable_handoff = build_durable_handoff(engine, rabbitmq_url)
+        if durable_handoff is not None:
+            artifact_coordinator = SatCampaignArtifactCoordinator(
+                repository, storage_root, durable_handoff=durable_handoff,
+            )
+        else:
+            # Offline/fake repositories may not expose a SQLAlchemy bind. Keep
+            # their explicit reference-only publisher path intact.
+            from cfdi_vault.queueing import RabbitMqQueue
+
+            artifact_coordinator = SatCampaignArtifactCoordinator(
+                repository, storage_root, job_publisher=RabbitMqQueue(rabbitmq_url).publish,
+            )
 
     return SatCampaignRunner(
         repository,  # type: ignore[arg-type]
@@ -238,6 +249,14 @@ def build_database_runner(
         campaign_ref=campaign_ref,
         package_kind=package_kind,
     )
+
+
+def _repository_engine(repository: object) -> object | None:
+    """Return a SQLAlchemy bind when a repository is DB-backed."""
+
+    factory = getattr(repository, "_session_factory", None)
+    bind = getattr(factory, "kw", {}).get("bind") if factory is not None else None
+    return bind
 
 
 def build_enabled_database_runner(

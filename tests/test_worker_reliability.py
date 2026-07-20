@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from cfdi_vault.domain import QueueMessage, QueueName
+from cfdi_vault.ledger_job_consumer import LedgerConsumerReport
 from cfdi_vault.queue_contract import DeliveryAction, DeliveryOutcome, RetryableQueueError, WorkerJobEnvelope
 from cfdi_vault.queueing import InMemoryQueue
 from cfdi_vault.worker import InMemoryIdempotencyStore, RecoveryWorker
@@ -71,6 +72,26 @@ def test_worker_all_selects_parsing_queues_for_production_consumer() -> None:
 
     assert report.processed == 1
     assert service.envelopes[0].queue is QueueName.CFDI_PARSE_METADATA
+
+
+def test_worker_dispatches_parse_queue_to_durable_consumer_when_injected() -> None:
+    queue = InMemoryQueue()
+    service = _Service(queue)
+    calls = []
+
+    class DurableConsumer:
+        def handle(self, message):  # type: ignore[no-untyped-def]
+            calls.append(message.message_id)
+            return LedgerConsumerReport("succeeded")
+
+    worker = RecoveryWorker(service, ledger_consumer=DurableConsumer())  # type: ignore[arg-type]
+    queue.publish(_message("durable-message"))
+
+    report = worker.run_once(queue_name=QueueName.CFDI_PARSE_XML.value)
+
+    assert report.processed == 1
+    assert calls == ["durable-message"]
+    assert service.calls == 0
 
 
 

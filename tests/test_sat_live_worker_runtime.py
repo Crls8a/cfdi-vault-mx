@@ -92,6 +92,35 @@ def test_artifact_wiring_is_optional_and_does_not_publish_at_construction(monkey
     assert _build_artifact_coordinator(object(), {}) is None
 
 
+def test_db_backed_artifact_wiring_uses_durable_handoff(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    import cfdi_vault.sat_campaign_artifacts as artifacts
+    import cfdi_vault.sat_campaign_ledger_handoff as handoff_module
+
+    class Factory:
+        kw = {"bind": object()}
+
+    class Repository:
+        _session_factory = Factory()
+
+    created: list[object] = []
+
+    class Coordinator:
+        def __init__(self, repository: object, storage_root: str, *, durable_handoff) -> None:  # type: ignore[no-untyped-def]
+            created.append(durable_handoff)
+
+    sentinel = object()
+    monkeypatch.setattr(handoff_module, "build_durable_handoff", lambda engine, url: sentinel)
+    monkeypatch.setattr(artifacts, "SatCampaignArtifactCoordinator", Coordinator)
+
+    result = _build_artifact_coordinator(
+        Repository(),
+        {"CFDI_STORAGE_ROOT": str(tmp_path), "RABBITMQ_URL": "amqp://synthetic"},
+    )
+
+    assert result is not None
+    assert created == [sentinel]
+
+
 def test_run_from_environment_forwards_artifact_coordinator_without_contact(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import cfdi_vault.sat_campaign_db_cli as subject
     import cfdi_vault.sat_live_worker_runtime as runtime

@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from cfdi_vault.cache_contract import CacheKeys, WorkerHeartbeat
 from cfdi_vault.domain import QueueMessage, QueueName
+from cfdi_vault.ledger_job_consumer import LedgerConsumerReport, LedgerJobConsumer
 from cfdi_vault.queue_contract import (
     DeliveryAction,
     IdempotencyPort,
@@ -97,6 +98,7 @@ class RecoveryWorker:
         clock: Callable[[], datetime] | None = None,
         heartbeat_ttl_seconds: int = 30,
         heartbeat_interval_seconds: float | None = None,
+        ledger_consumer: LedgerJobConsumer | None = None,
     ) -> None:
         if (
             isinstance(heartbeat_ttl_seconds, bool)
@@ -123,6 +125,7 @@ class RecoveryWorker:
             raise ValueError("heartbeat_interval_seconds must be positive and less than the heartbeat TTL")
         self.heartbeat_interval_seconds = float(interval)
         self.heartbeat_cache = getattr(service, "cache", None)
+        self.ledger_consumer = ledger_consumer
 
     def run_once(self, *, queue_name: str = QueueName.SAT_REQUEST.value) -> WorkerReport:
         self._record_heartbeat()
@@ -132,6 +135,11 @@ class RecoveryWorker:
                 if report.processed or not report.detail.startswith("No "):
                     return report
             return WorkerReport(processed=0, detail="No worker queue message available.")
+        if self.ledger_consumer is not None and queue_name in {
+            QueueName.CFDI_PARSE_METADATA.value,
+            QueueName.CFDI_PARSE_XML.value,
+        }:
+            return self._run_ledger_once(queue_name)
         consume_reliably = getattr(self.service.queue, "consume_one_reliably", None)
         if consume_reliably is not None:
             outcome = consume_reliably(queue_name, self._handle)
@@ -145,6 +153,28 @@ class RecoveryWorker:
             reason = outcome.reason_code or "unclassified_failure"
             return WorkerReport(processed=0, detail=f"Delivery moved to dead letter with redacted reason: {reason}.")
         raise RuntimeError("Queue adapter does not support reliable consumption.")
+
+    def _run_ledger_once(self, queue_name: str) -> WorkerReport:
+        """Consume a durable parse delivery; legacy queues remain unchanged."""
+
+        assert self.ledger_consumer is not None
+        consume_reliably = getattr(self.service.queue, "consume_one_reliably", None)
+        if consume_reliably is None:
+            raise RuntimeError("Queue adapter does not support reliable consumption.")
+        outcome = consume_reliably(queue_name, self.ledger_consumer.handle)
+        if outcome is None:
+            return WorkerReport(processed=0, detail=f"No {queue_name} message available.")
+        if outcome.action is DeliveryAction.ACK:
+            result = outcome.result
+            if isinstance(result, LedgerConsumerReport):
+                return WorkerReport(
+                    processed=1 if result.status == "succeeded" else 0,
+                    detail=f"Ledger parse status={result.status}.",
+                )
+            return WorkerReport(processed=1, detail="Ledger parse delivery acknowledged.")
+        if outcome.action is DeliveryAction.RETRY:
+            return WorkerReport(processed=0, detail=f"Retry scheduled after classified reason: {outcome.reason_code or 'retry_scheduled'}.")
+        return WorkerReport(processed=0, detail=f"Delivery moved to dead letter with redacted reason: {outcome.reason_code or 'delivery_failed'}.")
 
     def _handle(self, message: QueueMessage) -> WorkerReport:
         envelope = WorkerJobEnvelope.from_message(message)

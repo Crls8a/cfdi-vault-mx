@@ -105,7 +105,7 @@ human reviewer to follow one operation from the CLI to PostgreSQL and back:
 | Runbook step | Implementation | Durable contract |
 |---|---|---|
 | `campaign create`, `authorize`, `status` | `src/cfdi_vault/adapters/cli/sat_campaign.py`, `sat_campaign_authorize.py` → `sat_campaign_db_cli.py` | Campaign, windows, grants, and sanitized aggregates are PostgreSQL-backed. |
-| `campaign run` | `sat_campaign_run.py` → `run_from_environment()` | A grant and commit-bound campaign are validated before any live factory is built. |
+| `campaign run` | `sat_campaign_run.py` → `sat_campaign_db_cli.py::run_from_environment()` | A grant and commit-bound campaign are validated before any live factory is built. |
 | Select due work | `SatCampaignRepository.claim_due_operations()` | `next_check_at` must be due and `service_window_expires_at` must still be future; `FOR UPDATE SKIP LOCKED` creates the VERIFY claim. |
 | Prevent replacement requests | `SatCampaignRunner._submit_windows()` + `count_open_operations()` | Persisted open requests and unbound submit claims consume the two-operation ceiling. |
 | Contact and classify SAT | `SatCampaignRunner._verify_claim()` | One sanitized `sat_verify_attempts` row is appended per claim; `5000`, `5004`, expiry, timeout, and package outcomes remain categorized. |

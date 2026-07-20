@@ -15,6 +15,7 @@ from zipfile import BadZipFile, ZipFile
 from cfdi_vault.domain import QueueMessage
 from cfdi_vault.metadata_parser import FIELD_ALIASES, REQUIRED_METADATA_FIELDS
 from cfdi_vault.sat_artifact_store import StoredArtifact, write_artifact
+from cfdi_vault.sat_campaign_ledger_handoff import DurableArtifactJobHandoff
 from cfdi_vault.sat_campaign_repository import SatCampaignRepository
 
 
@@ -30,10 +31,14 @@ class SatCampaignArtifactCoordinator:
     """Persist package bytes externally, then register only safe metadata."""
 
     def __init__(self, repository: SatCampaignRepository, storage_root: str,
-                 job_publisher: Callable[[QueueMessage], None] | None = None) -> None:
+                 job_publisher: Callable[[QueueMessage], None] | None = None,
+                 durable_handoff: DurableArtifactJobHandoff | None = None) -> None:
         self._repository = repository
         self._storage_root = storage_root
         self._job_publisher = job_publisher
+        if durable_handoff is not None and job_publisher is not None:
+            raise ValueError("durable handoff and legacy publisher are mutually exclusive")
+        self._durable_handoff = durable_handoff
 
     def store_package(
         self,
@@ -73,6 +78,11 @@ class SatCampaignArtifactCoordinator:
             or self._repository.get_campaign_ref_for_request(request_id) != campaign_ref
         ):
             raise CampaignArtifactError("download-claim-invalid")
+        atomic_record = getattr(self._repository, "record_artifact_with_durable_handoff", None)
+        if self._durable_handoff is not None and not callable(atomic_record):
+            # Fail before claiming or writing bytes; a durable handoff must
+            # never leave an external ZIP without its database outbox rows.
+            raise CampaignArtifactError("durable-handoff-transaction-unavailable")
         claim = None
         if claim_ref is None:
             claim = self._repository.claim_operation(
@@ -118,23 +128,41 @@ class SatCampaignArtifactCoordinator:
             artifact_ref = _campaign_artifact_ref(
                 campaign_ref, work_ref, kind, stored.sha256,
             )
-            artifact = self._repository.record_artifact(
-                campaign_ref=campaign_ref,
-                window_ref=work_ref,
-                artifact_ref=artifact_ref,
-                kind=kind,
-                storage_key=stored.relative_key,
-                sha256=stored.sha256,
-                size_bytes=stored.byte_count,
-                validation_status="valid",
-                counts={},
-                now=current,
-            )
-            # Publish while the download claim is still non-terminal.  A
-            # broker failure therefore cannot leave a successfully committed
-            # package with no parsing handoff; the uncertainty handler can
-            # quarantine the still-open claim for manual reconciliation.
-            if self._job_publisher is not None:
+            if self._durable_handoff is not None and callable(atomic_record):
+                # The repository commits artifact metadata and ledger rows in
+                # one transaction. Broker publication is intentionally after
+                # this call returns, so a failed publish leaves a durable
+                # outbox event for a later one-shot dispatcher.
+                artifact = atomic_record(
+                    campaign_ref=campaign_ref,
+                    window_ref=work_ref,
+                    artifact_ref=artifact_ref,
+                    kind=kind,
+                    storage_key=stored.relative_key,
+                    sha256=stored.sha256,
+                    size_bytes=stored.byte_count,
+                    validation_status="valid",
+                    counts={},
+                    tenant_id=request.tenant_id,
+                    handoff=self._durable_handoff,
+                    now=current,
+                )
+                self._durable_handoff.publish_after_commit(now=current)
+            else:
+                # Keep the explicit pre-V6 adapter path working for fakes.
+                artifact = self._repository.record_artifact(
+                    campaign_ref=campaign_ref,
+                    window_ref=work_ref,
+                    artifact_ref=artifact_ref,
+                    kind=kind,
+                    storage_key=stored.relative_key,
+                    sha256=stored.sha256,
+                    size_bytes=stored.byte_count,
+                    validation_status="valid",
+                    counts={},
+                    now=current,
+                )
+            if self._durable_handoff is None and self._job_publisher is not None:
                 from cfdi_vault.sat_campaign_jobs import publish_artifact_parse_job
 
                 publish_artifact_parse_job(

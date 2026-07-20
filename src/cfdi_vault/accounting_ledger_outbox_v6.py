@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import Column, DateTime, Integer, MetaData, SmallInteger, String, Table, select, update
@@ -121,6 +122,34 @@ class LedgerOutboxStoreMixin:
         available_at: datetime | None = None,
     ) -> bool:
         """Insert one broker handoff, returning false for an idempotent duplicate."""
+        with self._engine.begin() as connection:
+            return self.create_outbox_event_on_connection(
+                connection,
+                event_id=event_id,
+                job_id=job_id,
+                event_type=event_type,
+                routing_key=routing_key,
+                idempotency_key=idempotency_key,
+                schema_version=schema_version,
+                available_at=available_at,
+            )
+
+    def create_outbox_event_on_connection(
+        self,
+        connection: Any,
+        *,
+        event_id: str,
+        job_id: str,
+        event_type: str,
+        routing_key: str,
+        idempotency_key: str,
+        schema_version: int = 1,
+        available_at: datetime | None = None,
+    ) -> bool:
+        """Insert an outbox event on a caller-owned transaction connection."""
+
+        if type(schema_version) is not int or schema_version <= 0:
+            raise ValueError("ledger schema_version must be positive")
         values = {
             "event_id": _ref("event_id", event_id, 96),
             "job_id": _ref("job_id", job_id, 96),
@@ -130,13 +159,10 @@ class LedgerOutboxStoreMixin:
             "schema_version": schema_version,
             "available_at": _stamp(available_at),
         }
-        if type(schema_version) is not int or schema_version <= 0:
-            raise ValueError("ledger schema_version must be positive")
-        with self._engine.begin() as connection:
-            result = connection.execute(
-                pg_insert(_OUTBOX).values(values).on_conflict_do_nothing().returning(_OUTBOX.c.event_id)
-            )
-            return result.scalar_one_or_none() is not None
+        result = connection.execute(
+            pg_insert(_OUTBOX).values(values).on_conflict_do_nothing().returning(_OUTBOX.c.event_id)
+        )
+        return result.scalar_one_or_none() is not None
 
     def claim_outbox_event(self, now: datetime, worker_ref: str, lease: timedelta) -> OutboxClaim | None:
         """Claim one due event before publishing it to a broker."""

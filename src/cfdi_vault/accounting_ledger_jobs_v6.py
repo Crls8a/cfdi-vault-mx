@@ -199,7 +199,45 @@ class LedgerJobStoreV6(LedgerDispatchStoreMixin, LedgerOutboxStoreMixin, LedgerJ
         max_attempts: int = 3,
         aggregate_counts: Mapping[str, Any] | None = None,
     ) -> bool:
-        values = {
+        values = self._job_values(
+            job_id=job_id,
+            tenant_id=tenant_id,
+            job_type=job_type,
+            queue_name=queue_name,
+            artifact_ref=artifact_ref,
+            idempotency_key=idempotency_key,
+            available_at=available_at,
+            max_attempts=max_attempts,
+            aggregate_counts=aggregate_counts,
+        )
+        with self._engine.begin() as connection:
+            return self.create_job_on_connection(connection, **values)
+
+    def create_job_on_connection(self, connection: Any, **kwargs: object) -> bool:
+        """Insert a job on a caller-owned transaction connection."""
+
+        values = self._job_values(**kwargs)
+        result = connection.execute(
+            pg_insert(_JOBS).values(values).on_conflict_do_nothing().returning(_JOBS.c.job_id)
+        )
+        return result.scalar_one_or_none() is not None
+
+    @staticmethod
+    def _job_values(
+        *,
+        job_id: str,
+        tenant_id: str,
+        job_type: str,
+        queue_name: str,
+        artifact_ref: str | None,
+        idempotency_key: str,
+        available_at: datetime | None = None,
+        max_attempts: int = 3,
+        aggregate_counts: Mapping[str, Any] | None = None,
+    ) -> dict[str, object]:
+        if type(max_attempts) is not int or max_attempts <= 0:
+            raise ValueError("ledger max_attempts must be positive")
+        return {
             "job_id": _ref("job_id", job_id, 96),
             "tenant_id": _ref("tenant_id", tenant_id, 64),
             "job_type": _ref("job_type", job_type, 64),
@@ -210,13 +248,6 @@ class LedgerJobStoreV6(LedgerDispatchStoreMixin, LedgerOutboxStoreMixin, LedgerJ
             "max_attempts": max_attempts,
             "aggregate_counts": _counts(aggregate_counts),
         }
-        if type(max_attempts) is not int or max_attempts <= 0:
-            raise ValueError("ledger max_attempts must be positive")
-        with self._engine.begin() as connection:
-            result = connection.execute(
-                pg_insert(_JOBS).values(values).on_conflict_do_nothing().returning(_JOBS.c.job_id)
-            )
-            return result.scalar_one_or_none() is not None
 
     def _expire_claims(self, connection: Any, now: datetime) -> None:
         rows = connection.execute(

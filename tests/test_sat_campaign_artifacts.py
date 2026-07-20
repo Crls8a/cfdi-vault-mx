@@ -4,14 +4,18 @@ from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
+from cfdi_vault.accounting_ledger_jobs_v6 import LedgerJobStoreV6
 from cfdi_vault.db import create_engine_from_url, create_session_factory
+from cfdi_vault.ledger_outbox_publisher import LedgerOutboxPublisher
 from cfdi_vault.recovery_db import SatArtifactRecord, SatClaimRecord, SatPackageRecord, Tenant
 from cfdi_vault.sat_campaign_artifacts import CampaignArtifactError, SatCampaignArtifactCoordinator
+from cfdi_vault.sat_campaign_ledger_handoff import DurableArtifactJobHandoff
 from cfdi_vault.sat_campaign_repository import SatCampaignRepository
 
 NOW = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
@@ -73,6 +77,87 @@ def test_package_bytes_stay_external_and_are_registered_as_metadata(artifact_con
         assert package.download_state == "downloaded"
         assert artifact.validation_status == "valid"
         assert artifact.counts == {}
+
+
+@pytest.mark.integration
+def test_durable_handoff_creates_ledger_job_and_outbox_without_legacy_publish(artifact_context) -> None:
+    repository, campaign_ref, work_ref, request_id, root = artifact_context
+    engine = repository._session_factory.kw["bind"]  # noqa: SLF001
+    store = LedgerJobStoreV6(engine)
+    published = []
+
+    class QueuePublisher:
+        def publish(self, message):  # type: ignore[no-untyped-def]
+            published.append(message)
+            return True
+
+    handoff = DurableArtifactJobHandoff(
+        store=store,
+        publisher=LedgerOutboxPublisher(store=store, publisher=QueuePublisher()),
+    )
+    legacy_calls = []
+    payload = BytesIO()
+    with ZipFile(payload, "w", ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "metadata.txt",
+            "uuid~rfcEmisor~rfcReceptor~fechaEmision~estadoComprobante~tipoComprobante\n"
+            "synthetic~synthetic~synthetic~2026-01-01~Vigente~I\n",
+        )
+    SatCampaignArtifactCoordinator(
+        repository,
+        str(root),
+        durable_handoff=handoff,
+    ).store_package(
+        campaign_ref=campaign_ref, work_ref=work_ref, request_id=request_id,
+        package_ref="package-durable", ordinal=1, kind="metadata_zip",
+        chunks=(payload.getvalue(),), max_bytes=1024, now=NOW,
+    )
+    assert not legacy_calls
+    assert len(published) == 1
+    with engine.connect() as connection:
+        job_count = connection.execute(
+            text("SELECT count(*) FROM ledger_jobs WHERE tenant_id = :tenant"),
+            {"tenant": "artifact-tenant"},
+        ).scalar_one()
+        outbox_count = connection.execute(
+            text("SELECT count(*) FROM ledger_outbox"),
+        ).scalar_one()
+    # The artifact reference is intentionally opaque; inspect only aggregate
+    # durable counts and the reference-only broker envelope.
+    assert int(job_count) == 1
+    assert int(outbox_count) == 1
+
+
+def test_durable_handoff_capability_fails_before_external_write(tmp_path: Path) -> None:
+    class Repository:
+        def get_request(self, _request_id: int):
+            return SimpleNamespace(work_ref="window", tenant_id="tenant", grant_ref=None)
+
+        def get_campaign_ref_for_request(self, _request_id: int) -> str:
+            return "campaign"
+
+        def claim_operation(self, **_kwargs: object):  # type: ignore[no-untyped-def]
+            raise AssertionError("claim must not be created before capability validation")
+
+    class Store:
+        def create_job(self, **_kwargs: object) -> bool:
+            return True
+
+        def create_outbox_event(self, **_kwargs: object) -> bool:
+            return True
+
+    coordinator = SatCampaignArtifactCoordinator(
+        Repository(), str(tmp_path), durable_handoff=DurableArtifactJobHandoff(Store()),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(CampaignArtifactError, match="durable-handoff-transaction-unavailable"):
+        coordinator.store_package(
+            campaign_ref="campaign", work_ref="window", request_id=1,
+            package_ref="package", ordinal=1, kind="metadata_zip",
+            chunks=(b"not-written",), max_bytes=1024, now=NOW,
+        )
+
+    assert not tuple(tmp_path.rglob("*"))
 
 
 @pytest.mark.integration
