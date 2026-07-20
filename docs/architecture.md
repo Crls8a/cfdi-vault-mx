@@ -24,6 +24,7 @@ Future FastAPI boundary -----------------------^
 | `db.py` | PostgreSQL engine and base model setup. | Requires explicit `DATABASE_URL`. |
 | `recovery_db.py` | Recovery/accounting tables. | PostgreSQL runtime schema. |
 | `queueing.py` | In-memory test queue and RabbitMQ adapter. | Queue messages carry IDs/references, not raw XML or secrets. |
+| `ledger_outbox_service.py` | Restartable PostgreSQL outbox drain used by the separate `ledger-publisher` Compose service. | Reads durable jobs/outbox rows, publishes reference-only envelopes, and never contacts SAT. |
 | `cache.py` | In-memory test cache and Redis adapter. | Transient state only. |
 | `tests/` | Regression contract. | Synthetic data only; database tests use PostgreSQL. |
 
@@ -47,6 +48,7 @@ Future FastAPI boundary -----------------------^
 | Typer CLI | Keeps workflows scriptable and testable before UI concerns. |
 | CLI adapter family split | Keeps command ownership explicit and prevents a root `cli.py` God object. |
 | FastAPI boundary planned | Stored XML/package references should enter gradual ingestion through an API/queue/worker boundary. |
+| Durable handoff before broker I/O | Producers commit `ledger_jobs` and `ledger_outbox` together; the publisher claims/fences an outbox row before RabbitMQ confirms it. | A restart resumes durable state without Redis or process-local truth. |
 | Parser is namespace-tolerant | CFDI prefixes can vary while local element names remain meaningful. |
 
 ## Next step

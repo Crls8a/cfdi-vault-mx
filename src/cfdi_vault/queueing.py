@@ -154,7 +154,11 @@ class RabbitMqQueue:
                     properties=self._message_properties(pika, message),
                     mandatory=True,
                 )
-                if confirmed is not True:
+                # Pika's BlockingChannel returns None after a successful
+                # publisher confirm in current releases; negative confirms
+                # raise an exception. Only an explicit False is a failed
+                # confirmation.
+                if confirmed is False:
                     raise RuntimeError("queue initial publish was not confirmed")
             except RuntimeError:
                 raise
@@ -240,7 +244,7 @@ class RabbitMqQueue:
                         properties=self._message_properties(pika, retry),
                         mandatory=True,
                     )
-                    if confirmed is not True:
+                    if confirmed is False:
                         raise RuntimeError("retry publish was not confirmed")
                 except Exception:
                     channel.basic_nack(delivery_tag=method_frame.delivery_tag, requeue=True)
@@ -381,7 +385,7 @@ class RabbitMqQueue:
                 properties=pika.BasicProperties(**property_values),
                 mandatory=True,
             )
-            if confirmed is not True:
+            if confirmed is False:
                 raise RuntimeError("dead-letter publish was not confirmed")
         except Exception:
             channel.basic_nack(delivery_tag=delivery_tag, requeue=True)

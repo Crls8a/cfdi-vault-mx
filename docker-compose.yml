@@ -47,6 +47,28 @@ services:
       - ./logs:/app/logs
     command: ["worker", "run", "--loop", "--queue", "all"]
 
+  ledger-publisher:
+    build: .
+    entrypoint: ["python"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://cfdi_vault:cfdi_vault@postgres:5432/cfdi_vault}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cfdi_vault:cfdi_vault@rabbitmq:5672/}
+      LEDGER_OUTBOX_ENABLED: ${LEDGER_OUTBOX_ENABLED:-0}
+      LEDGER_OUTBOX_POLL_SECONDS: ${LEDGER_OUTBOX_POLL_SECONDS:-5}
+      LEDGER_OUTBOX_MAX_EVENTS: ${LEDGER_OUTBOX_MAX_EVENTS:-100}
+      LEDGER_OUTBOX_WORKER_REF: ${LEDGER_OUTBOX_WORKER_REF:-ledger-outbox-worker}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    command: ["-m", "cfdi_vault.ledger_outbox_service", "--loop"]
+
   sat-monitor:
     build: .
     entrypoint: ["python"]

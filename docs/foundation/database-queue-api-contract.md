@@ -49,10 +49,10 @@ Variable CFDI/complement payloads use PostgreSQL `JSONB` so new CFDI versions ca
 | Order | Queue | Current status | Purpose | Producer | Consumer |
 |---:|---|---|---|---|---|
 | 1 | `sat.request` | Implemented | Durable handoff for SAT request criteria. | CLI/API orchestration | Worker |
-| 2 | `sat.verify` | Audited as event today | Track verification attempts and outcomes. | Worker | Worker/retry policy |
-| 3 | `sat.download` | Audited as event today | Track package download attempts and stored ZIP references. | Worker | Worker/retry policy |
-| 4 | `cfdi.parse.metadata` | Audited as event today | Parse SAT metadata and update metadata ledger/document placeholders. | Worker | Worker |
-| 5 | `cfdi.parse.xml` | Planned target for post-XML ingestion | Parse stored XML evidence into normalized CFDI rows. | FastAPI ingestion API | Worker |
+| 2 | `sat.verify` | SAT runner state | Track verification attempts and outcomes in PostgreSQL; not a raw broker payload. | SAT runner | SAT runner/retry policy |
+| 3 | `sat.download` | SAT runner state | Track package download attempts and stored ZIP references in PostgreSQL/storage. | SAT runner | SAT runner/retry policy |
+| 4 | `cfdi.parse.metadata` | V6/V7 durable handoff | Parse stored metadata references through the PostgreSQL job, outbox, inbox, and worker path. | SAT artifact coordinator | Ledger worker |
+| 5 | `cfdi.parse.xml` | V6/V7 durable handoff | Parse stored XML references through the same durable worker path. | SAT artifact coordinator/API | Ledger worker |
 | 6 | `cfdi.reconcile` | Audited as event today | Reconcile metadata, XML evidence, cancellations, and final states. | Worker/API | Worker |
 | 7 | `cfdi.export` | Planned | Offload large export jobs. | CLI/API | Worker |
 | 8 | `dead.letter` | Planned | Hold failed jobs after retry policy is exhausted. | Worker | Operator/retry tooling |

@@ -2,7 +2,8 @@
 
 The mixin is deliberately separate from job claiming so broker handoff can be
 tested and operated independently. It stores only opaque references and fixed
-reason codes; RabbitMQ integration belongs to a later phase.
+reason codes; the dedicated outbox drain owns RabbitMQ publication and can
+resume queued or retryable rows after a process restart.
 """
 
 from __future__ import annotations
@@ -21,6 +22,10 @@ from cfdi_vault.queue_safety import validate_reason_code, validate_reference_str
 
 _METADATA = MetaData()
 _REASON = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
+# Keep publisher retry timing aligned with the reference queue contract while
+# retaining ambiguous broker outcomes as pending.  The delay caps at five
+# minutes; inbox deduplication makes an eventual duplicate safe.
+_OUTBOX_RETRY_DELAYS = (5, 30, 300)
 _OUTBOX = Table(
     "ledger_outbox",
     _METADATA,
@@ -248,12 +253,32 @@ class LedgerOutboxStoreMixin:
     def mark_outbox_failed(
         self, event_id: str, claim_id: str, reason_code: str, *, now: datetime | None = None
     ) -> bool:
-        """Record a retryable, categorized publish failure."""
+        """Record a categorized publish failure with bounded retry timing.
+
+        ``publish_attempts`` is incremented when a claim is acquired.  The
+        Failed claims remain retryable with a fixed 5s/30s/5m capped delay;
+        ambiguous broker outcomes are intentionally never promoted to terminal
+        state because the message may have been accepted before confirmation
+        failed. The inbox deduplicates a later duplicate delivery.
+        """
         stamp = _stamp(now)
         event_id = _ref("event_id", event_id, 96)
         claim_id = _ref("claim_id", claim_id, 96)
         reason_code = _reason(reason_code)
         with self._engine.begin() as connection:
+            row = connection.execute(
+                select(_OUTBOX.c.publish_attempts)
+                .where(
+                    _OUTBOX.c.event_id == event_id,
+                    _OUTBOX.c.claim_id == claim_id,
+                    _OUTBOX.c.status == "claimed",
+                )
+                .with_for_update()
+            ).first()
+            if row is None:
+                return False
+            attempts = int(row.publish_attempts)
+            retry_delay = _OUTBOX_RETRY_DELAYS[min(max(attempts - 1, 0), len(_OUTBOX_RETRY_DELAYS) - 1)]
             return (
                 connection.execute(
                     update(_OUTBOX)
@@ -268,7 +293,7 @@ class LedgerOutboxStoreMixin:
                         lease_until=None,
                         claim_id=None,
                         claimed_by=None,
-                        available_at=stamp,
+                        available_at=stamp + timedelta(seconds=retry_delay),
                         updated_at=stamp,
                     )
                 ).rowcount

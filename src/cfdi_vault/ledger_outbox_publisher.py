@@ -77,7 +77,13 @@ class OutboxPublishFailure(Exception):
 
 
 class OutboxPublishAmbiguous(Exception):
-    """A broker outcome that cannot safely be retried automatically."""
+    """A broker outcome whose confirmation is unknown.
+
+    The durable publisher records this outcome as retryable ``failed`` state.
+    The exception remains a separate type so queue adapters can distinguish an
+    ambiguous confirmation from a broker rejection, but it is never promoted
+    to a terminal outbox state by this publisher.
+    """
 
     def __init__(self, reason_code: str = "publish_uncertain") -> None:
         self.reason_code = _reason(reason_code)
@@ -135,30 +141,41 @@ class LedgerOutboxPublisher:
         try:
             envelope = self._envelope(claim, now)
         except (TypeError, ValueError):
-            if not self.store.mark_outbox_failed(claim.event_id, claim.claim_id, "invalid_reference", now=now):
+            # A malformed envelope cannot become valid on a later retry and
+            # must not spin the publisher forever.  Fence it as terminal
+            # ``uncertain`` (manual review) before any broker I/O.
+            if not self.store.mark_outbox_uncertain(claim.event_id, claim.claim_id, "invalid_reference", now=now):
                 return PublisherReport("stale", "stale_claim")
             return PublisherReport("invalid", "invalid_reference")
 
         try:
             confirmed = self.publisher.publish(envelope)
             if confirmed is not True:
-                if not self.store.mark_outbox_uncertain(claim.event_id, claim.claim_id, "publish_uncertain", now=now):
+                # Lack of a positive broker confirmation is retryable.  The
+                # message may already exist, so consumers must deduplicate it
+                # through the durable inbox on a later attempt.
+                if not self.store.mark_outbox_failed(claim.event_id, claim.claim_id, "publish_uncertain", now=now):
                     return PublisherReport("stale", "stale_claim")
-                return PublisherReport("uncertain", "publish_uncertain")
+                return PublisherReport("failed", "publish_uncertain")
         except OutboxPublishFailure as exc:
             if not self.store.mark_outbox_failed(claim.event_id, claim.claim_id, exc.reason_code, now=now):
                 return PublisherReport("stale", "stale_claim")
             return PublisherReport("failed", exc.reason_code)
         except (OutboxPublishAmbiguous, TimeoutError):
-            if not self.store.mark_outbox_uncertain(claim.event_id, claim.claim_id, "publish_uncertain", now=now):
+            # A connection can fail after the broker accepted the message.
+            # Keep the event retryable; durable inbox dedupe handles a later
+            # duplicate delivery.  ``mark_outbox_uncertain`` remains on the
+            # store port for older callers, but this path must not close it.
+            if not self.store.mark_outbox_failed(claim.event_id, claim.claim_id, "publish_uncertain", now=now):
                 return PublisherReport("stale", "stale_claim")
-            return PublisherReport("uncertain", "publish_uncertain")
+            return PublisherReport("failed", "publish_uncertain")
         except Exception:
             # Any transport exception can happen after the broker accepted the
-            # message.  Never retry automatically or claim it was published.
-            if not self.store.mark_outbox_uncertain(claim.event_id, claim.claim_id, "publish_uncertain", now=now):
+            # message.  Keep it pending and rely on inbox dedupe if it was
+            # accepted; never claim it was published or make it terminal.
+            if not self.store.mark_outbox_failed(claim.event_id, claim.claim_id, "publish_uncertain", now=now):
                 return PublisherReport("stale", "stale_claim")
-            return PublisherReport("uncertain", "publish_uncertain")
+            return PublisherReport("failed", "publish_uncertain")
 
         if not self.store.mark_outbox_published(claim.event_id, claim.claim_id, now=now):
             return PublisherReport("stale", "stale_claim")

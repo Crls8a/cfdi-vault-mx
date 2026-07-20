@@ -103,13 +103,13 @@ def test_known_publish_failure_is_categorized_and_fenced(error: Exception) -> No
 
 
 @pytest.mark.parametrize("error", [TimeoutError(), OutboxPublishAmbiguous()])
-def test_ambiguous_confirmation_is_uncertain_and_not_retried(error: Exception) -> None:
+def test_ambiguous_confirmation_remains_retryable(error: Exception) -> None:
     store = FakeStore()
     broker = FakePublisher(error)
     result = _publisher(store, broker).run_once(now=NOW, worker_ref="publisher-synthetic")
 
-    assert result.as_dict() == {"status": "uncertain", "reason_code": "publish_uncertain"}
-    assert store.calls[-1][0] == "uncertain"
+    assert result.as_dict() == {"status": "failed", "reason_code": "publish_uncertain"}
+    assert store.calls[-1][0] == "failed"
 
 
 def test_stale_fencing_result_never_reports_published() -> None:
@@ -121,14 +121,14 @@ def test_stale_fencing_result_never_reports_published() -> None:
     assert result.reason_code == "stale_claim"
 
 
-def test_unconfirmed_publish_is_uncertain_and_not_marked_published() -> None:
+def test_unconfirmed_publish_remains_retryable_and_not_marked_published() -> None:
     store = FakeStore()
     broker = FakePublisher(confirmed=None)
 
     result = _publisher(store, broker).run_once(now=NOW, worker_ref="publisher-synthetic")
 
-    assert result.as_dict() == {"status": "uncertain", "reason_code": "publish_uncertain"}
-    assert store.calls[-1][0] == "uncertain"
+    assert result.as_dict() == {"status": "failed", "reason_code": "publish_uncertain"}
+    assert store.calls[-1][0] == "failed"
 
 
 def test_failed_close_is_reported_as_stale() -> None:
@@ -140,8 +140,8 @@ def test_failed_close_is_reported_as_stale() -> None:
     assert result.as_dict() == {"status": "stale", "reason_code": "stale_claim"}
 
 
-def test_failed_uncertain_close_is_reported_as_stale() -> None:
-    store = FakeStore(uncertain_result=False)
+def test_failed_ambiguous_close_is_reported_as_stale() -> None:
+    store = FakeStore(failure_result=False)
     broker = FakePublisher(error=TimeoutError())
 
     result = _publisher(store, broker).run_once(now=NOW, worker_ref="publisher-synthetic")
@@ -156,6 +156,7 @@ def test_parse_artifact_reference_is_required_before_broker_io() -> None:
 
     assert result.as_dict() == {"status": "invalid", "reason_code": "invalid_reference"}
     assert broker.messages == []
+    assert store.calls[-1][0] == "uncertain"
 
 
 def test_envelope_contains_only_reference_fields_and_redacts_repr() -> None:
@@ -193,7 +194,7 @@ def test_dispatch_metadata_mismatch_is_rejected_before_broker_io() -> None:
 
     assert result.as_dict() == {"status": "invalid", "reason_code": "invalid_reference"}
     assert broker.messages == []
-    assert store.calls[-1][0] == "failed"
+    assert store.calls[-1][0] == "uncertain"
 
 
 def test_future_schema_version_is_rejected_before_broker_io() -> None:
@@ -220,14 +221,14 @@ def test_future_schema_version_is_rejected_before_broker_io() -> None:
     assert broker.messages == []
 
 
-def test_unclassified_broker_exception_is_uncertain() -> None:
+def test_unclassified_broker_exception_remains_retryable() -> None:
     store = FakeStore()
     broker = FakePublisher(Exception("transport detail must not escape"))
 
     result = _publisher(store, broker).run_once(now=NOW, worker_ref="publisher-synthetic")
 
-    assert result.as_dict() == {"status": "uncertain", "reason_code": "publish_uncertain"}
-    assert store.calls[-1][0] == "uncertain"
+    assert result.as_dict() == {"status": "failed", "reason_code": "publish_uncertain"}
+    assert store.calls[-1][0] == "failed"
 
 
 def test_no_due_event_does_not_touch_broker() -> None:

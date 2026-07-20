@@ -95,6 +95,45 @@ def test_outbox_does_not_claim_before_availability(reset_postgres_database: str)
     assert store.claim_outbox_event(now=NOW, worker_ref="publisher-synthetic", lease=timedelta(minutes=5)) is None
 
 
+def test_outbox_failure_uses_capped_backoff_and_remains_retryable(reset_postgres_database: str) -> None:
+    store = _seed(reset_postgres_database)
+    assert store.create_outbox_event(
+        event_id="backoff-event",
+        job_id="outbox-job",
+        event_type="metadata_parse",
+        routing_key="cfdi.parse.metadata",
+        idempotency_key="backoff-idem",
+        available_at=NOW,
+    )
+
+    first = store.claim_outbox_event(NOW, "publisher-synthetic", timedelta(minutes=5))
+    assert first is not None
+    assert store.mark_outbox_failed(first.event_id, first.claim_id, "publish_uncertain", now=NOW)
+    assert store.claim_outbox_event(NOW + timedelta(seconds=4), "publisher-synthetic", timedelta(minutes=5)) is None
+
+    second_time = NOW + timedelta(seconds=5)
+    second = store.claim_outbox_event(second_time, "publisher-synthetic", timedelta(minutes=5))
+    assert second is not None
+    assert store.mark_outbox_failed(second.event_id, second.claim_id, "publish_uncertain", now=second_time)
+    assert (
+        store.claim_outbox_event(second_time + timedelta(seconds=29), "publisher-synthetic", timedelta(minutes=5))
+        is None
+    )
+
+    third_time = second_time + timedelta(seconds=30)
+    third = store.claim_outbox_event(third_time, "publisher-synthetic", timedelta(minutes=5))
+    assert third is not None
+    assert store.mark_outbox_failed(third.event_id, third.claim_id, "publish_uncertain", now=third_time)
+    assert (
+        store.claim_outbox_event(
+            third_time + timedelta(minutes=4, seconds=59), "publisher-synthetic", timedelta(minutes=5)
+        )
+        is None
+    )
+    fourth = store.claim_outbox_event(third_time + timedelta(minutes=5), "publisher-synthetic", timedelta(minutes=5))
+    assert fourth is not None
+
+
 def test_expired_outbox_claim_cannot_fence_new_owner(reset_postgres_database: str) -> None:
     store = _seed(reset_postgres_database)
     assert store.create_outbox_event(

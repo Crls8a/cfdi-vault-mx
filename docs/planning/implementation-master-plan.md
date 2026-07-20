@@ -38,7 +38,7 @@ flowchart TD
 | Data agent | `feature/postgres-...` | Flyway migrations, evidence metadata, accounting/search indexes, repository tests. | Storage, parser, API. | Store raw XML/ZIP bytes in PostgreSQL. |
 | Storage agent | `feature/storage-...` | Storage port, object keys, filesystem parity, MinIO adapter tests. | Data, API, worker. | Make MinIO a required library/runtime dependency. |
 | Queue/worker agent | `feature/rabbitmq-...` | RabbitMQ exchanges, routing keys, retry, DLQ, worker job contracts. | Cache, API, data. | Put raw XML, ZIPs, SOAP bodies, or secrets on queues. |
-| Cache/worker agent | `feature/redis-...` | Redis progress, locks, heartbeat, stale worker detection. | Queue, CLI. | Treat Redis as source of truth. |
+| Cache/worker agent | `feature/redis-...` | Redis progress, locks, heartbeat, stale worker detection. | Queue, CLI. | Keep Redis transient; PostgreSQL remains the durable source of truth. |
 | API agent | `feature/api-...` | FastAPI stored-reference contract and enqueue endpoint. | Storage, queue, data. | Parse XML or bulk-load accounting rows inline. |
 | Parser agent | `feature/parser-...` | CFDI version detector, extractors, complement registry, fixture matrix. | Data, storage, QA. | Delete evidence or hide unknown complements. |
 | SAT library agent | `feature/sat-v15-...` | Import-first SAT v1.5 public facade, typed results, ports, fake/offline adapters. | Architecture, QA, release. | Promote live probes or e.firma handling as stable API. |

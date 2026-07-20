@@ -110,5 +110,8 @@ not the spoofed envelope value, is recorded as the origin.
   `CFDI_VAULT_TEST_RABBITMQ_URL` points to a dedicated test broker; CI provides
   that broker and installs the infrastructure dependencies.
 - No MinIO, API/E2E, Redis implementation, or live SAT dependency is added.
-- Durable idempotency, persisted delivery audit, progress, locks, and heartbeat
-  remain later gated work.
+- V6/V7 now provide durable job claims, outbox publication fencing, inbox
+  deduplication, and terminal result state in PostgreSQL. Redis progress,
+  locks, and heartbeat remain transient operational observations; the
+  PostgreSQL/RabbitMQ integration gate is still required before production
+  activation.

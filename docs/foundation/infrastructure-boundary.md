@@ -27,8 +27,9 @@ CFDI Vault MX recovery work uses PostgreSQL as the durable source of truth, Rabb
 | `minio` | Optional S3-compatible object-storage lab for future storage-port adapter work. It is isolated behind the `object-storage` Compose profile. |
 | `minio-create-bucket` | Optional one-shot bucket bootstrap for the local evidence bucket. |
 | `app` | CLI/container entrypoint for operator commands and future API-adjacent orchestration. |
-| `worker` | Queue consumer process. Current implementation is a worker shell; retry/DLQ policy is still planned. |
-| `./storage:/app/storage` | Host-visible package/XML/evidence storage. |
+| `worker` | Queue consumer process for reference-only jobs; reliable at-least-once retry/DLQ handling and V6/V7 inbox/job claims are implemented, while live container verification remains a gate. |
+| `ledger-publisher` | Durable PostgreSQL outbox drain that publishes opaque job references to RabbitMQ; disabled by default and independent from Redis, SAT monitor, and worker. |
+| `${CFDI_STORAGE_MOUNT:-sat_artifacts_data}:/var/lib/cfdi-vault/storage` | External/private package/XML/evidence storage; never the repository checkout. |
 | `./logs:/app/logs` | Host-visible runtime logs. |
 
 FastAPI is intentionally not a Compose service yet because the API code does not exist. Add an `api` service only when the FastAPI ingestion boundary is implemented and tested.
@@ -99,7 +100,7 @@ Redis must not store:
 - Expand Flyway migrations beyond the initial baseline as the model evolves.
 - Wire a storage-port object-key contract and MinIO adapter for S3-compatible local practice.
 - Add PostgreSQL full-text/trigram indexes where measured search needs justify them.
-- Implement RabbitMQ exchanges, routing keys, retry, and DLQ policy.
+- Expand RabbitMQ exchanges, routing keys, retry, and DLQ policy beyond the durable outbox publisher reference-only handoff.
 - Add the FastAPI ingestion service and its request/response contract.
 - Move heavy XML normalization behind the API/queue/worker boundary.
-- Add worker heartbeat and Redis lock/rate-limit behavior.
+- Extend worker heartbeat/read-model and Redis lock/rate-limit behavior beyond the implemented lifecycle/monitor lease contracts.

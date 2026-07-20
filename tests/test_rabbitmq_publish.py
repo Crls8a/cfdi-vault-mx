@@ -24,11 +24,10 @@ def test_rabbit_initial_publish_rejects_negative_confirm(monkeypatch: pytest.Mon
         adapter.publish(message())
 
 
-def test_rabbit_initial_publish_rejects_missing_confirm(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rabbit_initial_publish_accepts_pika_none_confirm(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter, _channel = rabbit(monkeypatch, message(), confirm_result=None)
 
-    with pytest.raises(RuntimeError, match="initial publish was not confirmed"):
-        adapter.publish(message())
+    assert adapter.publish(message()) is True
 
 
 def test_rabbit_initial_publish_redacts_broker_exception(monkeypatch: pytest.MonkeyPatch) -> None:

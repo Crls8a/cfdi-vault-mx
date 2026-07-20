@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from cfdi_vault import queueing
 from cfdi_vault.domain import QueueMessage, QueueName
 from cfdi_vault.queue_contract import (
     DeadLetterRecord,
@@ -14,7 +15,6 @@ from cfdi_vault.queue_contract import (
     WorkerJobEnvelope,
     WorkerJobType,
 )
-
 
 NOW = datetime(2026, 7, 9, tzinfo=timezone.utc)
 
@@ -44,7 +44,10 @@ def test_queue_message_round_trip_preserves_versioned_delivery_metadata() -> Non
     assert restored.attempt == 0
 
 
-@pytest.mark.parametrize("field,value", [("attempt", True), ("attempt", 1.5), ("attempt", "1"), ("envelope_version", False), ("envelope_version", "1")])
+@pytest.mark.parametrize(
+    "field,value",
+    [("attempt", True), ("attempt", 1.5), ("attempt", "1"), ("envelope_version", False), ("envelope_version", "1")],
+)
 def test_queue_message_from_dict_rejects_coerced_integer_fields(field: str, value: object) -> None:
     payload = _message().as_dict()
     payload[field] = value
@@ -68,6 +71,38 @@ def test_retry_policy_is_bounded_and_backoff_is_representable() -> None:
     assert policy.delay_after_failure(0) == 5
     assert policy.delay_after_failure(1) == 30
     assert policy.delay_after_failure(2) is None
+
+
+def test_rabbit_publish_accepts_pika_none_after_confirm(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Channel:
+        def queue_declare(self, **_kwargs: object) -> None:
+            return None
+
+        def confirm_delivery(self) -> None:
+            return None
+
+        def basic_publish(self, **_kwargs: object) -> None:
+            # Pika 1.4 returns None after an accepted publisher confirm.
+            return None
+
+    class Connection:
+        def __init__(self) -> None:
+            self.channel_instance = Channel()
+
+        def channel(self) -> Channel:
+            return self.channel_instance
+
+        def close(self) -> None:
+            return None
+
+    class Pika:
+        URLParameters = staticmethod(lambda _url: object())
+        BlockingConnection = staticmethod(lambda _parameters: Connection())
+        BasicProperties = staticmethod(lambda **kwargs: kwargs)
+
+    monkeypatch.setattr(queueing, "_load_pika", lambda: Pika)
+
+    assert queueing.RabbitMqQueue("amqp://synthetic:synthetic@broker/").publish(_message()) is True
 
 
 def test_queue_audit_event_is_correlatable_and_redacted() -> None:
@@ -119,7 +154,9 @@ def test_worker_job_envelope_is_typed_reference_only_and_auditable() -> None:
     audit = envelope.audit_event(DeliveryAction.RETRY, reason_code="transport_unavailable", occurred_at=NOW)
 
     assert audit.as_dict()["reason_code"] == "transport_unavailable"
-    assert all(key not in envelope.as_dict() for key in ("payload", "rfc", "uuid", "criteria", "xml", "zip", "soap", "secret"))
+    assert all(
+        key not in envelope.as_dict() for key in ("payload", "rfc", "uuid", "criteria", "xml", "zip", "soap", "secret")
+    )
 
 
 @pytest.mark.parametrize("forbidden", ["rfc", "uuid", "criteria", "payload", "xml", "zip", "soap", "token", "secret"])
@@ -142,9 +179,7 @@ def test_worker_job_envelope_from_dict_rejects_non_reference_fields(forbidden: s
         ("profile_id", '{"criteria":{"requester_rfc":"XAXX010101000"}}'),
     ],
 )
-def test_worker_job_envelope_rejects_sensitive_content_inside_allowed_reference_fields(
-    field: str, value: str
-) -> None:
+def test_worker_job_envelope_rejects_sensitive_content_inside_allowed_reference_fields(field: str, value: str) -> None:
     payload = WorkerJobEnvelope.from_message(_message()).as_dict()
     payload[field] = value
 

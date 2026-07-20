@@ -56,6 +56,47 @@ retry/dead-letter result; claims, results, inbox dedupe, and outbox state remain
 in PostgreSQL. Legacy process-local recovery may appear stale while Redis is
 unavailable, so its operational view must not override durable V6/V7 state.
 
+## Durable outbox publisher
+
+`ledger-publisher` is a separate Compose process for the producer handoff:
+
+```text
+producer transaction -> ledger_jobs + ledger_outbox -> ledger-publisher -> RabbitMQ -> worker
+```
+
+The process resolves only `DATABASE_URL`, `RABBITMQ_URL`, and bounded
+`LEDGER_OUTBOX_*` settings. PostgreSQL remains the source of truth; RabbitMQ
+receives the existing reference-only envelope. The publisher never constructs a
+SAT adapter, reads credentials, opens artifact storage, or sends package bytes.
+It depends on healthy PostgreSQL/RabbitMQ and successful Flyway completion, but
+does not depend on Redis or the worker container.
+
+The Compose gate `LEDGER_OUTBOX_ENABLED` defaults to `0`, so a normal local
+stack cannot publish queued work accidentally. Set it to `1` only after the
+operator has reviewed the commit and wants the service enabled. `--once` drains
+one bounded batch; Compose uses `--loop`, which wakes at
+`LEDGER_OUTBOX_POLL_SECONDS` and publishes at most `LEDGER_OUTBOX_MAX_EVENTS`
+rows per pass. A restart simply reclaims expired durable leases; it does not
+need local state and does not contact SAT.
+
+An unconfirmed or ambiguous broker result is recorded as retryable `failed`
+with the fixed reason `publish_uncertain`. The next due attempt is scheduled
+after **5 seconds**, then **30 seconds**, then every **5 minutes**. It remains
+retryable indefinitely because the broker may have accepted the message before
+confirmation was lost; `ledger_inbox` is the durable dedupe boundary for that
+at-least-once delivery.
+An `invalid_reference` envelope is known-bad before broker I/O and is fenced
+immediately as terminal `uncertain`; it is never retried automatically.
+
+Runtime output is limited to `status`, counts, and fixed reason codes. Missing
+or malformed configuration produces a sanitized error and no broker contact;
+raw connection errors are never printed.
+
+The RabbitMQ adapter follows the installed Pika confirm contract: an explicit
+negative result or exception is a failure, while Pika's `None` return after a
+successful confirmed publish is accepted. This is covered by a synthetic
+broker run; it does not contact SAT.
+
 The command never prints RFCs, SAT request/package identifiers, work or recovery
 references, dates, hashes, rows, or storage paths. Missing or mismatched bound
 recovery state fails closed with `campaign-status-recovery-invalid`. Correct the
