@@ -78,9 +78,7 @@ def test_inbox_receipt_reclaims_unprocessed_delivery_after_lease(reset_postgres_
     first = store.register_inbox_event("reclaim-event", "ledger-worker", received_at=NOW)
     assert first.status == "new"
     assert store.register_inbox_event("reclaim-event", "ledger-worker", received_at=NOW).status == "in_flight"
-    reclaimed = store.register_inbox_event(
-        "reclaim-event", "ledger-worker", received_at=NOW + timedelta(minutes=31)
-    )
+    reclaimed = store.register_inbox_event("reclaim-event", "ledger-worker", received_at=NOW + timedelta(minutes=31))
     assert reclaimed.status == "reclaimed"
 
 
