@@ -125,9 +125,13 @@ Local evidence currently available:
 - full offline suite and targeted worker/outbox tests;
 - sensitive-fixture and SAT-context scanners;
 - focused Ruff/format checks and `git diff --check`;
-- fresh code review of lifecycle, fencing, redelivery, and redaction paths.
+- fresh code review of lifecycle, fencing, redelivery, and redaction paths;
+- `docker compose config` plus a disposable Compose run with PostgreSQL 16,
+  Flyway V1-V7, RabbitMQ, and Redis;
+- synthetic outbox publication through RabbitMQ, worker consumption, and
+  duplicate delivery deduplication in `ledger_inbox`.
 
-The Docker CLI is unavailable in the current environment, so Compose config,
-PostgreSQL 16 migration execution, RabbitMQ confirms, and restart tests remain
-explicitly unverified. They must pass before the separate human-gated SAT
-phase.
+The repository-wide Ruff command still reports the pre-existing legacy lint
+baseline outside this unit; all touched files pass focused Ruff and format
+checks. No SAT endpoint or credential was used. The separate human-gated SAT
+phase remains blocked until the global lint baseline is handled explicitly.
