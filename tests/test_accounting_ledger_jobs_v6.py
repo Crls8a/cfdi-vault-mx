@@ -118,6 +118,43 @@ def test_parse_identity_requires_canonical_job_type(reset_postgres_database: str
     assert not store.claim_parse_job(job, worker_ref="worker-synthetic", now=NOW).accepted
 
 
+def test_dispatch_metadata_requires_matching_job_and_outbox_identity(reset_postgres_database: str) -> None:
+    _tenant(reset_postgres_database)
+    store = _store(reset_postgres_database)
+    assert store.create_job(
+        job_id="job-dispatch",
+        tenant_id="ledger-synthetic",
+        job_type="metadata_parse",
+        queue_name="cfdi.parse.metadata",
+        artifact_ref="artifact-dispatch",
+        idempotency_key="dispatch-idem",
+        available_at=NOW,
+    )
+    assert store.create_outbox_event(
+        event_id="event-dispatch",
+        job_id="job-dispatch",
+        event_type="metadata_parse",
+        routing_key="cfdi.parse.metadata",
+        idempotency_key="dispatch-idem",
+        available_at=NOW,
+    )
+    metadata = store.get_dispatch_metadata("event-dispatch", "job-dispatch")
+    assert metadata is not None
+    assert metadata.artifact_ref == "artifact-dispatch"
+    assert metadata.schema_version == 1
+    assert "artifact-dispatch" not in repr(metadata)
+
+    assert store.create_outbox_event(
+        event_id="event-mismatch",
+        job_id="job-dispatch",
+        event_type="xml_parse",
+        routing_key="cfdi.parse.xml",
+        idempotency_key="other-idem",
+        available_at=NOW,
+    )
+    assert store.get_dispatch_metadata("event-mismatch", "job-dispatch") is None
+
+
 def test_two_workers_claim_distinct_jobs(reset_postgres_database: str) -> None:
     _tenant(reset_postgres_database)
     store = _store(reset_postgres_database)

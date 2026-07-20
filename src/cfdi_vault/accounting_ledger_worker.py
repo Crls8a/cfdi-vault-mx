@@ -48,6 +48,7 @@ class LedgerParseJob:
     artifact_ref: str
     queue: QueueName
     idempotency_key: str
+    job_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.queue, QueueName) or self.queue not in _PARSE_QUEUES:
@@ -55,13 +56,72 @@ class LedgerParseJob:
         for name, value in (("tenant_id", self.tenant_id), ("artifact_ref", self.artifact_ref)):
             validate_reference_string(name, value)
         validate_reference_string("idempotency_key", self.idempotency_key)
+        if self.job_id is not None:
+            validate_reference_string("job_id", self.job_id)
 
     def __repr__(self) -> str:
         return f"LedgerParseJob(queue={self.queue.value!r}, references_redacted=True)"
 
     @classmethod
-    def from_message(cls, message: QueueMessage) -> "LedgerParseJob":
-        return cls(message.tenant_id, message.job_id, message.queue, message.idempotency_key)
+    def from_message(cls, message: QueueMessage, *, artifact_ref: str | None = None) -> "LedgerParseJob":
+        """Build a job only when storage metadata supplied its artifact reference."""
+
+        if message.queue not in _PARSE_QUEUES:
+            raise ValueError("ledger job must use a parse queue")
+        if artifact_ref is None:
+            raise ValueError("ledger artifact_ref must be hydrated from durable metadata")
+        return cls(message.tenant_id, artifact_ref, message.queue, message.idempotency_key, message.job_id)
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LedgerDispatchMetadata:
+    """Durable dispatch metadata hydrated by job and event references."""
+
+    tenant_id: str
+    job_type: str
+    queue_name: QueueName
+    event_type: str
+    routing_key: str
+    artifact_ref: str | None
+    idempotency_key: str
+    schema_version: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.queue_name, QueueName):
+            raise TypeError("ledger queue_name must be a QueueName")
+        validate_reference_string("tenant_id", self.tenant_id)
+        validate_reference_string("job_type", self.job_type)
+        validate_reference_string("event_type", self.event_type)
+        validate_reference_string("routing_key", self.routing_key)
+        validate_reference_string("idempotency_key", self.idempotency_key)
+        if self.artifact_ref is not None:
+            validate_reference_string("artifact_ref", self.artifact_ref)
+        if type(self.schema_version) is not int or self.schema_version <= 0:
+            raise ValueError("ledger schema_version must be positive")
+
+    def __repr__(self) -> str:
+        return "LedgerDispatchMetadata(references_redacted=True)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LedgerInboxReceipt:
+    """Durable receipt decision for one event/consumer pair."""
+
+    status: str
+
+    def __post_init__(self) -> None:
+        if self.status not in {"new", "reclaimed", "in_flight", "duplicate"}:
+            raise ValueError("unsupported ledger inbox receipt status")
+
+    @property
+    def should_process(self) -> bool:
+        return self.status in {"new", "reclaimed"}
+
+    def __bool__(self) -> bool:
+        return self.should_process
+
+    def __repr__(self) -> str:
+        return f"LedgerInboxReceipt(status={self.status!r})"
 
 
 @dataclass(frozen=True, repr=False)
@@ -126,11 +186,23 @@ class LedgerJobStore(Protocol):
         aggregate: LedgerParseAggregate,
         *,
         now: datetime,
-    ) -> None:
+    ) -> bool:
         """Commit a successful result exactly once."""
 
-    def fail_parse_job(self, claim_ref: str, reason_code: str, *, now: datetime) -> None:
+    def fail_parse_job(self, claim_ref: str, reason_code: str, *, now: datetime) -> bool:
         """Commit a categorized terminal or retryable result exactly once."""
+
+
+class LedgerDispatchStore(Protocol):
+    """Durable inbox and dispatch metadata port for queue consumers."""
+
+    def register_inbox_event(
+        self, event_id: str, consumer_name: str, *, received_at: datetime
+    ) -> LedgerInboxReceipt: ...
+
+    def mark_inbox_processed(self, event_id: str, consumer_name: str, result_code: str, *, now: datetime) -> bool: ...
+
+    def get_dispatch_metadata(self, event_id: str, job_id: str) -> LedgerDispatchMetadata | None: ...
 
 
 @dataclass(frozen=True, repr=False)
@@ -142,7 +214,7 @@ class LedgerWorkerReport:
     reason_code: str | None = None
 
     def __post_init__(self) -> None:
-        if self.status not in {"succeeded", "duplicate", "failed"}:
+        if self.status not in {"succeeded", "duplicate", "failed", "stale"}:
             raise ValueError("unsupported ledger worker status")
         if self.reason_code is not None:
             validate_reason_code(self.reason_code)
@@ -176,8 +248,19 @@ class LedgerWorker:
         self,
         message: QueueMessage,
         parser: Callable[[LedgerParseJob], LedgerParseAggregate],
+        *,
+        artifact_ref: str | None = None,
     ) -> LedgerWorkerReport:
-        job = LedgerParseJob.from_message(message)
+        job = LedgerParseJob.from_message(message, artifact_ref=artifact_ref)
+        return self.run_hydrated(job, parser)
+
+    def run_hydrated(
+        self,
+        job: LedgerParseJob,
+        parser: Callable[[LedgerParseJob], LedgerParseAggregate],
+    ) -> LedgerWorkerReport:
+        """Claim a metadata-hydrated job and run the parser outside DB I/O."""
+
         claim = self._store.claim_parse_job(job, worker_ref=self._worker_ref, now=self._clock())
         if not claim.accepted:
             return LedgerWorkerReport(status="duplicate")
@@ -186,10 +269,16 @@ class LedgerWorker:
             if not isinstance(aggregate, LedgerParseAggregate):
                 raise LedgerParseError("parse_result_invalid")
         except LedgerParseError as exc:
-            self._store.fail_parse_job(claim.claim_ref, exc.reason_code, now=self._clock())
+            failed = self._store.fail_parse_job(claim.claim_ref, exc.reason_code, now=self._clock())
+            if failed is False:
+                return LedgerWorkerReport(status="stale", reason_code="claim_stale")
             return LedgerWorkerReport(status="failed", reason_code=exc.reason_code)
         except Exception:
-            self._store.fail_parse_job(claim.claim_ref, "parse_failed", now=self._clock())
+            failed = self._store.fail_parse_job(claim.claim_ref, "parse_failed", now=self._clock())
+            if failed is False:
+                return LedgerWorkerReport(status="stale", reason_code="claim_stale")
             return LedgerWorkerReport(status="failed", reason_code="parse_failed")
-        self._store.complete_parse_job(claim.claim_ref, aggregate, now=self._clock())
+        completed = self._store.complete_parse_job(claim.claim_ref, aggregate, now=self._clock())
+        if completed is False:
+            return LedgerWorkerReport(status="stale", reason_code="claim_stale")
         return LedgerWorkerReport(status="succeeded", aggregate=aggregate)

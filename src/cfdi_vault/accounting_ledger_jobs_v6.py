@@ -30,6 +30,7 @@ from cfdi_vault.accounting_ledger_worker import (
     LedgerParseAggregate,
     LedgerParseJob,
 )
+from cfdi_vault.ledger_job_dispatch_store import LedgerDispatchStoreMixin
 from cfdi_vault.queue_safety import validate_reason_code, validate_reference_string
 
 _METADATA = MetaData()
@@ -179,7 +180,7 @@ class JobStatus:
         return f"JobStatus({self.as_dict()!r})"
 
 
-class LedgerJobStoreV6(LedgerOutboxStoreMixin, LedgerJobStore):
+class LedgerJobStoreV6(LedgerDispatchStoreMixin, LedgerOutboxStoreMixin, LedgerJobStore):
     """PostgreSQL-backed implementation of the durable ledger job port."""
 
     def __init__(self, engine: Engine) -> None:
@@ -291,17 +292,16 @@ class LedgerJobStoreV6(LedgerOutboxStoreMixin, LedgerJobStore):
         worker_ref = _ref("worker_ref", worker_ref, 128)
         with self._engine.begin() as connection:
             self._expire_claims(connection, now)
-            row = connection.execute(
-                select(_JOBS)
-                .where(
-                    _JOBS.c.tenant_id == _ref("tenant_id", job.tenant_id, 64),
-                    _JOBS.c.queue_name == job.queue.value,
-                    _JOBS.c.job_type == _PARSE_JOB_TYPES[job.queue.value],
-                    _JOBS.c.artifact_ref == _ref("artifact_ref", job.artifact_ref, 192),
-                    _JOBS.c.idempotency_key == _ref("idempotency_key", job.idempotency_key, 192),
-                )
-                .with_for_update(skip_locked=True)
-            ).first()
+            criteria = [
+                _JOBS.c.tenant_id == _ref("tenant_id", job.tenant_id, 64),
+                _JOBS.c.queue_name == job.queue.value,
+                _JOBS.c.job_type == _PARSE_JOB_TYPES[job.queue.value],
+                _JOBS.c.artifact_ref == _ref("artifact_ref", job.artifact_ref, 192),
+                _JOBS.c.idempotency_key == _ref("idempotency_key", job.idempotency_key, 192),
+            ]
+            if job.job_id is not None:
+                criteria.append(_JOBS.c.job_id == _ref("job_id", job.job_id, 96))
+            row = connection.execute(select(_JOBS).where(*criteria).with_for_update(skip_locked=True)).first()
             if row is None or row.status in _TERMINAL or row.status != "queued" or row.available_at > now:
                 return LedgerClaim("unclaimed", False)
             if row.attempt_count >= row.max_attempts:
@@ -374,14 +374,14 @@ class LedgerJobStoreV6(LedgerOutboxStoreMixin, LedgerJobStore):
     ) -> bool:
         return self._finish(claim_id, status="succeeded", now=_now(now), counts=_aggregate(aggregate))
 
-    def complete_parse_job(self, claim_id: str, aggregate: LedgerParseAggregate, *, now: datetime) -> None:
-        self.complete_job(claim_id, aggregate, now=now)
+    def complete_parse_job(self, claim_id: str, aggregate: LedgerParseAggregate, *, now: datetime) -> bool:
+        return self.complete_job(claim_id, aggregate, now=now)
 
     def fail_job(self, claim_id: str, reason_code: str, *, now: datetime | None = None) -> bool:
         return self._finish(claim_id, status="failed", now=_now(now), reason=_reason(reason_code))
 
-    def fail_parse_job(self, claim_id: str, reason_code: str, *, now: datetime) -> None:
-        self.fail_job(claim_id, reason_code, now=now)
+    def fail_parse_job(self, claim_id: str, reason_code: str, *, now: datetime) -> bool:
+        return self.fail_job(claim_id, reason_code, now=now)
 
     def mark_uncertain(self, claim_id: str, reason_code: str, *, now: datetime | None = None) -> bool:
         return self._finish(claim_id, status="uncertain", now=_now(now), reason=_reason(reason_code))

@@ -38,11 +38,19 @@ class FakeDurableStore:
         assert not self.transaction_open
         self.events.append("complete")
         self.completed.append(aggregate)
+        return True
 
     def fail_parse_job(self, claim_ref, reason_code, *, now):  # type: ignore[no-untyped-def]
         assert not self.transaction_open
         self.events.append("fail")
         self.failed.append(reason_code)
+        return True
+
+
+class StaleCompletionStore(FakeDurableStore):
+    def complete_parse_job(self, claim_ref, aggregate, *, now):  # type: ignore[no-untyped-def]
+        super().complete_parse_job(claim_ref, aggregate, now=now)
+        return False
 
 
 def _message() -> QueueMessage:
@@ -66,7 +74,7 @@ def test_worker_claims_before_parser_and_completes_after_transaction() -> None:
         observed.append(store.transaction_open)
         return LedgerParseAggregate(records_seen=3, records_written=2, duplicates=1)
 
-    report = worker.run_once(_message(), parse)
+    report = worker.run_once(_message(), parse, artifact_ref="artifact-synthetic")
 
     assert observed == [False]
     assert store.events == ["claim", "complete"]
@@ -84,12 +92,24 @@ def test_duplicate_claim_is_acknowledged_without_parser_or_external_effect() -> 
         called = True
         return LedgerParseAggregate(records_seen=1)
 
-    report = worker.run_once(_message(), parse)
+    report = worker.run_once(_message(), parse, artifact_ref="artifact-synthetic")
 
     assert report.status == "duplicate"
     assert report.aggregate == LedgerParseAggregate()
     assert called is False
     assert store.events == ["claim"]
+
+
+def test_stale_completion_is_not_reported_as_success() -> None:
+    store = StaleCompletionStore()
+    worker = LedgerWorker(store, worker_ref="worker-synthetic", clock=lambda: NOW)
+
+    report = worker.run_once(
+        _message(), lambda job: LedgerParseAggregate(records_seen=1), artifact_ref="artifact-synthetic"
+    )
+
+    assert report.status == "stale"
+    assert report.reason_code == "claim_stale"
 
 
 def test_parser_failure_is_categorized_without_raw_error() -> None:
@@ -99,7 +119,7 @@ def test_parser_failure_is_categorized_without_raw_error() -> None:
     def parse(job):  # type: ignore[no-untyped-def]
         raise LedgerParseError("parse_invalid")
 
-    report = worker.run_once(_message(), parse)
+    report = worker.run_once(_message(), parse, artifact_ref="artifact-synthetic")
 
     assert report.status == "failed"
     assert report.reason_code == "parse_invalid"
@@ -119,13 +139,13 @@ def test_job_rejects_non_parse_queue_and_aggregate_rejects_fiscal_values() -> No
         created_at=NOW,
     )
     with pytest.raises(ValueError, match="parse queue"):
-        LedgerParseJob.from_message(message)
+        LedgerParseJob.from_message(message, artifact_ref="artifact-synthetic")
     with pytest.raises(ValueError, match="aggregate count"):
         LedgerParseAggregate(records_seen=-1)
 
 
 def test_reference_values_are_redacted_from_repr_and_direct_jobs_are_validated() -> None:
-    job = LedgerParseJob.from_message(_message())
+    job = LedgerParseJob.from_message(_message(), artifact_ref="artifact-synthetic")
     claim = LedgerClaim(claim_ref="claim-synthetic", accepted=True)
     report = LedgerWorkerReport(status="succeeded")
 

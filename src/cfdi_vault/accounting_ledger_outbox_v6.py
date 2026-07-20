@@ -15,6 +15,7 @@ from uuid import uuid4
 from sqlalchemy import Column, DateTime, Integer, MetaData, SmallInteger, String, Table, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from cfdi_vault.accounting_ledger_worker import LedgerInboxReceipt
 from cfdi_vault.queue_safety import validate_reason_code, validate_reference_string
 
 _METADATA = MetaData()
@@ -57,6 +58,7 @@ _INBOX = Table(
     Column("processed_at", DateTime(timezone=True)),
     Column("result_code", String(64)),
 )
+_INBOX_RECLAIM_AFTER = timedelta(minutes=30)
 
 
 def _stamp(value: datetime | None = None) -> datetime:
@@ -276,18 +278,37 @@ class LedgerOutboxStoreMixin:
                 == 1
             )
 
-    def register_inbox_event(self, event_id: str, consumer_name: str, *, received_at: datetime | None = None) -> bool:
-        """Register a broker delivery once for a consumer."""
+    def register_inbox_event(
+        self, event_id: str, consumer_name: str, *, received_at: datetime | None = None
+    ) -> LedgerInboxReceipt:
+        """Register, classify, or reclaim a broker delivery durably."""
+        stamp = _stamp(received_at)
         values = {
             "event_id": _ref("event_id", event_id, 96),
             "consumer_name": _ref("consumer_name", consumer_name, 128),
-            "received_at": _stamp(received_at),
+            "received_at": stamp,
         }
         with self._engine.begin() as connection:
             result = connection.execute(
                 pg_insert(_INBOX).values(values).on_conflict_do_nothing().returning(_INBOX.c.event_id)
             )
-            return result.scalar_one_or_none() is not None
+            if result.scalar_one_or_none() is not None:
+                return LedgerInboxReceipt("new")
+            existing = connection.execute(
+                select(_INBOX.c.received_at, _INBOX.c.processed_at)
+                .where(_INBOX.c.event_id == event_id, _INBOX.c.consumer_name == consumer_name)
+                .with_for_update()
+            ).first()
+            if existing is None or existing.processed_at is not None:
+                return LedgerInboxReceipt("duplicate")
+            if existing.received_at <= stamp - _INBOX_RECLAIM_AFTER:
+                connection.execute(
+                    update(_INBOX)
+                    .where(_INBOX.c.event_id == event_id, _INBOX.c.consumer_name == consumer_name)
+                    .values(received_at=stamp)
+                )
+                return LedgerInboxReceipt("reclaimed")
+            return LedgerInboxReceipt("in_flight")
 
     def mark_inbox_processed(
         self, event_id: str, consumer_name: str, result_code: str, *, now: datetime | None = None

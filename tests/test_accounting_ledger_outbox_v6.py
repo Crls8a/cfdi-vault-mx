@@ -59,10 +59,29 @@ def test_outbox_and_inbox_are_idempotent_and_reason_codes_are_redacted(reset_pos
     assert retry is not None
     assert store.mark_outbox_published(retry.event_id, retry.claim_id, now=NOW)
     assert not store.mark_outbox_published(retry.event_id, retry.claim_id, now=NOW)
-    assert store.register_inbox_event(retry.event_id, "ledger-worker", received_at=NOW)
-    assert not store.register_inbox_event(retry.event_id, "ledger-worker", received_at=NOW)
+    assert store.register_inbox_event(retry.event_id, "ledger-worker", received_at=NOW).status == "new"
+    assert store.register_inbox_event(retry.event_id, "ledger-worker", received_at=NOW).status == "in_flight"
     assert store.mark_inbox_processed(retry.event_id, "ledger-worker", "parse.v1-failed", now=NOW)
     assert not store.mark_inbox_processed(retry.event_id, "ledger-worker", "parse.v1-failed", now=NOW)
+
+
+def test_inbox_receipt_reclaims_unprocessed_delivery_after_lease(reset_postgres_database: str) -> None:
+    store = _seed(reset_postgres_database)
+    assert store.create_outbox_event(
+        event_id="reclaim-event",
+        job_id="outbox-job",
+        event_type="metadata_parse",
+        routing_key="cfdi.parse.metadata",
+        idempotency_key="reclaim-idem",
+        available_at=NOW,
+    )
+    first = store.register_inbox_event("reclaim-event", "ledger-worker", received_at=NOW)
+    assert first.status == "new"
+    assert store.register_inbox_event("reclaim-event", "ledger-worker", received_at=NOW).status == "in_flight"
+    reclaimed = store.register_inbox_event(
+        "reclaim-event", "ledger-worker", received_at=NOW + timedelta(minutes=31)
+    )
+    assert reclaimed.status == "reclaimed"
 
 
 def test_outbox_does_not_claim_before_availability(reset_postgres_database: str) -> None:
