@@ -110,11 +110,12 @@ human reviewer to follow one operation from the CLI to PostgreSQL and back:
 | Prevent replacement requests | `SatCampaignRunner._submit_windows()` + `count_open_operations()` | Persisted open requests and unbound submit claims consume the two-operation ceiling. |
 | Contact and classify SAT | `SatCampaignRunner._verify_claim()` | One sanitized `sat_verify_attempts` row is appended per claim; `5000`, `5004`, expiry, timeout, and package outcomes remain categorized. |
 | Schedule the next wake | `next_local_check()` and `_merge_next_check()` | The next minimum interval starts at the actual run time; a later SAT-provided time wins. Due is not the same as expired. |
-| Download and hand off a package | `_download_packages()` → `sat_campaign_artifacts.py` → `sat_campaign_download_effects.py` | ZIP bytes stay in external storage; PostgreSQL stores references and validation state; RabbitMQ carries only an opaque job reference. |
-| Parse in a worker | `recovery_service.process_queue_message_for_worker()` and `worker.py` | `cfdi.parse.metadata` is acknowledged idempotently and updates durable progress; Redis is only transient heartbeat/state. |
+| Download and hand off a package | `_download_packages()` → `sat_campaign_artifacts.py` → `sat_campaign_download_effects.py` → `ledger_outbox_publisher.py` | ZIP bytes stay in external storage; PostgreSQL V6/V7 stores job, claim, outbox, inbox, and artifact references; RabbitMQ carries only an opaque reference envelope. |
+| Parse in a worker | `ledger_job_consumer.py` → `ledger_job_dispatch_store.py` → `accounting_ledger_worker.py` | The consumer hydrates metadata from PostgreSQL, fences claims, acknowledges only after durable completion, and retries in-flight/stale transitions; Redis is transient heartbeat/lease state. |
 
-The schema that supports this path is `db/migration/V3__sat_campaign_state.sql`
-plus `V4__sat_claim_grants.sql`. The source-policy and package-safety boundaries
+The campaign schema starts at `db/migration/V3__sat_campaign_state.sql` and
+`V4__sat_claim_grants.sql`; durable worker handoff is added by
+`V6__ledger_jobs_outbox.sql` and `V7__ledger_outbox_fencing.sql`. The source-policy and package-safety boundaries
 are documented in `docs/sat-download/async-verify-scheduler.md` and
 `docs/api/sat-v15-public-api.md`. Real SAT state and artifacts are intentionally
 not copied into this repository; only sanitized aggregates may be documented.

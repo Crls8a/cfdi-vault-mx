@@ -49,8 +49,8 @@ flowchart LR
 | Result mapping | `sat_db_campaign_runner.py::_classify_result` / `_classify_error` | `5000`, `5003`, `5004`, `5005`, expiry, timeout, and package outcomes are categorized. |
 | Download | `sat_db_campaign_runner.py::_download_packages` | A download claim is persisted before the external effect; uncertain downloads are not retried automatically. |
 | Package safety | `sat_campaign_artifacts.py`, `sat_campaign_download_effects.py` | ZIP/TXT/XML are external; limits, traversal, duplicates, encoding, and XML safety are validated. |
-| Handoff | `sat_campaign_jobs.py`, `recovery_service.py`, `worker.py` | RabbitMQ carries opaque references; workers update PostgreSQL idempotently. |
-| Monitor | `sat_monitor_service.py`, `docker-compose.yml` | Five-minute wake and lease are available; SAT contact stays disabled unless explicitly enabled. |
+| Handoff | `ledger_outbox_publisher.py`, `ledger_job_consumer.py`, `ledger_job_dispatch_store.py`, `accounting_ledger_worker.py` | V6/V7 persist outbox/inbox/claims; RabbitMQ carries opaque references; the worker hydrates from PostgreSQL and completes before ACK. |
+| Monitor | `sat_monitor_service.py`, `docker-compose.yml` | Five-minute wake uses an owner-fenced Redis lease when configured, PostgreSQL advisory fallback otherwise, and Redis heartbeat; SAT contact stays disabled unless explicitly enabled. |
 
 ## Findings and disposition
 
@@ -104,17 +104,19 @@ worker handoff remain the next integration milestone.
 ### `SAT-DOC-006` — monitor activation (confirmed)
 
 Compose starts `sat-monitor`, but `SAT_MONITOR_ENABLED=0` and
-`CFDI_VAULT_LIVE_WORKER_ENABLED=0` are the defaults. The service can wake and
-report a no-op without contacting SAT. Enabling the live worker still requires
+`CFDI_VAULT_LIVE_WORKER_ENABLED=0` are the defaults. When enabled, the service
+uses an owner-fenced Redis lease when configured and emits only a sanitized
+heartbeat; it can wake and report a no-op without contacting SAT. Enabling the live worker still requires
 the documented human gate, clean-tree/scanner evidence, canonical endpoints,
 profile, campaign, and grant.
 
 ## What is tested versus what is SAT evidence
 
-The local full suite completed with **2014 passed, 74 skipped**. The skips are
-environment/integration-gated and do not become SAT evidence. Ruff, the
-sensitive-fixture scanner, the SAT context scanner, `docker compose config`,
-and `git diff --check` also passed for this audit.
+The local full suite completed with **2340 passed, 86 skipped**. Targeted Ruff on
+the changed V6/V7/monitor files passed. The skips are environment/integration-
+gated and do not become SAT evidence. The sensitive-fixture scanner, SAT
+context scanner, `docker compose config`, and `git diff --check` also passed
+for this audit.
 
 | Area | Current evidence | Classification |
 |---|---|---|
