@@ -2,9 +2,9 @@
 
 This module owns orchestration of already-sanitized database read models.  It
 does not issue SQL, write PostgreSQL, access artifacts, contact SAT, enqueue
-jobs, or infer accounting or tax treatment.  Legacy tax/payment/payroll child
-tables remain explicitly partial until the approved tenant-safe V5 ledger is
-available; payroll is therefore not included in this four-section report.
+jobs, or infer accounting or tax treatment.  V5 child reads retain explicit
+partial, empty, and unsupported source statuses; unavailable dimensions are
+never inferred by this composition layer.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from cfdi_vault.analysis.contextual_report import (
 )
 from cfdi_vault.analysis.monthly import analyze_monthly
 from cfdi_vault.analysis.payment_context import PaymentContextReport
+from cfdi_vault.analysis.payroll_accounting import summarize_payroll
 from cfdi_vault.analysis.postgres import MonthlyAnalysisPostgresAdapter
 from cfdi_vault.analysis.postgres_accounting import AccountingPostgresAdapter
 from cfdi_vault.analysis.quality import snapshot_quality
@@ -36,9 +37,9 @@ class PostgresFinancialAnalysisService:
 
     The adapters each use short-lived read transactions.  This service does
     not hold a transaction while pure analysis runs and never mutates the
-    database.  The resulting report contains monthly, tax, payment, and
-    quality sections; payroll is intentionally omitted while the legacy
-    payroll table lacks tenant-safe normalized amount fields.
+    database.  The resulting report contains monthly, tax, payment, payroll,
+    and quality sections.  Payroll dimensions that are not durable in V5 stay
+    explicit through the payroll source status and incomplete counters.
 
     Args:
         monthly_adapter: Existing tenant-scoped monthly read adapter.
@@ -60,11 +61,15 @@ class PostgresFinancialAnalysisService:
         *,
         clock: Clock | None = None,
     ) -> None:
-        if not callable(monthly_adapter.records_for_period):
+        if not callable(getattr(monthly_adapter, "records_for_period", None)):
             raise TypeError("analysis-monthly-adapter-required")
-        if not callable(accounting_adapter.tax_records) or not callable(accounting_adapter.payment_records):
+        if (
+            not callable(getattr(accounting_adapter, "tax_records", None))
+            or not callable(getattr(accounting_adapter, "payment_records", None))
+            or not callable(getattr(accounting_adapter, "payroll_records", None))
+        ):
             raise TypeError("analysis-accounting-adapter-required")
-        if not callable(accounting_adapter.quality_observations):
+        if not callable(getattr(accounting_adapter, "quality_observations", None)):
             raise TypeError("analysis-quality-adapter-required")
         if clock is not None and not callable(clock):
             raise TypeError("analysis-clock-required")
@@ -86,6 +91,8 @@ class PostgresFinancialAnalysisService:
         existing adapters.  Tax and payment sources carry their explicit
         parser status into the summary, so unavailable legacy child tables
         remain ``partial`` rather than looking like measured zeroes.
+        Payroll records are summarized through the same tenant and inclusive
+        period as taxes and payments.  Missing V5 dimensions remain partial;
         ``generated_at`` is normalized and validated by the report DTO; when
         omitted, the injected UTC clock supplies it.
         """
@@ -94,6 +101,7 @@ class PostgresFinancialAnalysisService:
         monthly_records = self._monthly_adapter.records_for_period(tenant_id, start=start, end=end)
         tax_result = self._accounting_adapter.tax_records(tenant_id, start=start, end=end)
         payment_result = self._accounting_adapter.payment_records(tenant_id, start=start, end=end)
+        payroll_result = self._accounting_adapter.payroll_records(tenant_id, start=start, end=end)
         quality_observations = self._accounting_adapter.quality_observations(tenant_id, start=start, end=end)
 
         monthly = analyze_monthly(monthly_records, start=start, end=end)
@@ -104,12 +112,17 @@ class PostgresFinancialAnalysisService:
             end=end,
             source_status=payment_result.source_status,
         )
+        payroll = summarize_payroll(
+            payroll_result.rows,
+            source_status=payroll_result.source_status,
+        )
         quality = snapshot_quality(quality_observations)
         timestamp = generated_at if generated_at is not None else self._clock()
         return FinancialAnalysisReport(
             monthly=monthly,
             taxes=taxes,
             payments=payments,
+            payroll=payroll,
             quality=quality,
             period=AnalysisPeriod(start, end),
             generated_at=timestamp,
