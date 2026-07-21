@@ -106,3 +106,21 @@ The handoff must not include RFCs, UUIDs, SAT IDs, SOAP, credentials, absolute
 local paths, artifact/data hashes, rows, totals, ZIP/TXT/XML content, or raw
 exception text. Repository-relative file paths and short Git commit SHAs are
 allowed for code lineage.
+
+## Current status snapshot — 2026-07-21
+
+This snapshot is subordinate to the append-only evidence log. A workstream is
+`verified` only when its evidence entry links the implementation, tests, and
+review; `pending-authorization` means the code is ready but a human live gate
+is still required.
+
+| Status | Workstreams | Evidence or next gate |
+|---|---|---|
+| `verified` | `SAT-PLAN-001`, `SAT-ORCH-001`, `LEDGER-V5-REPO-001`, `LEDGER-V5-MAP-001`, `LEDGER-V5-BIND-001`, `ANALYSIS-DB-*`, `ANALYSIS-CLI-001`, `WORKER-LEDGER-BIND-001`, `WORKER-LEDGER-RUNTIME-001` | Synthetic/container gates and sanitized evidence are present. |
+| `verified` | `SAT-PREFLIGHT-001` | No-contact gates pass; it does not authorize SAT. |
+| `accepted` | `SAT-LIVE-HARDEN-001` | Storage/handoff readiness and submission classification are fail-closed; no SAT contact. |
+| `pending-authorization` | `SAT-META-REAL-001`, `SAT-META-WAIT-001`, `SAT-TXT-WORKER-001` | Require the exact human profile, external storage, directions, dates, and grant. |
+| `pending` | `SAT-CFDI-REAL-001`, `API-INGEST-001`, `LEGACY-CLEAN-001`, `RELEASE-ALPHA-001` | Depend on real Metadata/TXT evidence or a separately approved scope. |
+
+The live evidence slots remain empty until the human gate is supplied; no
+synthetic result may promote them to `verified`.
