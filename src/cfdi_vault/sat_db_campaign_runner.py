@@ -141,6 +141,12 @@ class SatCampaignRunner:
         """
 
         current = _utc(now or self._clock())
+        # A worker that can receive a package must have an external artifact
+        # store and a durable parsing handoff *before* any SAT-facing method
+        # is reached.  Discovering this after VERIFY would quarantine a
+        # perfectly valid package as ``download_uncertain`` and leave the
+        # campaign without a safe way to process it.
+        self._require_artifact_runtime()
         submitted_count, submission_categories = self._submit_windows(current, limit=min(limit, 2))
         try:
             claims = self._repository.claim_due_operations(
@@ -215,7 +221,19 @@ class SatCampaignRunner:
                     raise TypeError("submission query is invalid")
                 adapter = self._submitter_factory(query)
                 value = adapter.submit_request(query)
-                if not isinstance(value, SatRequestResult) or not value.request_id.strip():
+                if not isinstance(value, SatRequestResult):
+                    raise ValueError("submission adapter returned no result")
+                rejected = _submission_rejection(value)
+                if rejected is not None:
+                    self._repository.record_submission_failure(
+                        claim_ref=claim.claim_ref,
+                        result_code=rejected,
+                        result="error",
+                        now=current,
+                    )
+                    counts[rejected] += 1
+                    continue
+                if not isinstance(value.request_id, str) or not value.request_id.strip():
                     raise ValueError("submission adapter returned no request")
                 self._repository.record_submission(
                     claim_ref=claim.claim_ref,
@@ -254,6 +272,27 @@ class SatCampaignRunner:
                         now=current,
                     )
         return submitted, dict(counts)
+
+    def _require_artifact_runtime(self) -> None:
+        """Reject an incompletely wired package lane before SAT contact."""
+
+        # A submit-only fake or an offline status run does not have a package
+        # lane.  Productive worker factories always provide a downloader.
+        if self._downloader_factory is None:
+            return
+        coordinator = self._artifact_coordinator
+        if coordinator is None or not callable(getattr(coordinator, "store_package", None)):
+            raise RuntimeError("artifact-runtime-required")
+        ensure_ready = getattr(coordinator, "ensure_ready", None)
+        if callable(ensure_ready):
+            try:
+                ensure_ready(require_handoff=True)
+            except Exception as error:
+                reason = getattr(error, "reason", None)
+                raise RuntimeError(
+                    reason if isinstance(reason, str) and reason else "artifact-runtime-unavailable"
+                ) from None
+
 
     def _verify_claim(self, claim: SatClaimRecord, current: datetime) -> tuple[
         str, str, str | None, datetime | None, int
@@ -434,6 +473,24 @@ def _classify_error(error: SatVerificationError) -> tuple[str, str, str, datetim
     if error.retryable or code in {"408", "429", "500", "502", "503", "504", "timeout"}:
         return "pending", "pending", _safe_code(code) or "verify_retryable", None
     return "error", "error", _safe_code(code) or "verify_error", None
+
+
+def _submission_rejection(value: SatRequestResult) -> str | None:
+    """Categorize a non-accepted submit result before request persistence."""
+
+    code = str(value.sat_code or "").strip().casefold()
+    action = value.action
+    if code == "5003":
+        return "sat_too_many_results"
+    if code == "5004":
+        return "no_data"
+    if code == "5005" or code in {"duplicate", "duplicate_active_request"}:
+        return "duplicate_active_request"
+    if action is SatOutcomeAction.DUPLICATE:
+        return "duplicate_active_request"
+    if action is not SatOutcomeAction.ACCEPTED:
+        return "sat_rejected"
+    return None
 
 
 def _merge_next_check(local: datetime, sat: datetime | None,

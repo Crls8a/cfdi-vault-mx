@@ -40,6 +40,31 @@ class SatCampaignArtifactCoordinator:
             raise ValueError("durable handoff and legacy publisher are mutually exclusive")
         self._durable_handoff = durable_handoff
 
+    def ensure_ready(self, *, require_handoff: bool = False) -> None:
+        """Validate external storage and parsing handoff before SAT contact."""
+
+        try:
+            raw_root = str(self._storage_root).replace("\\", "/").rstrip("/")
+            if raw_root == "/app" or raw_root.startswith("/app/"):
+                raise ValueError
+            root = Path(self._storage_root)
+            if not root.is_absolute():
+                raise ValueError
+            resolved = root.resolve(strict=False)
+            checkout = Path(__file__).resolve().parents[2]
+            if resolved == checkout or checkout in resolved.parents:
+                raise ValueError
+            if resolved.exists() and not resolved.is_dir():
+                raise ValueError
+            if require_handoff and self._durable_handoff is not None:
+                if not all(callable(getattr(self._durable_handoff, name, None))
+                           for name in ("persist_on_connection", "publish_after_commit")):
+                    raise ValueError
+            elif require_handoff and not callable(self._job_publisher):
+                raise ValueError
+        except Exception:
+            raise CampaignArtifactError("artifact-runtime-unavailable") from None
+
     def store_package(
         self,
         *,
@@ -70,6 +95,7 @@ class SatCampaignArtifactCoordinator:
         if type(ordinal) is not int or ordinal <= 0:
             raise CampaignArtifactError("package-ordinal-invalid")
         current = _utc(now or datetime.now(timezone.utc))
+        self.ensure_ready()
         request = self._repository.get_request(request_id)
         if request is None:
             raise CampaignArtifactError("request-not-found")
@@ -128,7 +154,29 @@ class SatCampaignArtifactCoordinator:
             artifact_ref = _campaign_artifact_ref(
                 campaign_ref, work_ref, kind, stored.sha256,
             )
-            if self._durable_handoff is not None and callable(atomic_record):
+            use_txt_handoff = kind == "metadata_zip" and (
+                self._durable_handoff is not None or self._job_publisher is not None
+            )
+            if use_txt_handoff:
+                # The ZIP remains the package evidence; the worker consumes a
+                # separately stored TXT reference, not a ZIP or its contents.
+                artifact = self._repository.record_artifact(
+                    campaign_ref=campaign_ref, window_ref=work_ref,
+                    artifact_ref=artifact_ref, kind=kind,
+                    storage_key=stored.relative_key, sha256=stored.sha256,
+                    size_bytes=stored.byte_count, validation_status="valid",
+                    counts={}, now=current,
+                )
+                package_artifact = artifact
+                txt_artifacts = self._extract_metadata_txt(
+                    archive_path=Path(self._storage_root) / Path(stored.relative_key),
+                    campaign_ref=campaign_ref, work_ref=work_ref,
+                    tenant_id=request.tenant_id, now=current,
+                    atomic_record=atomic_record,
+                )
+                if not txt_artifacts:
+                    raise CampaignArtifactError("artifact-txt-missing")
+            elif self._durable_handoff is not None and callable(atomic_record):
                 # The repository commits artifact metadata and ledger rows in
                 # one transaction. Broker publication is intentionally after
                 # this call returns, so a failed publish leaves a durable
@@ -148,6 +196,7 @@ class SatCampaignArtifactCoordinator:
                     now=current,
                 )
                 self._durable_handoff.publish_after_commit(now=current)
+                package_artifact = artifact
             else:
                 # Keep the explicit pre-V6 adapter path working for fakes.
                 artifact = self._repository.record_artifact(
@@ -162,13 +211,15 @@ class SatCampaignArtifactCoordinator:
                     counts={},
                     now=current,
                 )
-            if self._durable_handoff is None and self._job_publisher is not None:
+                package_artifact = artifact
+            if (self._durable_handoff is None and self._job_publisher is not None
+                    and not use_txt_handoff):
                 from cfdi_vault.sat_campaign_jobs import publish_artifact_parse_job
 
                 publish_artifact_parse_job(
                     self._job_publisher,
                     tenant_id=request.tenant_id,
-                    artifact_ref=artifact.artifact_ref,
+                    artifact_ref=package_artifact.artifact_ref,
                     kind=kind,
                     now=current,
                 )
@@ -178,7 +229,7 @@ class SatCampaignArtifactCoordinator:
                 id_solicitud=request.id_solicitud,
                 status="downloaded",
                 ordinal=ordinal,
-                artifact_id=artifact.id,
+                artifact_id=package_artifact.id,
                 download_state="downloaded",
                 now=current,
             )
@@ -189,6 +240,67 @@ class SatCampaignArtifactCoordinator:
         except Exception as exc:
             self._repository.record_download_uncertain(claim_ref=claim.claim_ref, now=current)
             raise CampaignArtifactError("artifact-persistence-failed") from exc
+
+    def _extract_metadata_txt(
+        self, *, archive_path: Path, campaign_ref: str, work_ref: str,
+        tenant_id: str, now: datetime, atomic_record: Callable[..., object] | None,
+    ) -> tuple[StoredArtifact, ...]:
+        """Stream validated TXT members to opaque storage and enqueue references."""
+
+        stored_artifacts: list[StoredArtifact] = []
+        with ZipFile(archive_path) as archive:
+            txt_infos = tuple(
+                (ordinal, info) for ordinal, info in enumerate(archive.infolist(), 1)
+                if info.filename.lower().endswith(".txt")
+            )
+            for ordinal, info in txt_infos:
+                with archive.open(info, "r") as member:
+                    stored = write_artifact(
+                        storage_root=self._storage_root,
+                        relative_dir=self._opaque_dir(campaign_ref, work_ref, "txt"),
+                        ordinal=ordinal,
+                        suffix=".txt",
+                        chunks=_member_chunks(member),
+                        max_bytes=1 * 1024 * 1024 * 1024,
+                    )
+                artifact_ref = _campaign_artifact_ref(
+                    campaign_ref, work_ref, "metadata_txt", stored.sha256,
+                )
+                if self._durable_handoff is not None and callable(atomic_record):
+                    artifact = atomic_record(
+                        campaign_ref=campaign_ref, window_ref=work_ref,
+                        artifact_ref=artifact_ref, kind="metadata_txt",
+                        storage_key=stored.relative_key, sha256=stored.sha256,
+                        size_bytes=stored.byte_count, validation_status="valid",
+                        counts={}, tenant_id=tenant_id, handoff=self._durable_handoff,
+                        now=now,
+                    )
+                    self._durable_handoff.publish_after_commit(now=now)
+                else:
+                    artifact = self._repository.record_artifact(
+                        campaign_ref=campaign_ref, window_ref=work_ref,
+                        artifact_ref=artifact_ref, kind="metadata_txt",
+                        storage_key=stored.relative_key, sha256=stored.sha256,
+                        size_bytes=stored.byte_count, validation_status="valid",
+                        counts={}, now=now,
+                    )
+                    if self._job_publisher is not None:
+                        from cfdi_vault.sat_campaign_jobs import publish_artifact_parse_job
+
+                        publish_artifact_parse_job(
+                            self._job_publisher, tenant_id=tenant_id,
+                            artifact_ref=artifact.artifact_ref, kind="metadata_txt",
+                            now=now,
+                        )
+                stored_artifacts.append(stored)
+        return tuple(stored_artifacts)
+
+    @staticmethod
+    def _opaque_dir(campaign_ref: str, work_ref: str, leaf: str) -> str:
+        campaign = hashlib.sha256(campaign_ref.encode("utf-8")).hexdigest()[:24]
+        work = hashlib.sha256(work_ref.encode("utf-8")).hexdigest()[:24]
+        namespace = "metadata"
+        return str(PurePosixPath(f"sat-{namespace}") / campaign / work / leaf)
 
 
 def _utc(value: datetime) -> datetime:
@@ -242,6 +354,16 @@ def _validate_package_archive(path: Path, kind: str) -> None:
         raise
     except (BadZipFile, OSError, ValueError) as exc:
         raise CampaignArtifactError("artifact-zip-invalid") from exc
+
+
+def _member_chunks(member: io.BufferedIOBase) -> Iterable[bytes]:
+    """Read one ZIP member in bounded blocks without retaining its contents."""
+
+    while True:
+        chunk = member.read(1024 * 1024)
+        if not chunk:
+            return
+        yield chunk
 
 
 def _validate_member_content(member: io.BufferedIOBase, kind: str, limit: int) -> None:
