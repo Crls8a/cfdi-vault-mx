@@ -233,6 +233,18 @@ older result; add a correction entry that points to the original observation.
 - blocker: disposable-PostgreSQL integration and analysis CLI remain separate child units
 - next_step: dispatch `ANALYSIS-DB-INTEGRATION-001`
 
+### 2026-07-21 — E-2026-07-21-018 — ANALYSIS-DB-INTEGRATION-001
+
+- owner_role: Persistence/data
+- branch_commit: `8697a1a`
+- scope: container
+- action: Verified V5 mapper, tenant/provenance reads, quality aggregates, and report composition against disposable PostgreSQL.
+- evidence: Integration suite passed with PostgreSQL from Compose; full suite `2475 passed, 2 skipped`; focused analysis suite `50 passed`; Ruff, sensitive-fixture scanner, SAT-context scanner, and `git diff --check` passed; no SAT contact.
+- result: confirmed
+- status: verified
+- blocker: none
+- next_step: dispatch `ANALYSIS-CLI-001` for a sanitized operator report over the durable analysis reads
+
 ## Live evidence slots
 
 The following slots remain empty until Carlos authorizes the exact run. An
