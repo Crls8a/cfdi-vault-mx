@@ -267,6 +267,47 @@ def test_quality_statement_is_union_and_does_not_select_identifiers() -> None:
     assert "raw_payload" not in sql
 
 
+def test_quality_statement_uses_bound_v5_payment_existence() -> None:
+    statement = quality_observations_statement("tenant", start=date(2026, 1, 1), end=date(2026, 1, 14))
+    sql = str(statement.compile(dialect=postgresql.dialect()))
+    assert sql.count("EXISTS") >= 6
+    assert "cfdi_payments" in sql
+    assert "cfdi_payments.document_id" in sql
+    assert "cfdi_payments.source_evidence_id" in sql
+    assert "cfdi_payments.source_sha256" in sql
+    assert "cfdi_payments.parser_version" in sql
+    assert "cfdi_payments.payment_ordinal" in sql
+    assert "cfdi_payments.tenant_id = cfdi_metadata_ledger.tenant_id" in sql
+    assert "cfdi_payments.document_id = cfdi_documents.id" in sql
+    assert "xml_evidence_" in sql
+    assert ".xml_sha256" in sql
+    assert ".parser_version" in sql
+    assert ".tenant_id = cfdi_metadata_ledger.tenant_id" in sql
+    assert ".uuid = cfdi_metadata_ledger.uuid" in sql
+    assert "raw_payload" not in sql
+    assert "issuer_rfc" not in sql and "receiver_rfc" not in sql
+
+
+@pytest.mark.parametrize("payment_present", [False, True])
+def test_quality_adapter_reflects_bound_v5_payment_presence(payment_present: bool) -> None:
+    factory, _ = _factory(
+        [
+            _row(
+                metadata_present=True,
+                xml_present=True,
+                cancelled_metadata=False,
+                xml_conflict=False,
+                payment_expected=True,
+                payment_present=payment_present,
+                parser_status="complete",
+                reconciliation_state="state_checked",
+            )
+        ]
+    )
+    observations = AccountingPostgresAdapter(factory).quality_observations("tenant")
+    assert observations[0].payment_present is payment_present
+
+
 def test_v5_accounting_statements_scope_parent_and_evidence_without_legacy_columns() -> None:
     for builder in (tax_records_statement, payment_records_statement, payroll_records_statement):
         statement = builder("tenant", start=date(2026, 1, 1), end=date(2026, 1, 14))

@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import Select, and_, exists, func, literal, select, union_all
 from sqlalchemy.orm import aliased
 
+from cfdi_vault.accounting_ledger_v5 import PAYMENTS
 from cfdi_vault.recovery_db import CfdiDocument, CfdiMetadataLedger, XmlEvidence
 
 _UTC = timezone.utc
@@ -40,7 +41,7 @@ def _metadata_quality_statement(tenant_id: str, start: date | None, end: date | 
             .label("cancelled_metadata"),
             _xml_conflict(tenant_column, uuid_column).label("xml_conflict"),
             (func.upper(func.coalesce(CfdiDocument.payment_method, "")) == "PPD").label("payment_expected"),
-            literal(False).label("payment_present"),
+            _payment_exists(tenant_column, uuid_column, CfdiDocument.id).label("payment_present"),
             func.coalesce(CfdiDocument.parser_status, "partial").label("parser_status"),
             func.coalesce(CfdiMetadataLedger.reconciliation_state, "unknown").label("reconciliation_state"),
             CfdiMetadataLedger.issue_date.label("observed_at"),
@@ -67,7 +68,7 @@ def _document_quality_statement(tenant_id: str, start: date | None, end: date | 
             literal(False).label("cancelled_metadata"),
             _xml_conflict(tenant_column, uuid_column).label("xml_conflict"),
             (func.upper(func.coalesce(CfdiDocument.payment_method, "")) == "PPD").label("payment_expected"),
-            literal(False).label("payment_present"),
+            _payment_exists(tenant_column, uuid_column, CfdiDocument.id).label("payment_present"),
             func.coalesce(CfdiDocument.parser_status, "partial").label("parser_status"),
             literal("unknown").label("reconciliation_state"),
             CfdiDocument.issue_date.label("observed_at"),
@@ -95,6 +96,41 @@ def _xml_conflict(tenant_column: Any, uuid_column: Any) -> Any:
         .group_by(evidence.tenant_id, evidence.uuid)
         .having(func.count(func.distinct(evidence.xml_sha256)) > 1)
     )
+
+
+def _payment_exists(tenant_column: Any, uuid_column: Any, document_id_column: Any) -> Any:
+    """Check for one complete V5 payment bound to the observed XML evidence.
+
+    The existence predicate intentionally joins every durable provenance edge:
+    tenant, parent document, evidence id, evidence hash, and parser version.
+    Legacy child rows therefore cannot satisfy this expression merely by
+    sharing a numeric id or document UUID.  The projection remains a boolean;
+    no child identifiers or payload columns are selected.
+    """
+
+    evidence = aliased(XmlEvidence)
+    payment = PAYMENTS
+    evidence_join = and_(
+        payment.c.tenant_id == evidence.tenant_id,
+        payment.c.source_evidence_id == evidence.id,
+        payment.c.source_sha256 == evidence.xml_sha256,
+        payment.c.parser_version == evidence.parser_version,
+    )
+    conditions = (
+        payment.c.tenant_id == tenant_column,
+        payment.c.document_id == document_id_column,
+        evidence.tenant_id == tenant_column,
+        evidence.uuid == uuid_column,
+        payment.c.document_id.is_not(None),
+        payment.c.source_evidence_id.is_not(None),
+        payment.c.source_sha256.is_not(None),
+        payment.c.parser_version.is_not(None),
+        payment.c.parser_status.is_not(None),
+        payment.c.payment_ordinal.is_not(None),
+        payment.c.normalization_generation.is_not(None),
+        payment.c.idempotency_key.is_not(None),
+    )
+    return exists(select(1).select_from(payment.join(evidence, evidence_join)).where(*conditions))
 
 
 def _date_conditions(column: Any, start: date | None, end: date | None) -> list[Any]:
