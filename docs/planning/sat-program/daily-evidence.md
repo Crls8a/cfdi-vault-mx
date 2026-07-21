@@ -281,6 +281,18 @@ older result; add a correction entry that points to the original observation.
 - blocker: runtime construction still needs to inject the V5 writer before live processing; the seam remains opt-in by design
 - next_step: dispatch `WORKER-LEDGER-RUNTIME-001` to wire the writer in the worker runtime without changing public queue payloads
 
+### 2026-07-21 — E-2026-07-21-022 — WORKER-LEDGER-RUNTIME-001
+
+- owner_role: Worker/queue + persistence/data
+- branch_commit: `46b1439`
+- scope: synthetic
+- action: Wired the V5 projection writer into the runtime consumer using the existing PostgreSQL session factory.
+- evidence: Fresh review accepted; owner full suite `2486 passed, 2 skipped`; focused CLI/campaign tests `21 passed`; review-focused tests `28 passed, 8 skipped`; Ruff, sensitive-fixture scanner, SAT-context scanner, and `git diff --check` passed; no SAT contact.
+- result: confirmed
+- status: verified
+- blocker: real SAT request and real artifact evidence still require exact human authorization and external storage readiness
+- next_step: request the exact live grant for `SAT-META-REAL-001`; do not activate scheduler or broaden the window
+
 ## Live evidence slots
 
 The following slots remain empty until Carlos authorizes the exact run. An
