@@ -84,6 +84,71 @@ def test_worker_run_one_shot_uses_lifecycle_wrapper(
     assert "processed=0 detail=No synthetic work." in capsys.readouterr().out
 
 
+def test_build_ledger_consumer_injects_v5_writer_from_service_factory() -> None:
+    class SessionFactory:
+        kw = {"bind": object()}
+
+    service = type("Service", (), {"queue": object(), "session_factory": SessionFactory()})()
+    consumer = download_cli._build_ledger_consumer(service)
+
+    from cfdi_vault.ledger_artifact_bridge import V5LedgerProjectionWriter
+
+    assert consumer is not None
+    assert isinstance(service.ledger_writer, V5LedgerProjectionWriter)
+    assert service.ledger_writer._mapper._repository._session_factory is service.session_factory  # type: ignore[attr-defined]
+
+
+def test_build_ledger_consumer_preserves_injected_writer() -> None:
+    class SessionFactory:
+        kw = {"bind": object()}
+
+    existing = object()
+    service = type(
+        "Service",
+        (),
+        {"queue": object(), "session_factory": SessionFactory(), "ledger_writer": existing},
+    )()
+
+    consumer = download_cli._build_ledger_consumer(service)
+
+    assert consumer is not None
+    assert service.ledger_writer is existing
+
+
+def test_build_ledger_consumer_redacts_writer_failure_reason() -> None:
+    class SessionFactory:
+        kw = {"bind": object()}
+
+    class Service:
+        queue = object()
+        session_factory = SessionFactory()
+
+        def process_queue_message_for_worker(self, _message, *, worker_ref: str):  # type: ignore[no-untyped-def]
+            from cfdi_vault.queue_contract import TerminalQueueError
+
+            raise TerminalQueueError("ledger_write_failed")
+
+    consumer = download_cli._build_ledger_consumer(Service())
+    from cfdi_vault.accounting_ledger_worker import LedgerParseError
+
+    with pytest.raises(LedgerParseError) as raised:
+        consumer._parser(  # type: ignore[union-attr]
+            type(
+                "Job",
+                (),
+                {
+                    "queue": "cfdi.parse.xml",
+                    "tenant_id": "tenant",
+                    "artifact_ref": "artifact",
+                    "idempotency_key": "key",
+                },
+            )()
+        )
+
+    assert raised.value.reason_code == "ledger_write_failed"
+    assert str(raised.value) == "ledger_write_failed"
+
+
 def test_download_request_prints_synthetic_accepted_result(tmp_path: Path) -> None:
     appdata_root = tmp_path / "appdata"
     _write_setup_profile(appdata_root)

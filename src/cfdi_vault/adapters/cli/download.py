@@ -94,11 +94,19 @@ def _build_ledger_consumer(service: object) -> object | None:
     if queue is None or engine is None:
         return None
     from cfdi_vault.accounting_ledger_jobs_v6 import LedgerJobStoreV6
-    from cfdi_vault.accounting_ledger_worker import LedgerParseAggregate
+    from cfdi_vault.accounting_ledger_v5 import AccountingLedgerRepository
+    from cfdi_vault.accounting_ledger_v5_mapper import LedgerWriteIntentMapper
+    from cfdi_vault.accounting_ledger_worker import LedgerParseAggregate, LedgerParseError
     from cfdi_vault.domain import QueueMessage
+    from cfdi_vault.ledger_artifact_bridge import V5LedgerProjectionWriter
     from cfdi_vault.ledger_job_consumer import LedgerJobConsumer
+    from cfdi_vault.queue_contract import TerminalQueueError
 
     store = LedgerJobStoreV6(engine)
+    if getattr(service, "ledger_writer", None) is None:
+        repository = AccountingLedgerRepository(factory)
+        mapper = LedgerWriteIntentMapper(repository)
+        setattr(service, "ledger_writer", V5LedgerProjectionWriter(mapper))
 
     def parser(job: object) -> LedgerParseAggregate:
         from datetime import datetime, timezone
@@ -114,7 +122,10 @@ def _build_ledger_consumer(service: object) -> object | None:
             idempotency_key=str(getattr(job, "idempotency_key")),
             created_at=datetime.now(timezone.utc),
         )
-        result = service.process_queue_message_for_worker(message, worker_ref="ledger-worker")  # type: ignore[attr-defined]
+        try:
+            result = service.process_queue_message_for_worker(message, worker_ref="ledger-worker")  # type: ignore[attr-defined]
+        except TerminalQueueError as exc:
+            raise LedgerParseError(exc.reason_code) from None
         count = max(0, int(getattr(result, "metadata_count", 0)))
         return LedgerParseAggregate(records_seen=count, records_written=count)
 
