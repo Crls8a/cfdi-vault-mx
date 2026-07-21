@@ -75,7 +75,9 @@ and 1h; later checks continue through the persisted schedule up to 48 hours.
 
 ### Lane B — durable accounting (parallel with SAT waiting)
 
-`LEDGER-V5-MAP-001 → ANALYSIS-DB-001 → ANALYSIS-CLI-001`
+`LEDGER-V5-REPO-001 → LEDGER-V5-MAP-001 → LEDGER-V5-BIND-001 →
+ANALYSIS-DB-FIELDS-001 → ANALYSIS-DB-READ-001 → ANALYSIS-DB-QUALITY-001 →
+ANALYSIS-DB-REPORT-001 → ANALYSIS-DB-INTEGRATION-001 → ANALYSIS-CLI-001`
 
 This lane uses synthetic XML and PostgreSQL test databases until M4 provides a
 real XML. It must not block the first Metadata proof, but M6 cannot be accepted
