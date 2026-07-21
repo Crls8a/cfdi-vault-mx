@@ -7,12 +7,11 @@ complements that still need dedicated normalization.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from typing import Protocol
 
 from cfdi_vault.parser import CfdiParseError, ParsedCfdi, _reject_doctype, parse_cfdi_xml
-
 
 PARSER_STATUS_COMPLETE = "complete"
 PARSER_STATUS_PARTIAL = "partial"

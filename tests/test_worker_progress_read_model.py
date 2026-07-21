@@ -6,7 +6,6 @@ from cfdi_vault.cache import InMemoryCache
 from cfdi_vault.cache_contract import ProgressObservation, ProgressStatus, WorkerHeartbeat
 from cfdi_vault.worker_progress import DurableWorkerJobState, WorkerProgressReadModel
 
-
 NOW = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
 
 

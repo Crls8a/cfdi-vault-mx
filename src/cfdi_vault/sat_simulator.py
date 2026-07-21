@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from io import BytesIO
-from zipfile import ZIP_DEFLATED, ZipFile
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
+from io import BytesIO
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from cfdi_vault.domain import CfdiStatusQuery, CfdiStatusResult, DownloadQuery, SatRequestState
 from cfdi_vault.sat_contract import (
     SatAuthResult,
     SatDownloadResult,
     SatOperation,
-    SatOutcomeAction,
     SatRequestResult,
     SatVerificationResult,
     classify_cfdi_status_outcome,

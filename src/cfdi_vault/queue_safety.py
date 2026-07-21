@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 
-
 _REASON_CODE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _RFC_SHAPE = re.compile(r"^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$")
 _BASE64ISH = re.compile(r"^[A-Za-z0-9+/=\s]{80,}$")

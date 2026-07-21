@@ -20,7 +20,6 @@ from cfdi_vault.recovery_db import (
 )
 from cfdi_vault.storage_contract import StorageKey
 
-
 _SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
 
 

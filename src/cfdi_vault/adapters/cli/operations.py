@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .common import *
 
+
 def _print_record(record: ImportRecord) -> None:
     if record.error:
         typer.echo(f"ERROR {record.source_name}: {record.error}", err=True)

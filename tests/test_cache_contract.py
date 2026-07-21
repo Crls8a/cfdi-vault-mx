@@ -13,7 +13,6 @@ from cfdi_vault.cache_contract import (
     classify_heartbeat,
 )
 
-
 NOW = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
 
 

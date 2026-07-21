@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from datetime import datetime
 from decimal import Decimal
-import os
 
 from sqlalchemy import DateTime, Numeric, String, create_engine, inspect
 from sqlalchemy.engine import Engine, make_url

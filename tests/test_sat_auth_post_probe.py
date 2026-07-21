@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from http.client import RemoteDisconnected
 import socket
 import ssl
+from http.client import RemoteDisconnected
 from typing import Mapping
 from urllib.error import URLError
 

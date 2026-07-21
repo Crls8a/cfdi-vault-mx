@@ -7,11 +7,11 @@ repository and does not persist the private-key phrase.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
-import hashlib
-import json
 from pathlib import Path
 from typing import Any
 

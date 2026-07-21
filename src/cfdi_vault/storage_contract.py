@@ -7,11 +7,10 @@ reference returned by an adapter.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import PurePosixPath
-import re
-
 
 _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
 _SEGMENT_PATTERN = re.compile(r"[^A-Za-z0-9_.=-]+")

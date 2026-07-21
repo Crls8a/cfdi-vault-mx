@@ -8,9 +8,9 @@ compatible client, or opt in through ``from_boto3`` after installing the
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import re
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from cfdi_vault.storage import sha256_bytes

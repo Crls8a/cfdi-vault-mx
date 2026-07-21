@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from zipfile import ZipFile
 from io import BytesIO
+from zipfile import ZipFile
 
 import pytest
 

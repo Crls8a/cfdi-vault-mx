@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -17,8 +17,8 @@ from cfdi_vault.live_permit import (
 )
 from cfdi_vault.sat_auth_constants import (
     AUTH_ENVELOPE_VARIANT_ACTION_BEFORE_SECURITY,
-    AUTH_ENVELOPE_VARIANT_SECURITY_ONLY,
     AUTH_ENVELOPE_VARIANT_SECURITY_BEFORE_ACTION,
+    AUTH_ENVELOPE_VARIANT_SECURITY_ONLY,
 )
 
 NOW = datetime(2026, 7, 3, 18, 0, tzinfo=timezone.utc)

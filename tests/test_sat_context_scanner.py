@@ -4,7 +4,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCANNER = REPO_ROOT / "scripts" / "scan_sat_context.py"
 

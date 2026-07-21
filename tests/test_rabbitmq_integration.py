@@ -7,9 +7,8 @@ import time
 import pytest
 
 from cfdi_vault.domain import QueueMessage, QueueName
-from cfdi_vault.queue_contract import DeliveryAction, RetryPolicy, RetryableQueueError, TerminalQueueError
+from cfdi_vault.queue_contract import DeliveryAction, RetryableQueueError, RetryPolicy, TerminalQueueError
 from cfdi_vault.queueing import RabbitMqQueue
-
 
 RABBITMQ_URL = os.getenv("CFDI_VAULT_TEST_RABBITMQ_URL")
 pytestmark = [

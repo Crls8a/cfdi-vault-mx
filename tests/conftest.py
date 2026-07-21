@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import Callable
 
 import pytest
-
 from sqlalchemy.engine import Engine, make_url
 
-from cfdi_vault.db import create_engine_from_url
 import cfdi_vault.recovery_db  # noqa: F401
+from cfdi_vault.db import create_engine_from_url
 
 MIGRATION_DIR = Path(__file__).resolve().parents[1] / "db" / "migration"
 MIGRATION_NAME = re.compile(r"^V(?P<version>\d+)__.+\.sql$")

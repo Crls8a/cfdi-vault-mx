@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 from cfdi_vault.cfdi_parser import (
+    PARSER_STATUS_COMPLETE,
+    PARSER_STATUS_PARTIAL,
+    PARSER_STATUS_UNSUPPORTED_ERROR,
     CfdiParserV32,
     CfdiParserV33,
     CfdiParserV40,
     CfdiVersionDetector,
     CommonCfdiParser,
     ComplementParserRegistry,
-    PARSER_STATUS_COMPLETE,
-    PARSER_STATUS_PARTIAL,
-    PARSER_STATUS_UNSUPPORTED_ERROR,
 )
 
 
@@ -158,6 +158,7 @@ def test_version_detector_rejects_doctype_before_root_parse() -> None:
 '''
 
     import pytest
+
     from cfdi_vault.parser import CfdiParseError
 
     with pytest.raises(CfdiParseError, match="DOCTYPE"):

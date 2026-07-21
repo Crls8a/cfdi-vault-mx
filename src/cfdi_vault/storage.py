@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import hashlib
 from pathlib import Path
-import re
 
 from cfdi_vault.storage_contract import (
     EvidenceReference,
@@ -16,7 +16,6 @@ from cfdi_vault.storage_contract import (
     StorageKey,
     StorageNotFoundError,
 )
-
 
 SEGMENT_PATTERN = re.compile(r"[^A-Za-z0-9_.=-]+")
 

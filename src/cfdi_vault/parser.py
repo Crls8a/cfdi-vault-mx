@@ -6,10 +6,10 @@ not validate CFDI authenticity, stamp status, certificate chains, or SAT state.
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-import xml.etree.ElementTree as ET
 
 
 class CfdiParseError(ValueError):

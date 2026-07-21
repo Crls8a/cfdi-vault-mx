@@ -134,7 +134,9 @@ Local evidence currently available:
   Flyway V1-V7 applied and 43 focused persistence/consumer/migration tests
   passing; the database was removed with the disposable Compose project.
 
-The repository-wide Ruff command still reports the pre-existing legacy lint
-baseline outside this unit; all touched files pass focused Ruff and format
-checks. No SAT endpoint or credential was used. The separate human-gated SAT
-phase remains blocked until the global lint baseline is handled explicitly.
+The repository-wide Ruff command now passes. The ten legacy CLI family shims
+retain an explicit per-file F403/F405 compatibility exception for their
+intentional ``common.py`` re-export; migrating those shims to module-local
+imports remains a separate cleanup. No SAT endpoint or credential was used.
+The separate human-gated SAT phase remains blocked until its own live
+preflight is authorized.

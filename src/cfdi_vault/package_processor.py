@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
+import re
+import struct
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import PurePosixPath
-import re
-import struct
 from typing import Protocol
 from zipfile import BadZipFile, LargeZipFile, ZipFile
 
 from cfdi_vault.storage import sha256_bytes
-
 
 _ALLOWED_EXTENSIONS = {".csv", ".txt", ".xml"}
 _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
 import hashlib
+from dataclasses import dataclass
 from io import BytesIO
 from typing import Iterable
-from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
+from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
 from cfdi_vault.domain import SatRequestState
 from cfdi_vault.sat_contract import SatOutcomeAction

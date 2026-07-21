@@ -7,7 +7,6 @@ from enum import StrEnum
 
 from cfdi_vault.domain import ReconciliationState
 
-
 CANCELLED_STATUSES = frozenset({"cancelado", "cancelada", "cancelled", "canceled"})
 ACTIVE_STATUSES = frozenset({"vigente", "active"})
 TRANSIENT_STATUSES = frozenset({"en_proceso", "en proceso", "processing", "pending"})

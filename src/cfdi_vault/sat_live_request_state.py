@@ -7,17 +7,16 @@ for local follow-up verification while every printable field remains redacted.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Mapping
 
 from cfdi_vault.domain import DownloadQuery
-
 
 STATE_SCHEMA_VERSION = 1
 STATE_DIR = "state"

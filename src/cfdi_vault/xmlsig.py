@@ -12,10 +12,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from lxml import etree
-from signxml import InvalidCertificate, InvalidDigest, InvalidInput, InvalidSignature
-from signxml import XMLSigner, XMLVerifier, methods
+from signxml import InvalidCertificate, InvalidDigest, InvalidInput, InvalidSignature, XMLSigner, XMLVerifier, methods
 from signxml.algorithms import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
-
 
 _XML_PARSER = etree.XMLParser(resolve_entities=False, no_network=True)
 

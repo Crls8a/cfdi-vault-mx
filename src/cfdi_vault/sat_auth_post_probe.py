@@ -5,16 +5,16 @@ from __future__ import annotations
 import socket
 import ssl
 import time
-from http.client import RemoteDisconnected
 from dataclasses import dataclass
+from http.client import RemoteDisconnected
 from typing import Mapping, Protocol
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 from uuid import uuid4
 
 from cfdi_vault.sat_auth_constants import AUTH_NAMESPACE, AUTH_OPERATION, AUTH_SOAP_ACTION
-from cfdi_vault.sat_auth_http import build_soap11_headers
 from cfdi_vault.sat_auth_endpoints import RedactedEndpoint, describe_endpoint, resolve_auth_endpoint
+from cfdi_vault.sat_auth_http import build_soap11_headers
 
 AUTH_POST_PROBE_BODY = f'''<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:des="{AUTH_NAMESPACE}">

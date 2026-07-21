@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import inspect
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-import inspect
 
 from cfdi_vault import sat_async_verify
 from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType, SatRequestState

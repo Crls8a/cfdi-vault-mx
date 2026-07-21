@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-
 DANGEROUS_EXTENSIONS = {
     ".key": "private key material is forbidden",
     ".cer": "real or dummy certificate files must not be committed",

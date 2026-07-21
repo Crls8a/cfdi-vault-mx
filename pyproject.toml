@@ -74,5 +74,20 @@ line-length = 120
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
 
+# These CLI family shims intentionally re-export the shared command surface
+# from ``common.py``.  Keep the compatibility boundary explicit while the
+# legacy shims are migrated to typed, module-local imports.
+[tool.ruff.lint.per-file-ignores]
+"src/cfdi_vault/adapters/cli/download.py" = ["F403", "F405"]
+"src/cfdi_vault/adapters/cli/live.py" = ["F403", "F405"]
+"src/cfdi_vault/adapters/cli/operations.py" = ["F403", "F405"]
+"src/cfdi_vault/adapters/cli/sat_auth.py" = ["F403", "F405"]
+"src/cfdi_vault/adapters/cli/sat_backfill.py" = ["F403", "F405"]
+"src/cfdi_vault/adapters/cli/sat_common.py" = ["F403", "F405"]
+"src/cfdi_vault/adapters/cli/sat_metadata.py" = ["F403", "F405"]
+"src/cfdi_vault/adapters/cli/sat_probes.py" = ["F403", "F405"]
+"src/cfdi_vault/adapters/cli/sat_verify.py" = ["F403", "F405"]
+"src/cfdi_vault/adapters/cli/secrets.py" = ["F403", "F405"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/cfdi_vault"]

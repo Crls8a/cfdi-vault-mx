@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from cfdi_vault.domain import QueueMessage, QueueName
-from cfdi_vault.queue_contract import DeliveryAction, RetryPolicy, RetryableQueueError
+from cfdi_vault.queue_contract import DeliveryAction, RetryableQueueError, RetryPolicy
 from cfdi_vault.queueing import InMemoryQueue
 
 NOW = datetime(2026, 7, 9, tzinfo=timezone.utc)

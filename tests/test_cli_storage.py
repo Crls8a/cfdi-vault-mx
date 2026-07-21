@@ -3,7 +3,6 @@ from typer.testing import CliRunner
 
 from cfdi_vault.cli import app
 
-
 pytestmark = pytest.mark.integration
 
 

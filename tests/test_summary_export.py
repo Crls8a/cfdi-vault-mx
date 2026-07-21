@@ -4,9 +4,9 @@ import csv
 from pathlib import Path
 
 import pytest
+
 from cfdi_vault.service import VaultService
 from tests.conftest import write_xml
-
 
 pytestmark = pytest.mark.integration
 

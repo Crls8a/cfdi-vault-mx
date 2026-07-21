@@ -11,7 +11,6 @@ from cfdi_vault.db import Invoice
 from cfdi_vault.service import VaultService
 from tests.conftest import write_xml
 
-
 pytestmark = pytest.mark.integration
 
 

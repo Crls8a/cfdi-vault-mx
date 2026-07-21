@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
-from pathlib import Path
 import shutil
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Mapping
 
 from cfdi_vault.setup_core import (
@@ -16,7 +16,6 @@ from cfdi_vault.setup_core import (
     ensure_profile_layout,
     find_repo_root,
 )
-
 
 PRIVATE_KEY_SUFFIXES = frozenset({".key", ".pem"})
 

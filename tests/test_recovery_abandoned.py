@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import select
@@ -10,7 +10,6 @@ from cfdi_vault.cache_recovery import AbandonedJobObservation
 from cfdi_vault.domain import DownloadDirection, JobStatus, RequestType
 from cfdi_vault.recovery_db import DownloadJob, QueueJobEvent
 from cfdi_vault.recovery_service import RecoveryService, build_default_query
-
 
 pytestmark = pytest.mark.integration
 

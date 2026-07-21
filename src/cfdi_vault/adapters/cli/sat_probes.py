@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from .common import *
 from cfdi_vault.sat_verify_post_probe import VERIFY_POST_PROBE_ENVELOPE_SOURCES, VERIFY_POST_PROBE_VARIANTS
+
+from .common import *
 
 
 def _validate_live_transport_probe_guard(

@@ -1,4 +1,5 @@
 """Validate and report module-feature work orchestration (stdlib only)."""
+
 from __future__ import annotations
 
 import argparse
@@ -34,22 +35,31 @@ class WorkItemsError(ValueError):
 
 def _scalar(raw: str) -> Any:
     value = raw.strip()
-    if value == "[]": return []
-    if value in {"null", "~"}: return None
-    if value in {"true", "false"}: return value == "true"
-    if value.startswith('"') and value.endswith('"'): return json.loads(value)
-    if value.startswith("'") and value.endswith("'"): return value[1:-1]
-    try: return int(value)
-    except ValueError: return value
+    if value == "[]":
+        return []
+    if value in {"null", "~"}:
+        return None
+    if value in {"true", "false"}:
+        return value == "true"
+    if value.startswith('"') and value.endswith('"'):
+        return json.loads(value)
+    if value.startswith("'") and value.endswith("'"):
+        return value[1:-1]
+    try:
+        return int(value)
+    except ValueError:
+        return value
 
 
 def parse_restricted_yaml(text: str) -> dict[str, Any]:
     """Parse the mappings, lists, and scalars used by work-items.yaml."""
     lines = []
     for number, raw in enumerate(text.splitlines(), 1):
-        if not raw.strip() or raw.lstrip().startswith("#"): continue
-        prefix = raw[:len(raw) - len(raw.lstrip())]
-        if "\t" in prefix: raise WorkItemsError(f"line {number}: tabs are not allowed")
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        prefix = raw[: len(raw) - len(raw.lstrip())]
+        if "\t" in prefix:
+            raise WorkItemsError(f"line {number}: tabs are not allowed")
         lines.append((len(prefix), raw.strip(), number))
 
     def block(index: int, indent: int) -> tuple[Any, int]:
@@ -57,37 +67,53 @@ def parse_restricted_yaml(text: str) -> dict[str, Any]:
         result: Any = [] if sequence else {}
         while index < len(lines):
             level, content, number = lines[index]
-            if level < indent: break
-            if level != indent: raise WorkItemsError(f"line {number}: invalid indentation")
+            if level < indent:
+                break
+            if level != indent:
+                raise WorkItemsError(f"line {number}: invalid indentation")
             if sequence:
-                if not content.startswith("- "): break
+                if not content.startswith("- "):
+                    break
                 entry = content[2:]
-                if ":" not in entry or entry.startswith(("\"", "'")):
-                    result.append(_scalar(entry)); index += 1; continue
+                if ":" not in entry or entry.startswith(('"', "'")):
+                    result.append(_scalar(entry))
+                    index += 1
+                    continue
                 key, value = entry.split(":", 1)
                 if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", key.strip()):
                     raise WorkItemsError(f"line {number}: quote list scalars containing colons")
-                item = {key.strip(): _scalar(value) if value.strip() else None}; index += 1
+                item = {key.strip(): _scalar(value) if value.strip() else None}
+                index += 1
                 if index < len(lines) and lines[index][0] > indent:
                     extra, index = block(index, lines[index][0])
-                    if not isinstance(extra, dict): raise WorkItemsError(f"line {number}: mapping expected")
+                    if not isinstance(extra, dict):
+                        raise WorkItemsError(f"line {number}: mapping expected")
                     duplicate = set(item) & set(extra)
-                    if duplicate: raise WorkItemsError(f"line {number}: duplicate key: {sorted(duplicate)[0]}")
+                    if duplicate:
+                        raise WorkItemsError(f"line {number}: duplicate key: {sorted(duplicate)[0]}")
                     item.update(extra)
                 result.append(item)
             else:
-                if content.startswith("- ") or ":" not in content: raise WorkItemsError(f"line {number}: mapping expected")
-                key, value = content.split(":", 1); index += 1
+                if content.startswith("- ") or ":" not in content:
+                    raise WorkItemsError(f"line {number}: mapping expected")
+                key, value = content.split(":", 1)
+                index += 1
                 key = key.strip()
-                if key in result: raise WorkItemsError(f"line {number}: duplicate key: {key}")
-                if value.strip(): result[key] = _scalar(value)
-                elif index < len(lines) and lines[index][0] > indent: result[key], index = block(index, lines[index][0])
-                else: result[key] = None
+                if key in result:
+                    raise WorkItemsError(f"line {number}: duplicate key: {key}")
+                if value.strip():
+                    result[key] = _scalar(value)
+                elif index < len(lines) and lines[index][0] > indent:
+                    result[key], index = block(index, lines[index][0])
+                else:
+                    result[key] = None
         return result, index
 
-    if not lines: raise WorkItemsError("work-items file is empty")
+    if not lines:
+        raise WorkItemsError("work-items file is empty")
     parsed, end = block(0, lines[0][0])
-    if end != len(lines) or not isinstance(parsed, dict): raise WorkItemsError("invalid top-level document")
+    if end != len(lines) or not isinstance(parsed, dict):
+        raise WorkItemsError("invalid top-level document")
     return parsed
 
 
@@ -97,12 +123,13 @@ def load_work_items(path: Path = DEFAULT_PATH) -> dict[str, Any]:
 
 def _has_canonical_type_label(item: dict[str, Any]) -> bool:
     labels = (
-        item["required_pr_type_labels"] if "required_pr_type_labels" in item
-        else [item.get("required_pr_type_label")]
+        item["required_pr_type_labels"] if "required_pr_type_labels" in item else [item.get("required_pr_type_label")]
     )
     return (
-        isinstance(labels, list) and len(labels) == 1
-        and isinstance(labels[0], str) and TYPE_LABEL_PATTERN.fullmatch(labels[0]) is not None
+        isinstance(labels, list)
+        and len(labels) == 1
+        and isinstance(labels[0], str)
+        and TYPE_LABEL_PATTERN.fullmatch(labels[0]) is not None
     )
 
 
@@ -134,7 +161,8 @@ def _string_list(item: dict[str, Any], field: str) -> tuple[list[str], list[str]
 
 def _legacy_ci_evidence_is_valid(item: dict[str, Any], gates: dict[str, Any]) -> bool:
     metadata = (
-        item.get("kind") == "integration" and _uses_integration_namespace(item)
+        item.get("kind") == "integration"
+        and _uses_integration_namespace(item)
         and item.get("required_issue_label") == "status:approved"
         and _is_positive_integer(item.get("issue"))
         and _is_positive_integer(item.get("pull_request"))
@@ -142,21 +170,22 @@ def _legacy_ci_evidence_is_valid(item: dict[str, Any], gates: dict[str, Any]) ->
     )
     return (
         item.get("status") == "integrated_remote"
-        and item.get("ci_evidence_mode") == LEGACY_CI_EVIDENCE_MODE and metadata
+        and item.get("ci_evidence_mode") == LEGACY_CI_EVIDENCE_MODE
+        and metadata
         and all(gates.get(gate) == LEGACY_CI_GATE_VALUE for gate in PUBLICATION_CI_GATES)
     )
 
 
 def _publication_ci_failures(gates: dict[str, Any]) -> list[str]:
-    return [
-        f"gate {gate} must be passed" for gate in PUBLICATION_CI_GATES
-        if gates.get(gate) != CI_GATE_PASSED
-    ]
+    return [f"gate {gate} must be passed" for gate in PUBLICATION_CI_GATES if gates.get(gate) != CI_GATE_PASSED]
 
 
 def _item_policy_failures(
-    item: dict[str, Any], registry: dict[str, dict[str, Any]], *,
-    readiness: bool = False, publication: bool = False,
+    item: dict[str, Any],
+    registry: dict[str, dict[str, Any]],
+    *,
+    readiness: bool = False,
+    publication: bool = False,
 ) -> list[str]:
     """Return shared schema, invariant, and optional readiness failures."""
     failures: list[str] = []
@@ -229,13 +258,8 @@ def _item_policy_failures(
             failures.append("publication requires lightweight CI gates")
         if not legacy or publication:
             failures.extend(_publication_ci_failures(gates))
-    if kind == "feature" and (
-        readiness or _is_nonempty_string(status) and status in LOCAL_READY_STATUSES
-    ):
-        failures.extend(
-            f"gate {gate} must be passed" for gate, value in gates.items()
-            if value != CI_GATE_PASSED
-        )
+    if kind == "feature" and (readiness or _is_nonempty_string(status) and status in LOCAL_READY_STATUSES):
+        failures.extend(f"gate {gate} must be passed" for gate, value in gates.items() if value != CI_GATE_PASSED)
     if readiness:
         failures.extend(blockers)
         if _is_nonempty_string(status) and status in NON_READY_STATUSES:
@@ -275,7 +299,9 @@ def validate_document(document: dict[str, Any]) -> tuple[list[str], list[str]]:
         approval = wave3.get("human_approval")
         dependency = wave3.get("dependency")
         for field, value in (
-            ("status", status), ("human_approval", approval), ("dependency", dependency),
+            ("status", status),
+            ("human_approval", approval),
+            ("dependency", dependency),
         ):
             if not _is_nonempty_string(value):
                 errors.append(f"wave3: {field} must be a non-empty string")
@@ -283,7 +309,10 @@ def validate_document(document: dict[str, Any]) -> tuple[list[str], list[str]]:
         checks = (
             (_is_nonempty_string(status) and status not in {"planned", "in_progress", "completed"}, "invalid status"),
             (not isinstance(wave3.get("started"), bool), "started must be a boolean"),
-            (_is_nonempty_string(approval) and approval not in {"required", "approved"}, "human_approval must be required or approved"),
+            (
+                _is_nonempty_string(approval) and approval not in {"required", "approved"},
+                "human_approval must be required or approved",
+            ),
             (_is_nonempty_string(dependency) and dependency not in registry, "dependency does not exist"),
             (status == "planned" and wave3.get("started") is not False, "planned requires started=false"),
             (wave3.get("started") is True and approval != "approved", "started=true requires human_approval=approved"),
@@ -293,9 +322,11 @@ def validate_document(document: dict[str, Any]) -> tuple[list[str], list[str]]:
         errors.extend(f"wave3: {message}" for failed, message in checks if failed)
     return errors, warnings
 
+
 def item_by_id(document: dict[str, Any], item_id: str) -> dict[str, Any]:
     for item in document.get("items", []):
-        if item.get("id") == item_id: return item
+        if item.get("id") == item_id:
+            return item
     raise WorkItemsError(f"unknown work item: {item_id}")
 
 
@@ -316,7 +347,10 @@ def requires_remote_ceremony(item: dict[str, Any]) -> bool:
 
 
 def _authoritative_item_policy(
-    document: Any, item: Any, *, publication: bool = False,
+    document: Any,
+    item: Any,
+    *,
+    publication: bool = False,
 ) -> tuple[dict[str, Any] | None, list[str]]:
     """Resolve one exact registry item and apply shared readiness policy."""
     if not isinstance(item, dict):
@@ -340,11 +374,12 @@ def _authoritative_item_policy(
     authoritative = matches[0]
     if item != authoritative:
         return None, ["requested item does not match authoritative document item"]
-    registry = {
-        entry["id"]: entry for entry in items
-    }
+    registry = {entry["id"]: entry for entry in items}
     blockers = _item_policy_failures(
-        authoritative, registry, readiness=True, publication=publication,
+        authoritative,
+        registry,
+        readiness=True,
+        publication=publication,
     )
     return authoritative, blockers
 
@@ -370,24 +405,31 @@ def wave3_blocker(document: Any) -> str | None:
     status = dependency.get("status")
     if status == "integrated_remote":
         return None
-    return (
-        f"{dependency_id} must be integrated in origin/dev "
-        f"(current status: {status})"
-    )
+    return f"{dependency_id} must be integrated in origin/dev (current status: {status})"
 
 
 def _issue_labels(issue: int) -> list[str] | None:
-    if not shutil.which("gh"): return None
+    if not shutil.which("gh"):
+        return None
     try:
-        result = subprocess.run(["gh", "issue", "view", str(issue), "--json", "labels"], capture_output=True, text=True, check=False)
-        if result.returncode: return None
+        result = subprocess.run(
+            ["gh", "issue", "view", str(issue), "--json", "labels"], capture_output=True, text=True, check=False
+        )
+        if result.returncode:
+            return None
         payload = json.loads(result.stdout)
         return [label["name"] for label in payload.get("labels", [])]
     except (OSError, json.JSONDecodeError, KeyError, TypeError):
         return None
 
 
-def pr_readiness(item: dict[str, Any], issue_labels: list[str] | None = None, *, strict: bool = False, document: dict[str, Any] | None = None) -> tuple[bool, list[str], list[str]]:
+def pr_readiness(
+    item: dict[str, Any],
+    issue_labels: list[str] | None = None,
+    *,
+    strict: bool = False,
+    document: dict[str, Any] | None = None,
+) -> tuple[bool, list[str], list[str]]:
     """Check readiness without changing GitHub state."""
     authoritative, blockers = _authoritative_item_policy(document, item, publication=True)
     if authoritative is None:
@@ -402,21 +444,26 @@ def pr_readiness(item: dict[str, Any], issue_labels: list[str] | None = None, *,
     if _is_positive_integer(issue) and approval == "status:approved":
         labels = issue_labels if issue_labels is not None else _issue_labels(issue)
         if labels is None:
-            message = f"could not verify issue #{issue} label {approval}; gh unavailable, unauthenticated, or API failed"
+            message = (
+                f"could not verify issue #{issue} label {approval}; gh unavailable, unauthenticated, or API failed"
+            )
             warnings.append(message)
             blockers.append("PR readiness is unknown until issue approval can be verified")
-        elif approval not in labels: blockers.append(f"issue #{issue} missing {approval}")
+        elif approval not in labels:
+            blockers.append(f"issue #{issue} missing {approval}")
     blockers = list(dict.fromkeys(blockers))
     return not blockers, blockers, warnings
 
 
 def generated_prompt(item: dict[str, Any], document: dict[str, Any] | None = None) -> str:
     gates = ", ".join(f"{key}={value}" for key, value in item["gates"].items())
-    return (f"Work item {item['id']}: {item['title']}\nObjective: deliver only the {item['module']} scope.\n"
-            f"Branch: {item['branch']} (base: {item['base_branch']}, target: {item['target_branch']})\n"
-            f"Agent: {item.get('agent', 'unassigned')}; wave: {item.get('wave', 'unassigned')}\n"
-            f"Blockers: {'; '.join(coordination_blockers(document, item)) or 'none recorded'}\nGates: {gates}\n"
-            "Safety: no real fiscal data, SAT live, credentials, secrets, or .env; do not target main, push, merge, or change labels automatically.")
+    return (
+        f"Work item {item['id']}: {item['title']}\nObjective: deliver only the {item['module']} scope.\n"
+        f"Branch: {item['branch']} (base: {item['base_branch']}, target: {item['target_branch']})\n"
+        f"Agent: {item.get('agent', 'unassigned')}; wave: {item.get('wave', 'unassigned')}\n"
+        f"Blockers: {'; '.join(coordination_blockers(document, item)) or 'none recorded'}\nGates: {gates}\n"
+        "Safety: no real fiscal data, SAT live, credentials, secrets, or .env; do not target main, push, merge, or change labels automatically."
+    )
 
 
 def next_action(document: dict[str, Any]) -> str:
@@ -427,17 +474,25 @@ def next_action(document: dict[str, Any]) -> str:
     wave3 = document.get("wave3", {})
     if wave3.get("status") == "planned" and wave3.get("started") is False and wave3.get("human_approval") == "required":
         return "Next: Wave 3 is planned from updated dev and can start only after explicit human approval."
-    if wave3.get("status") == "in_progress" and wave3.get("started") is True and wave3.get("human_approval") == "approved":
+    if (
+        wave3.get("status") == "in_progress"
+        and wave3.get("started") is True
+        and wave3.get("human_approval") == "approved"
+    ):
         wave_items = [
-            item for item in document.get("items", [])
-            if item.get("kind") == "feature" and item.get("wave") == "Wave 3"
+            item for item in document.get("items", []) if item.get("kind") == "feature" and item.get("wave") == "Wave 3"
         ]
         if wave_items and all(item.get("status") == "local_integrated" for item in wave_items):
             return "Next: request explicit approval before creating the Wave 3 integration cut; remote publication is not authorized."
         return "Next: complete the authorized local Wave 3 features and required gates; remote publication is not authorized."
-    if wave3.get("status") == "completed" and wave3.get("started") is True and wave3.get("human_approval") == "approved":
+    if (
+        wave3.get("status") == "completed"
+        and wave3.get("started") is True
+        and wave3.get("human_approval") == "approved"
+    ):
         cuts = [
-            item for item in document.get("items", [])
+            item
+            for item in document.get("items", [])
             if item.get("kind") == "integration" and item.get("wave") == "Wave 3"
         ]
         if len(cuts) == 1 and cuts[0].get("status") == "cut_ready":
@@ -446,25 +501,37 @@ def next_action(document: dict[str, Any]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--strict", action="store_true"); parser.add_argument("--file", type=Path, default=DEFAULT_PATH)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--strict", action="store_true")
+    parser.add_argument("--file", type=Path, default=DEFAULT_PATH)
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("list", "status", "validate", "blocked", "next"):
         sub.add_parser(name)
-    for name in ("item", "pr-ready", "prompt"): sub.add_parser(name).add_argument("id")
+    for name in ("item", "pr-ready", "prompt"):
+        sub.add_parser(name).add_argument("id")
     args = parser.parse_args(argv)
     try:
-        document = load_work_items(args.file); errors, warnings = validate_document(document)
-        for warning in warnings: print(f"Warning: {warning}")
+        document = load_work_items(args.file)
+        errors, warnings = validate_document(document)
+        for warning in warnings:
+            print(f"Warning: {warning}")
         if errors:
-            for error in errors: print(f"Error: {error}")
+            for error in errors:
+                print(f"Error: {error}")
             return 2
         items = document["items"]
-        if args.command == "validate": print(f"Valid: {len(items)} work items")
+        if args.command == "validate":
+            print(f"Valid: {len(items)} work items")
         elif args.command == "list":
-            for item in items: print(f"{item['id']}: {item['title']}")
+            for item in items:
+                print(f"{item['id']}: {item['title']}")
         elif args.command == "status":
             for item in items:
-                category = "Integration cut" if item["kind"] == "integration" else ("Local feature" if is_local_feature(item) else "Remote feature")
+                category = (
+                    "Integration cut"
+                    if item["kind"] == "integration"
+                    else ("Local feature" if is_local_feature(item) else "Remote feature")
+                )
                 print(f"{category}: {item['id']}: {item['status']} | {item['branch']} -> {item['target_branch']}")
             wave3 = wave3_blocker(document)
             print(f"Remote blocker: {wave3}" if wave3 else "Remote blockers: none")
@@ -477,36 +544,50 @@ def main(argv: list[str] | None = None) -> int:
                 local = coordination_blockers(document, item)
                 if item.get("required_issue_label") and item.get("issue") and item.get("status") == "awaiting_approval":
                     local.append(f"issue #{item['issue']} requires {item['required_issue_label']}")
-                if local: print(f"Blocked: {item['id']}: {'; '.join(local)}")
+                if local:
+                    print(f"Blocked: {item['id']}: {'; '.join(local)}")
             wave3 = wave3_blocker(document)
-            if wave3: print(f"Blocked: Wave 3: {wave3}")
-            elif document.get("wave3", {}).get("human_approval") == "required" and document.get("wave3", {}).get("started") is False:
+            if wave3:
+                print(f"Blocked: Wave 3: {wave3}")
+            elif (
+                document.get("wave3", {}).get("human_approval") == "required"
+                and document.get("wave3", {}).get("started") is False
+            ):
                 print("Blocked: Wave 3 start requires explicit human approval")
         elif args.command == "next":
             print(next_action(document))
         else:
             item = item_by_id(document, args.id)
-            if args.command == "item": print(json.dumps(item, indent=2))
-            elif args.command == "prompt": print(generated_prompt(item, document))
+            if args.command == "item":
+                print(json.dumps(item, indent=2))
+            elif args.command == "prompt":
+                print(generated_prompt(item, document))
             else:
                 ready, blockers, notices = pr_readiness(item, strict=args.strict, document=document)
                 for notice in notices:
                     print(notice if notice == LOCAL_FEATURE_NOTICE else f"Warning: {notice}")
                 if ready:
                     if requires_remote_ceremony(item):
-                        print(f"Ready: {item['id']} may open a PR to {item['target_branch']} with PR label {item['required_pr_type_label']}")
+                        print(
+                            f"Ready: {item['id']} may open a PR to {item['target_branch']} with PR label {item['required_pr_type_label']}"
+                        )
                     elif not notices:
                         print(f"Feature publication is handled by an integration cut: {item['id']}")
                 else:
-                    for blocker in blockers: print(f"Blocked: {blocker}")
+                    for blocker in blockers:
+                        print(f"Blocked: {blocker}")
                     if requires_remote_ceremony(item):
                         if item.get("issue") and item.get("required_issue_label"):
-                            print(f"Human action required:\ngh issue edit {item['issue']} --add-label \"{item['required_issue_label']}\"")
+                            print(
+                                f'Human action required:\ngh issue edit {item["issue"]} --add-label "{item["required_issue_label"]}"'
+                            )
                         print(f"PR label (not issue label): {item.get('required_pr_type_label', 'not declared')}")
                     return 1
         return 0
     except (OSError, WorkItemsError, json.JSONDecodeError) as exc:
-        print(f"Error: {exc}", file=sys.stderr); return 2
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
 
 
-if __name__ == "__main__": raise SystemExit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())

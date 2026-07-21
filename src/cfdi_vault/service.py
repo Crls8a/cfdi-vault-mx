@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import csv
+import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-import csv
-import hashlib
 from pathlib import Path
 from zipfile import ZipFile
 

@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import os
 import time
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
 
 from cfdi_vault.cache import RedisCache
 from cfdi_vault.cache_contract import CacheKeys, ProgressObservation, ProgressStatus, WorkerHeartbeat
-
 
 REDIS_URL = os.getenv("CFDI_VAULT_TEST_REDIS_URL")
 pytestmark = [

@@ -8,11 +8,11 @@ import pytest
 
 from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType
 from cfdi_vault.sat_live_request_state import (
+    VERIFY_SCHEDULED,
     LiveRequestStateError,
     list_live_metadata_requests,
     live_metadata_state_path,
     load_live_metadata_request,
-    VERIFY_SCHEDULED,
     persist_live_metadata_request,
 )
 

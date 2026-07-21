@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
-import hashlib
 from typing import Protocol
 
 from cfdi_vault.domain import SatRequestState
@@ -29,7 +29,6 @@ from cfdi_vault.sat_live_request_state import (
     summarize_live_metadata_requests,
     upsert_live_metadata_request,
 )
-
 
 _NO_DATA_CODES = frozenset({"5004", "no_data"})
 _MANUAL_REVIEW_CODES = {
