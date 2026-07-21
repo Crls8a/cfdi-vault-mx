@@ -120,6 +120,13 @@ def test_payment_summary_marks_missing_amount_and_keeps_count() -> None:
     assert report.rows[0].amount is None
 
 
+def test_payment_summary_keeps_unknown_related_count_as_none() -> None:
+    report = summarize_payments([_payment(related_document_count=None)])
+    assert report.source_status == "partial"
+    assert report.rows[0].related_document_count is None
+    assert report.rows[0].incomplete_count == 1
+
+
 def test_payment_summary_preserves_upstream_empty_partial_and_unsupported_statuses() -> None:
     empty = PaymentNormalizationResult((), "4.0", "2.0", "empty", False)
     partial = PaymentNormalizationResult((), "4.0", "2.0", "partial", True)

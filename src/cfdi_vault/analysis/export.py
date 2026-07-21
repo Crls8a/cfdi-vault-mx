@@ -430,7 +430,7 @@ def _validate_row_values(kind: str, row: Mapping[str, Any]) -> None:
         _require_text(row["currency"], pattern=_CURRENCY)
         _require_text(row["payment_form"], pattern=_PAYMENT_FORM)
         _require_int(row["count"], nonnegative=True)
-        _require_int(row["related_document_count"], nonnegative=True)
+        _require_int(row["related_document_count"], nonnegative=True, optional=True)
         _require_int(row["incomplete_count"], nonnegative=True)
         _require_decimal(row["amount"], optional=True)
     else:

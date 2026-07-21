@@ -87,7 +87,7 @@ class LedgerWriteIntentMapper:
         related_missing = sum(
             row.record.related_document_count
             for row in intent.payments
-            if row.record.related_document_count > 0
+            if row.record.related_document_count is not None and row.record.related_document_count > 0
         )
         return LedgerIntentMapping(
             aggregate=_aggregate(intent, counts, related_missing),

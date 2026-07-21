@@ -133,6 +133,13 @@ def test_report_composes_sections_and_serializes_decimal_values() -> None:
     json.dumps(payload)
 
 
+def test_report_accepts_unknown_related_count_without_turning_it_into_zero() -> None:
+    payments = _payments()
+    unknown = replace(payments.rows[0], related_document_count=None)
+    report = _report(payments=replace(payments, rows=(unknown,), source_status="partial", incomplete_count=1))
+    assert report.to_public_dict()["sections"]["payments"]["rows"][0]["related_document_count"] is None
+
+
 def test_report_preserves_empty_partial_and_unsupported_section_statuses() -> None:
     report = _report(
         monthly=_monthly(metadata_count=1),

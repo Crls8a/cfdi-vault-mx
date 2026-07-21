@@ -17,7 +17,7 @@ from cfdi_vault.analysis.projection import AccountingProjection
 from cfdi_vault.analysis.taxes import TaxRecord
 
 
-def _intent():
+def _intent(*, related_document_count: int | None = 1):
     concept = ConceptRecord(
         product_service_key="01010101", unit_key="H87", description="Synthetic service",
         quantity=Decimal("1"), unit_value=Decimal("10"), amount=Decimal("10"),
@@ -30,7 +30,7 @@ def _intent():
     )
     payment = PaymentRecord(
         payment_date=datetime(2026, 1, 2, tzinfo=UTC), payment_form="03", currency="MXN",
-        amount=Decimal("11.60"), exchange_rate=None, related_document_count=1,
+        amount=Decimal("11.60"), exchange_rate=None, related_document_count=related_document_count,
         provenance="xml-a1b2c3d4e5f60718",
     )
     payroll = PayrollRecord(
@@ -151,6 +151,20 @@ def test_mapper_rerun_is_idempotent_and_tenant_bound() -> None:
         map_ledger_write_intent(
             _intent(), repo, tenant_id="other-tenant", document_id=7, source_evidence_id=9, parser_version="parser-1"
         )
+
+
+def test_mapper_keeps_unknown_related_count_without_claiming_missing_rows() -> None:
+    factory = _Factory()
+    result = map_ledger_write_intent(
+        _intent(related_document_count=None),
+        AccountingLedgerRepository(factory),
+        tenant_id="tenant-test",
+        document_id=7,
+        source_evidence_id=9,
+        parser_version="parser-1",
+    )
+    assert result.aggregate.unknown == 0
+    assert result.reason_code is None
 
 
 def test_mapper_rejects_unknown_tax_scope_without_sql_interpolation() -> None:

@@ -102,7 +102,7 @@ class PaymentSummaryRow:
     payment_form: str
     count: int
     amount: Decimal | None
-    related_document_count: int
+    related_document_count: int | None
     incomplete_count: int = 0
 
     @property
@@ -222,7 +222,8 @@ def summarize_payments(
     non-Decimal amounts contribute to the payment count but not the sum and
     are reported as incomplete; they are never silently converted to zero.
     Records without a usable UTC date are reported as incomplete and omitted
-    from month buckets.
+    from month buckets. A missing related-document count remains ``None`` in
+    the bucket and is never rendered as a known zero.
     """
 
     upstream_status = _source_status(records, source_status)
@@ -254,8 +255,10 @@ def summarize_payments(
         bucket["count"] = int(bucket["count"]) + 1
         related = record.related_document_count
         if isinstance(related, int) and related >= 0:
-            bucket["related_document_count"] = int(bucket["related_document_count"]) + related
+            if bool(bucket["related_count_known"]):
+                bucket["related_document_count"] = int(bucket["related_document_count"]) + related
         else:
+            bucket["related_count_known"] = False
             bucket["incomplete_count"] = int(bucket["incomplete_count"]) + 1
             total_incomplete += 1
         amount = record.amount
@@ -289,7 +292,9 @@ def summarize_payments(
             payment_form=payment_form,
             count=int(values["count"]),
             amount=_sum_or_none(values["amount"], values["amount_count"]),
-            related_document_count=int(values["related_document_count"]),
+            related_document_count=(
+                int(values["related_document_count"]) if bool(values["related_count_known"]) else None
+            ),
             incomplete_count=int(values["incomplete_count"]),
         )
         for (month, currency, payment_form), values in sorted(buckets.items())
@@ -311,7 +316,14 @@ def _new_tax_bucket() -> dict[str, object]:
 
 
 def _new_payment_bucket() -> dict[str, object]:
-    return {"count": 0, "amount": _ZERO, "amount_count": 0, "related_document_count": 0, "incomplete_count": 0}
+    return {
+        "count": 0,
+        "amount": _ZERO,
+        "amount_count": 0,
+        "related_document_count": 0,
+        "related_count_known": True,
+        "incomplete_count": 0,
+    }
 
 
 def _sum_or_none(value: object, count: object) -> Decimal | None:

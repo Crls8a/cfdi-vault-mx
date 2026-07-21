@@ -268,7 +268,8 @@ def _validate_reports(report: FinancialAnalysisReport) -> None:
         _require_dimension(row.currency, _CURRENCY, "analysis-currency-invalid")
         _require_dimension(row.payment_form, _PAYMENT_FORM, "analysis-payment-form-invalid")
         _require_nonnegative_int(row.count, "analysis-count-invalid")
-        _require_nonnegative_int(row.related_document_count, "analysis-count-invalid")
+        if row.related_document_count is not None:
+            _require_nonnegative_int(row.related_document_count, "analysis-count-invalid")
         _require_nonnegative_int(row.incomplete_count, "analysis-count-invalid")
         _decimal_optional_text(row.amount)
     if report.payroll is not None:
