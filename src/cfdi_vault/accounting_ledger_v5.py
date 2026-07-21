@@ -264,12 +264,13 @@ class AccountingLedgerRepository:
             pg_insert(table)
             .values(values)
             .on_conflict_do_nothing(index_elements=[table.c[name] for name in identity], index_where=index_where)
+            .returning(table.c.id)
         )
         with self._session_factory() as session:
             try:
                 result = session.execute(statement)
                 session.commit()
-                return getattr(result, "rowcount", 1) != 0
+                return _insert_result_is_new(result)
             except Exception:
                 session.rollback()
                 raise
@@ -288,9 +289,10 @@ class AccountingLedgerRepository:
             pg_insert(table)
             .values(values)
             .on_conflict_do_nothing(index_elements=[table.c[name] for name in identity], index_where=index_where)
+            .returning(table.c.id)
         )
         result = session.execute(statement)
-        return getattr(result, "rowcount", 1) != 0
+        return _insert_result_is_new(result)
 
     def write_batch(
         self,
@@ -497,6 +499,21 @@ def _scope_predicate(scope: str) -> Any:
     if scope == "document":
         return TAXES.c.scope == "document"
     raise ValueError("ledger-v5-tax-scope-invalid")
+
+
+def _insert_result_is_new(result: Any) -> bool:
+    """Use ``RETURNING`` to distinguish inserts from PostgreSQL conflicts.
+
+    SQLAlchemy's ORM session reports an indeterminate rowcount for a PostgreSQL
+    ``INSERT ... ON CONFLICT DO NOTHING`` statement.  A returned primary key is
+    therefore the durable insertion signal; the rowcount fallback preserves
+    compatibility with narrow test doubles that do not implement ``first``.
+    """
+
+    first = getattr(result, "first", None)
+    if callable(first):
+        return first() is not None
+    return getattr(result, "rowcount", 0) > 0
 
 
 def _first_evidence(

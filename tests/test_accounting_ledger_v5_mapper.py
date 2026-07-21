@@ -85,8 +85,9 @@ class _Session:
                 return _Result(0)
             self.concepts[ordinal] = self.next_id
             self.next_id += 1
-            return _Result(1)
-        return _Result(0 if params.get("idempotency_key") in self._keys(self.statements[:-1]) else 1)
+            return _Result(1, rows=({"id": self.concepts[ordinal]},))
+        inserted = params.get("idempotency_key") not in self._keys(self.statements[:-1])
+        return _Result(1, rows=({"id": self.next_id},)) if inserted else _Result(0)
 
     def _keys(self, statements: list[object]) -> set[str]:
         return {
