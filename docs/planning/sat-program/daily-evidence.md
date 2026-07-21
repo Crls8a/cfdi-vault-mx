@@ -197,6 +197,18 @@ older result; add a correction entry that points to the original observation.
 - blocker: quality bridge and report composition remain separate child units
 - next_step: dispatch `ANALYSIS-DB-QUALITY-001`
 
+### 2026-07-21 — E-2026-07-21-015 — ANALYSIS-DB-QUALITY-001
+
+- owner_role: Analysis/accounting
+- branch_commit: `6deaf79`
+- scope: synthetic
+- action: Bound quality payment presence to V5 tenant/document/evidence provenance in both metadata and XML-only observations.
+- evidence: Fresh review accepted; full suite `2386 passed, 88 skipped`; focused quality tests, Ruff, sensitive-fixture scanner, SAT-context scanner, and `git diff --check` passed; no SAT contact.
+- result: confirmed
+- status: verified
+- blocker: report composition and disposable-PostgreSQL integration remain separate child units
+- next_step: dispatch `ANALYSIS-DB-REPORT-001`
+
 ## Live evidence slots
 
 The following slots remain empty until Carlos authorizes the exact run. An
