@@ -293,6 +293,18 @@ older result; add a correction entry that points to the original observation.
 - blocker: real SAT request and real artifact evidence still require exact human authorization and external storage readiness
 - next_step: request the exact live grant for `SAT-META-REAL-001`; do not activate scheduler or broaden the window
 
+### 2026-07-21 — E-2026-07-21-023 — SAT-PREFLIGHT-001 gate refresh
+
+- owner_role: QA/documentation
+- branch_commit: `efeec95`
+- scope: live-preflight
+- action: Re-ran the no-contact repository and Compose gates after worker runtime wiring.
+- evidence: Clean tree; sensitive-fixture scanner, SAT-context scanner, Ruff, Compose config, and `git diff --check` passed; CI/live flags absent; no profile or grant loaded; no SAT contact.
+- result: confirmed
+- status: verified
+- blocker: exact profile, external storage confirmation, and human grant authorization remain missing from this session
+- next_step: obtain Carlos's exact authorization before creating or running the first live campaign
+
 ## Live evidence slots
 
 The following slots remain empty until Carlos authorizes the exact run. An
