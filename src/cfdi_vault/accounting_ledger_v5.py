@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Callable
 
-from sqlalchemy import Column, Integer, MetaData, Numeric, Select, String, Table, func, select, text
+from sqlalchemy import Column, Integer, MetaData, Numeric, Select, String, Table, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -27,6 +27,7 @@ _PROVENANCE = (
     ("normalization_generation", String(64)),
     ("idempotency_key", String(192)),
 )
+_BINDING_FIELDS = ("tenant_id", "document_id", "source_evidence_id", "source_sha256", "parser_version")
 def _table(name: str, extra: tuple[tuple[str, Any], ...]) -> Table:
     specs = (("id", Integer), ("document_id", Integer), *_PROVENANCE, *extra)
     return Table(name, _V5_METADATA, *(Column(column, typ) for column, typ in specs))
@@ -74,6 +75,15 @@ RELATED = _table(
         ("related_uuid", String(64)),
         ("relation_type", String(16)),
     ),
+)
+_DOCUMENTS = Table("cfdi_documents", _V5_METADATA, Column("id", Integer), Column("tenant_id", String(64)))
+_EVIDENCE = Table(
+    "xml_evidence",
+    _V5_METADATA,
+    Column("id", Integer),
+    Column("tenant_id", String(64)),
+    Column("xml_sha256", String(64)),
+    Column("parser_version", String(32)),
 )
 def _text(value: str, error: str, limit: int = 192) -> None:
     if not isinstance(value, str) or not value.strip() or len(value) > limit:
@@ -231,6 +241,18 @@ class LedgerAggregate(_Redacted):
     tax_amount: Decimal = Decimal(0)
     payment_amount: Decimal = Decimal(0)
     source_net_amount: Decimal = Decimal(0)
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LedgerWriteCounts(_Redacted):
+    """Sanitized row-write counters returned by one V5 transaction."""
+
+    concepts: int = 0
+    taxes: int = 0
+    payments: int = 0
+    payroll: int = 0
+    related: int = 0
+    duplicates: int = 0
 class AccountingLedgerRepository:
     def __init__(self, session_factory: SessionFactory) -> None:
         self._session_factory = session_factory
@@ -248,6 +270,182 @@ class AccountingLedgerRepository:
             except Exception:
                 session.rollback()
                 raise
+
+    @staticmethod
+    def _insert_in_session(
+        session: Session,
+        table: Table,
+        values: dict[str, Any],
+        identity: list[str],
+        index_where: Any = None,
+    ) -> bool:
+        """Insert one row without opening or committing a nested transaction."""
+
+        statement = (
+            pg_insert(table)
+            .values(values)
+            .on_conflict_do_nothing(index_elements=[table.c[name] for name in identity], index_where=index_where)
+        )
+        result = session.execute(statement)
+        return getattr(result, "rowcount", 1) != 0
+
+    def write_batch(
+        self,
+        concepts: Sequence[ConceptWrite],
+        taxes: Sequence[Mapping[str, Any]],
+        payments: Sequence[PaymentWrite],
+        payroll: Sequence[Mapping[str, Any]],
+        related: Sequence[Mapping[str, Any]] = (),
+        *,
+        binding: EvidenceRef | None = None,
+    ) -> LedgerWriteCounts:
+        """Write one document's child rows in exactly one short transaction.
+
+        The caller supplies already redacted, provenance-bound values. Concept
+        ids for concept-scoped tax rows are resolved inside this transaction;
+        no parser or artifact I/O may occur while the session is open.
+        """
+
+        concept_rows = tuple(concepts)
+        tax_rows = tuple(taxes)
+        payment_rows = tuple(payments)
+        payroll_rows = tuple(payroll)
+        related_rows = tuple(related)
+        if any(not isinstance(row, ConceptWrite) for row in concept_rows):
+            raise TypeError("ledger-v5-concepts-required")
+        if any(not isinstance(row, PaymentWrite) for row in payment_rows):
+            raise TypeError("ledger-v5-payments-required")
+        if binding is not None and not isinstance(binding, EvidenceRef):
+            raise TypeError("ledger-v5-evidence-type-invalid")
+
+        written = {name: 0 for name in ("concepts", "taxes", "payments", "payroll", "related")}
+        duplicates = 0
+        with self._session_factory() as session:
+            try:
+                binding = binding or _first_evidence(concept_rows, payment_rows, tax_rows, payroll_rows)
+                if binding is None:
+                    raise ValueError("ledger-v5-provenance-binding-invalid")
+                _validate_batch_provenance(binding, concept_rows, payment_rows, tax_rows, payroll_rows)
+                _verify_provenance_binding(session, binding)
+                for row in concept_rows:
+                    inserted = self._insert_in_session(
+                        session,
+                        CONCEPTS,
+                        row.values(),
+                        ["tenant_id", "document_id", "source_sha256", "normalization_generation", "source_ordinal"],
+                    )
+                    written["concepts"] += int(inserted)
+                    duplicates += int(not inserted)
+
+                concept_ids: dict[int, int] = {}
+                concept_ordinals = {
+                    value.get("concept_ordinal")
+                    for value in tax_rows
+                    if value.get("scope") == "concept" and value.get("concept_ordinal") is not None
+                }
+                if concept_ordinals:
+                    first = concept_rows[0] if concept_rows else None
+                    if first is None:
+                        raise ValueError("ledger-v5-concept-not-found")
+                    evidence = first.evidence
+                    result = session.execute(
+                        select(CONCEPTS.c.id, CONCEPTS.c.source_ordinal).where(
+                            CONCEPTS.c.tenant_id == evidence.tenant_id,
+                            CONCEPTS.c.document_id == evidence.document_id,
+                            CONCEPTS.c.source_sha256 == evidence.source_sha256,
+                            CONCEPTS.c.source_evidence_id == evidence.source_evidence_id,
+                            CONCEPTS.c.normalization_generation == evidence.normalization_generation,
+                            CONCEPTS.c.source_ordinal.in_(concept_ordinals),
+                        )
+                    )
+                    rows = result.all() if hasattr(result, "all") else ()
+                    for row in rows:
+                        mapping = getattr(row, "_mapping", row)
+                        concept_ids[mapping["source_ordinal"]] = mapping["id"]
+
+                for value in tax_rows:
+                    clean = dict(value)
+                    if clean.get("scope") == "concept":
+                        concept_id = concept_ids.get(clean.get("concept_ordinal"))
+                        if concept_id is None:
+                            raise ValueError("ledger-v5-concept-not-found")
+                        clean["concept_id"] = concept_id
+                    clean = _mapping_values(clean, TAXES, "source_ordinal")
+                    identity = [
+                        "tenant_id",
+                        "document_id",
+                        "source_sha256",
+                        "normalization_generation",
+                        "source_ordinal",
+                    ]
+                    if clean.get("scope") == "concept":
+                        identity.insert(-1, "concept_ordinal")
+                    inserted = self._insert_in_session(session, TAXES, clean, identity, _scope_predicate(clean["scope"]))
+                    written["taxes"] += int(inserted)
+                    duplicates += int(not inserted)
+
+                for row in payment_rows:
+                    inserted = self._insert_in_session(
+                        session,
+                        PAYMENTS,
+                        row.values(),
+                        ["tenant_id", "document_id", "source_sha256", "normalization_generation", "payment_ordinal"],
+                    )
+                    written["payments"] += int(inserted)
+                    duplicates += int(not inserted)
+
+                for value in payroll_rows:
+                    clean = _mapping_values(value, PAYROLL, "payroll_ordinal")
+                    inserted = self._insert_in_session(
+                        session,
+                        PAYROLL,
+                        clean,
+                        ["tenant_id", "document_id", "source_sha256", "normalization_generation", "payroll_ordinal"],
+                    )
+                    written["payroll"] += int(inserted)
+                    duplicates += int(not inserted)
+
+                for value in related_rows:
+                    clean = _mapping_values(value, RELATED, "related_ordinal")
+                    identity = [
+                        "tenant_id",
+                        "document_id",
+                        "source_sha256",
+                        "normalization_generation",
+                        "related_ordinal",
+                    ]
+                    scoped = clean.get("payment_ordinal") is not None
+                    if scoped:
+                        identity.insert(-1, "payment_ordinal")
+                    inserted = self._insert_in_session(
+                        session,
+                        RELATED,
+                        clean,
+                        identity,
+                        RELATED.c.payment_ordinal.is_not(None) if scoped else RELATED.c.payment_ordinal.is_(None),
+                    )
+                    written["related"] += int(inserted)
+                    duplicates += int(not inserted)
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+        return LedgerWriteCounts(**written, duplicates=duplicates)
+
+    def write_intent(
+        self,
+        concepts: Sequence[ConceptWrite],
+        taxes: Sequence[Mapping[str, Any]],
+        payments: Sequence[PaymentWrite],
+        payroll: Sequence[Mapping[str, Any]],
+        related: Sequence[Mapping[str, Any]] = (),
+        *,
+        binding: EvidenceRef | None = None,
+    ) -> LedgerWriteCounts:
+        """Compatibility name for the transaction-scoped batch surface."""
+
+        return self.write_batch(concepts, taxes, payments, payroll, related, binding=binding)
+
     def insert_concept(self, row: ConceptWrite) -> bool:
         return self._insert(
             CONCEPTS,
@@ -258,7 +456,7 @@ class AccountingLedgerRepository:
         identity = ["tenant_id", "document_id", "source_sha256", "normalization_generation", "source_ordinal"]
         if row.scope == "concept":
             identity.insert(-1, "concept_ordinal")
-        return self._insert(TAXES, row.values(), identity, text(f"scope = '{row.scope}'"))
+        return self._insert(TAXES, row.values(), identity, _scope_predicate(row.scope))
     def insert_payment(self, row: PaymentWrite) -> bool:
         return self._insert(
             PAYMENTS,
@@ -288,6 +486,70 @@ class AccountingLedgerRepository:
             row = session.execute(aggregate_statement(tenant_id)).one()
         mapping = getattr(row, "_mapping", row)
         return LedgerAggregate(**{name: mapping[name] or 0 for name in LedgerAggregate.__dataclass_fields__})
+
+
+def _scope_predicate(scope: str) -> Any:
+    if scope == "concept":
+        return TAXES.c.scope == "concept"
+    if scope == "document":
+        return TAXES.c.scope == "document"
+    raise ValueError("ledger-v5-tax-scope-invalid")
+
+
+def _first_evidence(
+    concepts: Sequence[ConceptWrite],
+    payments: Sequence[PaymentWrite],
+    taxes: Sequence[Mapping[str, Any]],
+    payroll: Sequence[Mapping[str, Any]],
+) -> EvidenceRef | None:
+    if concepts:
+        return concepts[0].evidence
+    if payments:
+        return payments[0].evidence
+    for values in (*taxes, *payroll):
+        try:
+            return EvidenceRef(
+                **({name: values[name] for name, _ in _PROVENANCE} | {"document_id": values["document_id"]})
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return None
+
+
+def _validate_batch_provenance(
+    binding: EvidenceRef,
+    concepts: Sequence[ConceptWrite],
+    payments: Sequence[PaymentWrite],
+    taxes: Sequence[Mapping[str, Any]],
+    payroll: Sequence[Mapping[str, Any]],
+) -> None:
+    expected = tuple(getattr(binding, name) for name in _BINDING_FIELDS)
+    values: list[tuple[Any, ...]] = [
+        tuple(getattr(row.evidence, name) for name in _BINDING_FIELDS) for row in (*concepts, *payments)
+    ]
+    values.extend(tuple(row.get(name) for name in _BINDING_FIELDS) for row in (*taxes, *payroll))
+    if any(value != expected for value in values):
+        raise ValueError("ledger-v5-provenance-binding-invalid")
+
+
+def _verify_provenance_binding(session: Session, binding: EvidenceRef) -> None:
+    statement = (
+        select(_DOCUMENTS.c.id)
+        .select_from(_DOCUMENTS.join(_EVIDENCE, _EVIDENCE.c.tenant_id == _DOCUMENTS.c.tenant_id))
+        .where(
+            _DOCUMENTS.c.id == binding.document_id,
+            _DOCUMENTS.c.tenant_id == binding.tenant_id,
+            _EVIDENCE.c.id == binding.source_evidence_id,
+            _EVIDENCE.c.tenant_id == binding.tenant_id,
+            _EVIDENCE.c.xml_sha256 == binding.source_sha256,
+            _EVIDENCE.c.parser_version == binding.parser_version,
+        )
+    )
+    result = session.execute(statement)
+    if not hasattr(result, "first") or result.first() is None:
+        raise ValueError("ledger-v5-provenance-binding-invalid")
+
+
 def _mapping_values(values: Mapping[str, Any], table: Table, ordinal: str) -> dict[str, Any]:
     if not isinstance(values, Mapping):
         raise TypeError("ledger-v5-values-required")
@@ -319,6 +581,17 @@ def _mapping_values(values: Mapping[str, Any], table: Table, ordinal: str) -> di
         "applied_amount",
     ):
         _decimal(values.get(name))
+    if table is TAXES:
+        scope = values.get("scope")
+        if scope not in {"concept", "document"}:
+            raise ValueError("ledger-v5-tax-scope-invalid")
+        concept_id = values.get("concept_id")
+        concept_ordinal = values.get("concept_ordinal")
+        if scope == "concept":
+            if type(concept_id) is not int or concept_id <= 0 or type(concept_ordinal) is not int or concept_ordinal <= 0:
+                raise ValueError("ledger-v5-tax-scope-invalid")
+        elif concept_id is not None or concept_ordinal is not None:
+            raise ValueError("ledger-v5-tax-scope-invalid")
     if table is RELATED:
         _text(values.get("related_uuid"), "ledger-v5-related-identity-required", 64)
     return dict(values)
