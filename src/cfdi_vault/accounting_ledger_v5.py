@@ -76,12 +76,15 @@ RELATED = _table(
         ("relation_type", String(16)),
     ),
 )
-_DOCUMENTS = Table("cfdi_documents", _V5_METADATA, Column("id", Integer), Column("tenant_id", String(64)))
+_DOCUMENTS = Table(
+    "cfdi_documents", _V5_METADATA, Column("id", Integer), Column("tenant_id", String(64)), Column("uuid", String(64))
+)
 _EVIDENCE = Table(
     "xml_evidence",
     _V5_METADATA,
     Column("id", Integer),
     Column("tenant_id", String(64)),
+    Column("uuid", String(64)),
     Column("xml_sha256", String(64)),
     Column("parser_version", String(32)),
 )
@@ -325,7 +328,7 @@ class AccountingLedgerRepository:
                 binding = binding or _first_evidence(concept_rows, payment_rows, tax_rows, payroll_rows)
                 if binding is None:
                     raise ValueError("ledger-v5-provenance-binding-invalid")
-                _validate_batch_provenance(binding, concept_rows, payment_rows, tax_rows, payroll_rows)
+                _validate_batch_provenance(binding, concept_rows, payment_rows, tax_rows, payroll_rows, related_rows)
                 _verify_provenance_binding(session, binding)
                 for row in concept_rows:
                     inserted = self._insert_in_session(
@@ -522,12 +525,13 @@ def _validate_batch_provenance(
     payments: Sequence[PaymentWrite],
     taxes: Sequence[Mapping[str, Any]],
     payroll: Sequence[Mapping[str, Any]],
+    related: Sequence[Mapping[str, Any]],
 ) -> None:
     expected = tuple(getattr(binding, name) for name in _BINDING_FIELDS)
     values: list[tuple[Any, ...]] = [
         tuple(getattr(row.evidence, name) for name in _BINDING_FIELDS) for row in (*concepts, *payments)
     ]
-    values.extend(tuple(row.get(name) for name in _BINDING_FIELDS) for row in (*taxes, *payroll))
+    values.extend(tuple(row.get(name) for name in _BINDING_FIELDS) for row in (*taxes, *payroll, *related))
     if any(value != expected for value in values):
         raise ValueError("ledger-v5-provenance-binding-invalid")
 
@@ -535,7 +539,12 @@ def _validate_batch_provenance(
 def _verify_provenance_binding(session: Session, binding: EvidenceRef) -> None:
     statement = (
         select(_DOCUMENTS.c.id)
-        .select_from(_DOCUMENTS.join(_EVIDENCE, _EVIDENCE.c.tenant_id == _DOCUMENTS.c.tenant_id))
+        .select_from(
+            _DOCUMENTS.join(
+                _EVIDENCE,
+                (_EVIDENCE.c.tenant_id == _DOCUMENTS.c.tenant_id) & (_EVIDENCE.c.uuid == _DOCUMENTS.c.uuid),
+            )
+        )
         .where(
             _DOCUMENTS.c.id == binding.document_id,
             _DOCUMENTS.c.tenant_id == binding.tenant_id,

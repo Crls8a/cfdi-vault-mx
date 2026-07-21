@@ -27,14 +27,15 @@ class _Result:
 
 
 class _Session:
-    def __init__(self, *, binding_ok: bool = True) -> None:
+    def __init__(self, *, binding_ok: bool = True, uuid_ok: bool = True) -> None:
         self.binding_ok = binding_ok
+        self.uuid_ok = uuid_ok
         self.commits = 0
         self.statements: list[object] = []
 
     def execute(self, statement):  # type: ignore[no-untyped-def]
         self.statements.append(statement)
-        return _Result(valid=self.binding_ok) if getattr(statement, "is_select", False) else _Result()
+        return _Result(valid=self.binding_ok and self.uuid_ok) if getattr(statement, "is_select", False) else _Result()
 
     def commit(self) -> None:
         self.commits += 1
@@ -44,8 +45,8 @@ class _Session:
 
 
 class _Factory:
-    def __init__(self, *, binding_ok: bool = True) -> None:
-        self.session = _Session(binding_ok=binding_ok)
+    def __init__(self, *, binding_ok: bool = True, uuid_ok: bool = True) -> None:
+        self.session = _Session(binding_ok=binding_ok, uuid_ok=uuid_ok)
 
     @contextmanager
     def __call__(self):
@@ -61,6 +62,7 @@ def test_write_batch_verifies_binding_and_commits_once() -> None:
     assert result.duplicates == 0
     assert factory.session.commits == 1
     assert any("cfdi_documents" in str(statement) for statement in factory.session.statements)
+    assert any("uuid" in str(statement) for statement in factory.session.statements)
 
 
 def test_write_batch_rejects_unknown_tax_scope_before_insert() -> None:
@@ -81,3 +83,22 @@ def test_write_batch_rejects_unknown_tax_scope_before_insert() -> None:
 def test_write_batch_rejects_missing_parent_binding_without_rows() -> None:
     with pytest.raises(ValueError, match="ledger-v5-provenance-binding-invalid"):
         AccountingLedgerRepository(_Factory(binding_ok=False)).write_batch((), (), (), (), binding=_evidence())
+
+
+def test_write_batch_rejects_same_tenant_mismatched_uuid_binding() -> None:
+    with pytest.raises(ValueError, match="ledger-v5-provenance-binding-invalid"):
+        AccountingLedgerRepository(_Factory(uuid_ok=False)).write_batch((), (), (), (), binding=_evidence())
+
+
+def test_write_batch_rejects_related_provenance_mismatch() -> None:
+    evidence = _evidence()
+    related = {
+        "tenant_id": "other-tenant", "document_id": evidence.document_id,
+        "source_evidence_id": evidence.source_evidence_id, "source_sha256": evidence.source_sha256,
+        "parser_version": evidence.parser_version, "parser_status": evidence.parser_status,
+        "normalization_generation": evidence.normalization_generation,
+        "idempotency_key": evidence.idempotency_key, "related_ordinal": 1,
+        "related_uuid": "related-synthetic",
+    }
+    with pytest.raises(ValueError, match="ledger-v5-provenance-binding-invalid"):
+        AccountingLedgerRepository(_Factory()).write_batch((), (), (), (), (related,), binding=evidence)
