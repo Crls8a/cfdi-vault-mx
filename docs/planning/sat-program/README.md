@@ -11,9 +11,11 @@ without putting fiscal data in Git, logs, issues, or chat.
    parallel lanes.
 2. Read [`workstreams.md`](workstreams.md) before assigning a task; every unit
    has one owner, one reviewer, dependencies, and a measurable exit condition.
-3. Append one sanitized record to [`daily-evidence.md`](daily-evidence.md)
+3. Read [`orchestration.md`](orchestration.md) for the requester contract,
+   task packet, handoff, and state-transition rules.
+4. Append one sanitized record to [`daily-evidence.md`](daily-evidence.md)
    after each working day or completed unit.
-4. Update the status in the same commit as the code or documentation it
+5. Update the status in the same commit as the code or documentation it
    describes.
 
 ## Scope
@@ -48,8 +50,9 @@ sanitized entry in the daily evidence log and the exact live gate result.
 - PostgreSQL remains the durable source of truth.
 - ZIP/TXT/XML remain in external storage only.
 - RabbitMQ receives opaque references, never fiscal rows or payloads.
-- No RFC, UUID, SAT identifier, SOAP, credential, local path, hash, or real
-  artifact may appear in this folder.
+- No RFC, UUID, SAT identifier, SOAP, credential, absolute local path,
+  artifact/data hash, or real artifact may appear in this folder. A short Git
+  commit SHA may appear only as code-lineage evidence.
 - Synthetic tests prove implementation contracts; only the human-gated SAT
   run proves SAT behavior.
 - A pending request is never replaced automatically.

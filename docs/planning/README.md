@@ -38,6 +38,7 @@ The planning source of truth is Markdown in this repository. This keeps the plan
 | [CLI refactor merge synchronization plan](cli-refactor-merge-synchronization-plan.md) | Branch inventory, merge topology, conflict-routing rules, and validation gates for synchronizing the CLI split with active WIP branches. |
 | [Architecture execution plan](architecture-execution-plan.md) | Gantt-style dependency plan, worktree waves, branch names, and merge gates for the next implementation streams. |
 | [SAT program execution workspace](sat-program/README.md) | Current master plan, delegated workstreams, ownership, and append-only daily evidence for closing live SAT and financial-analysis milestones. |
+| [SAT program orchestration contract](sat-program/orchestration.md) | Requester role, delegation packet, handoff, state transitions, and parallel execution rules. |
 
 ## Editing workflow
 

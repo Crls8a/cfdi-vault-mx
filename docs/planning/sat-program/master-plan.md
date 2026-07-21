@@ -25,13 +25,14 @@ gantt
 
     section Control and evidence
     SAT-PLAN-001 status matrix and doc sync       :active, plan, 2026-07-21, 2d
+    SAT-ORCH-001 requester contract and dispatch  :orch, after plan, 1d
     DOC-STATUS-001 daily evidence and review gates :docs, after plan, 3d
 
     section SAT live lane
     SAT-PREFLIGHT-001 clean tree and grant        :preflight, after plan, 2d
     SAT-META-REAL-001 Metadata received/issued    :meta, after preflight, 4d
     SAT-META-WAIT-001 due VERIFY window           :wait, after meta, 2d
-    SAT-TXT-WORKER-001 ZIP/TXT worker inventory   :txt, after meta, 3d
+    SAT-TXT-WORKER-001 ZIP/TXT worker inventory   :txt, after wait, 3d
     SAT-CFDI-REAL-001 CFDI ZIP/XML proof          :xml, after txt, 4d
 
     section Durable accounting lane

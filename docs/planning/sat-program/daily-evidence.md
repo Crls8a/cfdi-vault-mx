@@ -4,7 +4,9 @@ This file is an append-only, sanitized work log. It records implementation and
 test evidence, not raw SAT data. A real SAT entry may contain only the window,
 direction, attempt count, category, validation booleans, job counts, and the
 commit/grant lineage needed for audit. Never add rows, identifiers, payloads,
-paths, hashes, credentials, or raw errors.
+absolute local paths, artifact/data hashes, credentials, or raw errors. A
+repository-relative documentation path and short Git commit SHA are allowed
+only to identify code or documentation lineage.
 
 ## How to add an entry
 
@@ -62,6 +64,18 @@ older result; add a correction entry that points to the original observation.
 - status: verified
 - blocker: legacy CLI wildcard imports retain ten exact per-file compatibility exceptions
 - next_step: do not mix legacy-shim cleanup with the first live SAT request
+
+### 2026-07-21 — E-2026-07-21-004 — SAT-ORCH-001
+
+- owner_role: QA/documentation
+- branch_commit: `working-tree` (pre-commit documentation change)
+- scope: synthetic
+- action: Formalized the requester/orchestrator contract, task packet, handoff, state transitions, and parallel-dispatch rules.
+- evidence: `orchestration.md` added and linked from the planning indexes; workstream and Gantt entries added; no SAT contact.
+- result: confirmed
+- status: verified
+- blocker: none
+- next_step: record the final commit lineage in a correction entry, then dispatch SAT-PREFLIGHT-001 and LEDGER-V5-MAP-001
 
 ## Live evidence slots
 
