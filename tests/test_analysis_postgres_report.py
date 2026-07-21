@@ -121,7 +121,7 @@ def test_report_validates_tenant_and_inclusive_period() -> None:
     assert accounting.calls == []
 
 
-def test_report_requires_payroll_reader_for_the_five_section_contract() -> None:
+def test_report_preserves_four_section_projection_for_legacy_reader() -> None:
     class _MissingPayroll:
         def tax_records(self, tenant_id: str, *, start: date, end: date):
             return AccountingReadResult((), "partial")
@@ -132,8 +132,10 @@ def test_report_requires_payroll_reader_for_the_five_section_contract() -> None:
         def quality_observations(self, tenant_id: str, *, start: date, end: date):
             return ()
 
-    with pytest.raises(TypeError, match="analysis-accounting-adapter-required"):
-        PostgresFinancialAnalysisService(_MonthlyReader(), _MissingPayroll())  # type: ignore[arg-type]
+    service = PostgresFinancialAnalysisService(_MonthlyReader(), _MissingPayroll())  # type: ignore[arg-type]
+    payload = service.build_report("tenant", date(2026, 1, 1), date(2026, 1, 31)).to_public_dict()
+    assert "payroll" not in payload["sections"]
+    assert "payroll" not in payload["section_statuses"]
 
 
 def test_metadata_only_monthly_aggregation_uses_requested_tenant_period() -> None:

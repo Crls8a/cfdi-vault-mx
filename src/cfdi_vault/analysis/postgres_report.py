@@ -37,9 +37,10 @@ class PostgresFinancialAnalysisService:
 
     The adapters each use short-lived read transactions.  This service does
     not hold a transaction while pure analysis runs and never mutates the
-    database.  The resulting report contains monthly, tax, payment, payroll,
-    and quality sections.  Payroll dimensions that are not durable in V5 stay
-    explicit through the payroll source status and incomplete counters.
+    database.  V5-capable adapters add a payroll section; older accounting
+    adapters continue to produce the original four-section projection.
+    Payroll dimensions that are not durable in V5 stay explicit through the
+    payroll source status and incomplete counters.
 
     Args:
         monthly_adapter: Existing tenant-scoped monthly read adapter.
@@ -66,7 +67,6 @@ class PostgresFinancialAnalysisService:
         if (
             not callable(getattr(accounting_adapter, "tax_records", None))
             or not callable(getattr(accounting_adapter, "payment_records", None))
-            or not callable(getattr(accounting_adapter, "payroll_records", None))
         ):
             raise TypeError("analysis-accounting-adapter-required")
         if not callable(getattr(accounting_adapter, "quality_observations", None)):
@@ -91,8 +91,10 @@ class PostgresFinancialAnalysisService:
         existing adapters.  Tax and payment sources carry their explicit
         parser status into the summary, so unavailable legacy child tables
         remain ``partial`` rather than looking like measured zeroes.
-        Payroll records are summarized through the same tenant and inclusive
-        period as taxes and payments.  Missing V5 dimensions remain partial;
+        When the adapter exposes payroll_records, payroll is summarized
+        through the same tenant and inclusive period as taxes and payments.
+        Missing V5 dimensions remain partial; legacy adapters retain their
+        four-section projection rather than being rejected.
         ``generated_at`` is normalized and validated by the report DTO; when
         omitted, the injected UTC clock supplies it.
         """
@@ -101,7 +103,14 @@ class PostgresFinancialAnalysisService:
         monthly_records = self._monthly_adapter.records_for_period(tenant_id, start=start, end=end)
         tax_result = self._accounting_adapter.tax_records(tenant_id, start=start, end=end)
         payment_result = self._accounting_adapter.payment_records(tenant_id, start=start, end=end)
-        payroll_result = self._accounting_adapter.payroll_records(tenant_id, start=start, end=end)
+        payroll_reader = getattr(self._accounting_adapter, "payroll_records", None)
+        payroll = None
+        if callable(payroll_reader):
+            payroll_result = payroll_reader(tenant_id, start=start, end=end)
+            payroll = summarize_payroll(
+                payroll_result.rows,
+                source_status=payroll_result.source_status,
+            )
         quality_observations = self._accounting_adapter.quality_observations(tenant_id, start=start, end=end)
 
         monthly = analyze_monthly(monthly_records, start=start, end=end)
@@ -111,10 +120,6 @@ class PostgresFinancialAnalysisService:
             start=start,
             end=end,
             source_status=payment_result.source_status,
-        )
-        payroll = summarize_payroll(
-            payroll_result.rows,
-            source_status=payroll_result.source_status,
         )
         quality = snapshot_quality(quality_observations)
         timestamp = generated_at if generated_at is not None else self._clock()
