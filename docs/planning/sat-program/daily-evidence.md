@@ -245,6 +245,18 @@ older result; add a correction entry that points to the original observation.
 - blocker: none
 - next_step: dispatch `ANALYSIS-CLI-001` for a sanitized operator report over the durable analysis reads
 
+### 2026-07-21 — E-2026-07-21-019 — SAT-PREFLIGHT-001
+
+- owner_role: SAT integration
+- branch_commit: `296f349`
+- scope: live-preflight
+- action: Prepared the fixed Metadata received/issued window without creating a campaign, grant, or SAT effect.
+- evidence: Fresh review accepted; sensitive-fixture scanner, SAT-context scanner, Compose config, and diff checks passed; no SAT contact, credentials, or campaign mutation.
+- result: confirmed
+- status: verified
+- blocker: human acceptance and exact live authorization remain required before any SAT request
+- next_step: obtain Carlos's explicit approval of the exact grant, then dispatch `SAT-META-REAL-001`
+
 ## Live evidence slots
 
 The following slots remain empty until Carlos authorizes the exact run. An
