@@ -154,9 +154,12 @@ gantt
     SAT-TXT-WORKER-001             :sat3, after sat2, 2d
     SAT-CFDI-REAL-001              :sat4, after sat3, 4d
     section Durable accounting (parallel)
-    ANALYSIS-DB-READ-001           :db0, after a0, 4d
-    ANALYSIS-DB-REPORT-001         :db1, after db0, 3d
-    ANALYSIS-CLI-001               :db2, after db1, 3d
+    ANALYSIS-DB-FIELDS-001         :db0, after a0, 2d
+    ANALYSIS-DB-READ-001           :db1, after db0, 4d
+    ANALYSIS-DB-QUALITY-001        :db2, after db1, 2d
+    ANALYSIS-DB-REPORT-001         :db3, after db2, 3d
+    ANALYSIS-DB-INTEGRATION-001    :db4, after db3, 2d
+    ANALYSIS-CLI-001               :db5, after db4, 3d
     section Integration
     Worker-to-ledger proof          :int0, after sat4, 2d
     Campaign closure audit          :int1, after int0, 2d
@@ -175,9 +178,13 @@ SAT evidence (or a categorized bounded no-data outcome) are recorded.
 | `SAT-META-WAIT-001` | SAT integration | Worker/queue | `SAT-META-REAL-001` | Due-aware attempts, immutable history, and no replacement request. |
 | `SAT-TXT-WORKER-001` | Storage/security | Worker/queue | `SAT-META-WAIT-001` | ZIP/TXT validation and one opaque metadata job consumed. |
 | `SAT-CFDI-REAL-001` | SAT integration | Storage/security | `SAT-TXT-WORKER-001` | New grant, one eligible CFDI request, ZIP/XML validation, one XML job. |
-| `ANALYSIS-DB-READ-001` | Analysis/accounting | Persistence/data | `LEDGER-V5-BIND-001` | V5-safe PostgreSQL reads and redacted completeness states. |
-| `ANALYSIS-DB-REPORT-001` | Analysis/accounting | QA/documentation | `ANALYSIS-DB-READ-001` | Monthly/accounting/quality aggregate report over durable rows. |
-| `ANALYSIS-CLI-001` | Analysis/accounting | QA/documentation | `ANALYSIS-DB-REPORT-001` | Operator report exposes aggregates only and documents provenance. |
+| `ANALYSIS-DB-001` | Analysis/accounting | Persistence/data | `LEDGER-V5-BIND-001` | Umbrella closes only when its required child units and integration evidence are verified. |
+| `ANALYSIS-DB-FIELDS-001` | Persistence/data | Analysis/accounting | `LEDGER-V5-BIND-001` | Conditional field-availability audit records `no_schema_change` or one bounded additive schema decision. |
+| `ANALYSIS-DB-READ-001` | Analysis/accounting | Persistence/data | `ANALYSIS-DB-FIELDS-001` | V5-safe PostgreSQL reads and redacted completeness states. |
+| `ANALYSIS-DB-QUALITY-001` | Analysis/accounting | QA/documentation | `ANALYSIS-DB-READ-001` | Deterministic quality/completeness aggregates for missing, duplicate, conflict, and unknown cases. |
+| `ANALYSIS-DB-REPORT-001` | Analysis/accounting | QA/documentation | `ANALYSIS-DB-READ-001`, `ANALYSIS-DB-QUALITY-001` | Monthly/accounting/quality aggregate report over durable rows. |
+| `ANALYSIS-DB-INTEGRATION-001` | Persistence/data | QA/documentation | `ANALYSIS-DB-REPORT-001` | Disposable-PostgreSQL idempotency/provenance gate passes; no SAT contact. |
+| `ANALYSIS-CLI-001` | Analysis/accounting | QA/documentation | `ANALYSIS-DB-INTEGRATION-001` | Operator report exposes aggregates only and documents provenance. |
 
 ## 5. Daily audit and status transitions
 

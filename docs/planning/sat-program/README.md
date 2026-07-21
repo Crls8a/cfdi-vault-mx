@@ -7,15 +7,18 @@ without putting fiscal data in Git, logs, issues, or chat.
 
 ## Quick path
 
-1. Read [`master-plan.md`](master-plan.md) for the sequence, dates, gates, and
+1. Read [`objective-and-task-orchestrator.md`](objective-and-task-orchestrator.md)
+   for the single measurable objective, delegation contract, task templates,
+   and status transitions.
+2. Read [`master-plan.md`](master-plan.md) for the sequence, dates, gates, and
    parallel lanes.
-2. Read [`workstreams.md`](workstreams.md) before assigning a task; every unit
+3. Read [`workstreams.md`](workstreams.md) before assigning a task; every unit
    has one owner, one reviewer, dependencies, and a measurable exit condition.
-3. Read [`orchestration.md`](orchestration.md) for the requester contract,
+4. Read [`orchestration.md`](orchestration.md) for the requester contract,
    task packet, handoff, and state-transition rules.
-4. Append one sanitized record to [`daily-evidence.md`](daily-evidence.md)
+5. Append one sanitized record to [`daily-evidence.md`](daily-evidence.md)
    after each working day or completed unit.
-5. Update the status in the same commit as the code or documentation it
+6. Update the status in the same commit as the code or documentation it
    describes.
 
 ## Scope
