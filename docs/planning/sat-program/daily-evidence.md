@@ -173,6 +173,30 @@ older result; add a correction entry that points to the original observation.
 - blocker: complete payroll payment-month analysis still requires a separate decision because `payment_date` is not durable
 - next_step: dispatch `ANALYSIS-DB-READ-001` for V5-safe partial reads without substituting dates or dimensions
 
+### 2026-07-21 — E-2026-07-21-013 — ANALYSIS-DB-READ-001
+
+- owner_role: Analysis/accounting
+- branch_commit: `19e7f8a`
+- scope: synthetic
+- action: Implemented tenant/evidence-bound V5 child reads with issue-date bounds and explicit partial fields.
+- evidence: Focused analysis tests and full suite passed; fresh review found one optional relation-count boundary that could still be interpreted as a known zero; no SAT contact.
+- result: inconclusive
+- status: inconclusive
+- blocker: relation/count unknowns required a downstream guard before acceptance
+- next_step: preserve `None` through mapper, summaries, export, and public reporting
+
+### 2026-07-21 — E-2026-07-21-014 — ANALYSIS-DB-READ-001 correction
+
+- owner_role: Analysis/accounting
+- branch_commit: `58d09e2`
+- scope: synthetic
+- action: Closed the optional-count review finding without inventing relation or payroll child counts.
+- evidence: Fresh reviewer accepted; `None` remains unknown through summaries/export/reporting, known zero remains zero; full suite `2383 passed, 88 skipped`; Ruff, sensitive-fixture scanner, SAT-context scanner, and `git diff --check` passed; no SAT contact.
+- result: confirmed
+- status: verified
+- blocker: quality bridge and report composition remain separate child units
+- next_step: dispatch `ANALYSIS-DB-QUALITY-001`
+
 ## Live evidence slots
 
 The following slots remain empty until Carlos authorizes the exact run. An
