@@ -269,6 +269,18 @@ older result; add a correction entry that points to the original observation.
 - blocker: real fiscal analysis remains pending until a real SAT TXT/XML or categorized bounded no-data result exists
 - next_step: obtain exact human authorization for `SAT-META-REAL-001`; keep the analysis CLI read-only
 
+### 2026-07-21 — E-2026-07-21-021 — WORKER-LEDGER-BIND-001
+
+- owner_role: Worker/queue + persistence/data
+- branch_commit: `3b85a1e`
+- scope: container
+- action: Bound committed XML evidence to an opt-in V5 projection writer after durable artifact parsing.
+- evidence: Fresh review accepted; focused worker/PostgreSQL test `4 passed`, V5/worker reliability set `45 passed`; Ruff, sensitive-fixture scanner, SAT-context scanner, and `git diff --check` passed; no SAT contact.
+- result: confirmed
+- status: verified
+- blocker: runtime construction still needs to inject the V5 writer before live processing; the seam remains opt-in by design
+- next_step: dispatch `WORKER-LEDGER-RUNTIME-001` to wire the writer in the worker runtime without changing public queue payloads
+
 ## Live evidence slots
 
 The following slots remain empty until Carlos authorizes the exact run. An
