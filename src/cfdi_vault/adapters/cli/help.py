@@ -30,6 +30,12 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "example": "cfdi-vault sat campaign status --profile default --campaign-ref <campaign-ref>",
     },
     {
+        "command": "analysis report",
+        "purpose": "Read a tenant-scoped PostgreSQL V5 financial report as aggregate JSON.",
+        "when": "Run after durable ledger data exists; output includes completeness and provenance only.",
+        "example": "cfdi-vault analysis report --profile default --tenant-id default --from 2026-01-01 --to 2026-01-31",
+    },
+    {
         "command": "doctor",
         "purpose": "Check whether database, queue, cache, storage, and setup profile are reachable.",
         "when": "Run after install or when the CLI cannot connect to dependencies.",

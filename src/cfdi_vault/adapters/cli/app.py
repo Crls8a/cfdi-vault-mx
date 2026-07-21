@@ -6,6 +6,7 @@ import importlib
 
 import typer
 
+analysis = importlib.import_module("cfdi_vault.adapters.cli.analysis")
 download = importlib.import_module("cfdi_vault.adapters.cli.download")
 help_catalog = importlib.import_module("cfdi_vault.adapters.cli.help")
 operations = importlib.import_module("cfdi_vault.adapters.cli.operations")
@@ -21,6 +22,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 config_app = typer.Typer(help="Validate local RFC profile configuration.", no_args_is_help=True)
+analysis_app = typer.Typer(help="Read aggregate financial analysis from PostgreSQL.", no_args_is_help=True)
 queue_app = typer.Typer(help="Inspect queue state.", no_args_is_help=True)
 worker_app = typer.Typer(help="Run recovery workers.", no_args_is_help=True)
 sync_app = typer.Typer(
@@ -37,6 +39,7 @@ storage_app = typer.Typer(
 )
 
 app.add_typer(config_app, name="config")
+app.add_typer(analysis_app, name="analysis")
 app.add_typer(queue_app, name="queue")
 app.add_typer(worker_app, name="worker")
 app.add_typer(sync_app, name="sync")
@@ -48,6 +51,7 @@ sat_app.add_typer(campaign_app, name="campaign")
 
 help_catalog.register(app)
 setup.register(config_app, app)
+analysis.register(analysis_app)
 custody_commands.register(custody_app)
 sat.register(sat_app)
 sat_campaign.register(campaign_app)
