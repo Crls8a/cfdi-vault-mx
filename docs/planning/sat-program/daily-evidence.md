@@ -305,6 +305,30 @@ older result; add a correction entry that points to the original observation.
 - blocker: exact profile, external storage confirmation, and human grant authorization remain missing from this session
 - next_step: obtain Carlos's exact authorization before creating or running the first live campaign
 
+### 2026-07-21 — E-2026-07-21-024 — SAT-LIVE-HARDEN-001
+
+- owner_role: SAT integration
+- branch_commit: `aed627c`
+- scope: live-preflight
+- action: Hardened campaign package handoff and artifact-readiness boundaries without enabling a live request.
+- evidence: Focused hardening tests `8 passed`; implementation reported full suite `2405 passed, 90 skipped`; Ruff, sensitive-fixture scanner, SAT-context scanner, and `git diff --check` passed; no SAT, network, or credentials.
+- result: inconclusive
+- status: in_progress
+- blocker: Fresh review identified a P1 gap requiring an explicit artifact-readiness hook before handoff.
+- next_step: Apply the P1 correction and repeat the focused and repository gates.
+
+### 2026-07-21 — E-2026-07-21-025 — SAT-LIVE-HARDEN-001 correction (P1)
+
+- owner_role: SAT integration
+- branch_commit: `8a3cf84`
+- scope: live-preflight
+- action: Required the artifact-readiness hook before campaign package handoff.
+- evidence: Fresh review result `ACCEPT`; focused hardening tests `8 passed`; implementation reported full suite `2405 passed, 90 skipped`; Ruff, sensitive-fixture scanner, SAT-context scanner, and `git diff --check` passed; no SAT, network, or credentials.
+- result: confirmed
+- status: accepted
+- blocker: none
+- next_step: Keep the live SAT gate closed until exact human authorization and external readiness are confirmed.
+
 ## Live evidence slots
 
 The following slots remain empty until Carlos authorizes the exact run. An
