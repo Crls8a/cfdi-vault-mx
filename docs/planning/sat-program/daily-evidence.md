@@ -125,6 +125,18 @@ older result; add a correction entry that points to the original observation.
 - blocker: none
 - next_step: dispatch ANALYSIS-DB-001
 
+### 2026-07-21 — E-2026-07-21-009 — V5 integration gate
+
+- owner_role: QA/documentation
+- branch_commit: `883b83b`
+- scope: synthetic
+- action: Revalidated the complete repository after the V5 work-unit stack and planning split.
+- evidence: Full suite `2381 passed, 88 skipped`; repository Ruff, sensitive-fixture scanner, SAT-context scanner, Compose config, and diff checks passed; no SAT contact.
+- result: confirmed
+- status: verified
+- blocker: durable analysis read/write and live SAT evidence remain open
+- next_step: dispatch ANALYSIS-DB-001 and keep SAT-PREFLIGHT-001 behind the human gate
+
 ## Live evidence slots
 
 The following slots remain empty until Carlos authorizes the exact run. An
