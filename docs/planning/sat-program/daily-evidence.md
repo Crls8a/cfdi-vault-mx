@@ -161,6 +161,18 @@ older result; add a correction entry that points to the original observation.
 - blocker: fresh reviewer and final documentation commit are pending
 - next_step: review the matrix, run scanners, and then dispatch `ANALYSIS-DB-READ-001` with explicit partial statuses
 
+### 2026-07-21 — E-2026-07-21-012 — ANALYSIS-DB-FIELDS-001 correction
+
+- owner_role: Persistence/data
+- branch_commit: `aebebb2`
+- scope: synthetic
+- action: Closed the field audit after a fresh review and committed the sanitized matrix.
+- evidence: Reviewer accepted; sensitive-fixture scanner, SAT-context scanner, and `git diff --check` passed; no SAT contact.
+- result: confirmed
+- status: verified
+- blocker: complete payroll payment-month analysis still requires a separate decision because `payment_date` is not durable
+- next_step: dispatch `ANALYSIS-DB-READ-001` for V5-safe partial reads without substituting dates or dimensions
+
 ## Live evidence slots
 
 The following slots remain empty until Carlos authorizes the exact run. An
