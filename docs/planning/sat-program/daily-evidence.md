@@ -257,6 +257,18 @@ older result; add a correction entry that points to the original observation.
 - blocker: human acceptance and exact live authorization remain required before any SAT request
 - next_step: obtain Carlos's explicit approval of the exact grant, then dispatch `SAT-META-REAL-001`
 
+### 2026-07-21 — E-2026-07-21-020 — ANALYSIS-CLI-001
+
+- owner_role: Analysis/accounting
+- branch_commit: `1f3cfab`
+- scope: synthetic
+- action: Added a PostgreSQL V5 aggregate report command with profile/tenant/period validation and sanitized JSON output.
+- evidence: Fresh review accepted; focused CLI/help tests `7 passed`, auxiliary CLI/import/scanner checks `36 passed`; Ruff, sensitive-fixture scanner, SAT-context scanner, and `git diff --check` passed; no SAT contact.
+- result: confirmed
+- status: verified
+- blocker: real fiscal analysis remains pending until a real SAT TXT/XML or categorized bounded no-data result exists
+- next_step: obtain exact human authorization for `SAT-META-REAL-001`; keep the analysis CLI read-only
+
 ## Live evidence slots
 
 The following slots remain empty until Carlos authorizes the exact run. An
