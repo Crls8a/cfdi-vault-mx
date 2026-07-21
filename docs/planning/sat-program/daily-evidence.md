@@ -209,6 +209,30 @@ older result; add a correction entry that points to the original observation.
 - blocker: report composition and disposable-PostgreSQL integration remain separate child units
 - next_step: dispatch `ANALYSIS-DB-REPORT-001`
 
+### 2026-07-21 — E-2026-07-21-016 — ANALYSIS-DB-REPORT-001
+
+- owner_role: Analysis/accounting
+- branch_commit: `0e0321b`
+- scope: synthetic
+- action: Composed the payroll section from V5 reads alongside monthly, tax, payment, and quality aggregates.
+- evidence: Fresh review found that making payroll mandatory broke legacy four-section adapters; no SAT contact.
+- result: inconclusive
+- status: inconclusive
+- blocker: payroll capability had to remain optional for existing adapters
+- next_step: preserve four-section compatibility while including payroll when the adapter supports it
+
+### 2026-07-21 — E-2026-07-21-017 — ANALYSIS-DB-REPORT-001 correction
+
+- owner_role: Analysis/accounting
+- branch_commit: `98f073e`
+- scope: synthetic
+- action: Restored optional payroll capability while retaining five-section V5 reports.
+- evidence: Fresh review accepted; legacy adapters keep four sections, V5-capable adapters call payroll once and preserve partial status; full suite `2388 passed, 88 skipped`; Ruff, sensitive-fixture scanner, SAT-context scanner, and `git diff --check` passed; no SAT contact.
+- result: confirmed
+- status: verified
+- blocker: disposable-PostgreSQL integration and analysis CLI remain separate child units
+- next_step: dispatch `ANALYSIS-DB-INTEGRATION-001`
+
 ## Live evidence slots
 
 The following slots remain empty until Carlos authorizes the exact run. An
