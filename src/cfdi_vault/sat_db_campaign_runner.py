@@ -284,14 +284,15 @@ class SatCampaignRunner:
         if coordinator is None or not callable(getattr(coordinator, "store_package", None)):
             raise RuntimeError("artifact-runtime-required")
         ensure_ready = getattr(coordinator, "ensure_ready", None)
-        if callable(ensure_ready):
-            try:
-                ensure_ready(require_handoff=True)
-            except Exception as error:
-                reason = getattr(error, "reason", None)
-                raise RuntimeError(
-                    reason if isinstance(reason, str) and reason else "artifact-runtime-unavailable"
-                ) from None
+        if not callable(ensure_ready):
+            raise RuntimeError("artifact-runtime-required")
+        try:
+            ensure_ready(require_handoff=True)
+        except Exception as error:
+            reason = getattr(error, "reason", None)
+            raise RuntimeError(
+                reason if isinstance(reason, str) and reason else "artifact-runtime-unavailable"
+            ) from None
 
 
     def _verify_claim(self, claim: SatClaimRecord, current: datetime) -> tuple[

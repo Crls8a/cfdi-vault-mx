@@ -72,6 +72,32 @@ def test_package_lane_rejects_unsafe_coordinator_before_sat() -> None:
     assert calls == []
 
 
+def test_package_lane_rejects_coordinator_without_readiness_before_sat() -> None:
+    calls: list[str] = []
+
+    class Coordinator:
+        def store_package(self, **_kwargs):
+            pass
+
+    class Repository:
+        def list_submission_windows(self, _campaign: str, *, limit: int):
+            return (SimpleNamespace(work_ref="work", direction="received"),)
+
+        def claim_operation(self, **_kwargs):
+            raise AssertionError("claim must not be created")
+
+    runner = SatCampaignRunner(
+        Repository(), lambda _request: object(), campaign_ref="campaign",
+        downloader_factory=lambda _package: object(), artifact_coordinator=Coordinator(),
+        submitter_factory=lambda _query: calls.append("submit") or object(),
+        query_factory=lambda _window: _query(),
+    )
+
+    with pytest.raises(RuntimeError, match="artifact-runtime-required"):
+        runner.run(now=NOW)
+    assert calls == []
+
+
 def test_artifact_runtime_rejects_checkout_mount_path() -> None:
     coordinator = SatCampaignArtifactCoordinator(
         object(), "/app", job_publisher=lambda _message: None,
