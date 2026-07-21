@@ -19,19 +19,20 @@ This repository is split into the current PostgreSQL-backed CFDI recovery refere
 13. Read [Foundation-first plan](foundation/README.md) before adding more recovery features.
 14. Read [Living system plan](planning/living-system-plan.md) before changing objectives, architecture, security, source-of-truth docs, or release promises.
 15. Read [Agile planning workspace](planning/README.md) and [Lightweight governance policy](planning/governance.md) before assigning sprint work.
-16. Read [Safe RFC profile configuration](config/README.md) before adding local profile settings.
-17. Read [Local RFC setup and credential intake](setup.md) before changing AppData setup or credential import.
-18. Read [First-run onboarding](installer/onboarding.md) before changing installer or profile setup.
-19. Read [Local installer alpha](installer/local-installer-alpha.md) before changing editable install or bootstrap behavior.
-20. Read [Idempotent local storage](storage-design.md) before writing package, metadata, or XML evidence.
-21. Read [Infrastructure boundary](foundation/infrastructure-boundary.md) before changing PostgreSQL, RabbitMQ, Redis, Docker, workers, or future FastAPI ingestion behavior.
-22. Read [Database, queue, and API contract](foundation/database-queue-api-contract.md) before changing Flyway migrations, queue names, or ingestion event flow.
-23. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
-24. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
-25. Read [Offline/local SAT download operations](sat-download/offline-local-operations.md) before validating issue #51.
-26. Read the [productive SAT campaign runbook](runbooks/sat-campaign.md) before requesting any human-gated live SAT operation.
-27. Read the [SAT code/documentation audit](audits/sat-code-doc-audit-2026-07-19.md) before treating a live result as evidence.
-28. Read the [financial and accounting analysis modules plan](planning/financial-analysis-modules-plan.md) before adding financial reports, tax/payment analysis, or accounting-oriented CLI commands.
+16. Read the [SAT program execution workspace](planning/sat-program/README.md) for the dated Gantt, workstream owners, and sanitized daily evidence log.
+17. Read [Safe RFC profile configuration](config/README.md) before adding local profile settings.
+18. Read [Local RFC setup and credential intake](setup.md) before changing AppData setup or credential import.
+19. Read [First-run onboarding](installer/onboarding.md) before changing installer or profile setup.
+20. Read [Local installer alpha](installer/local-installer-alpha.md) before changing editable install or bootstrap behavior.
+21. Read [Idempotent local storage](storage-design.md) before writing package, metadata, or XML evidence.
+22. Read [Infrastructure boundary](foundation/infrastructure-boundary.md) before changing PostgreSQL, RabbitMQ, Redis, Docker, workers, or future FastAPI ingestion behavior.
+23. Read [Database, queue, and API contract](foundation/database-queue-api-contract.md) before changing Flyway migrations, queue names, or ingestion event flow.
+24. Read [Recovery v2](recovery-v2.md) for the current RabbitMQ/Redis/PostgreSQL implementation slice.
+25. Read [SAT download documentation](sat-download/README.md) before implementing any SAT Web Service client.
+26. Read [Offline/local SAT download operations](sat-download/offline-local-operations.md) before validating issue #51.
+27. Read the [productive SAT campaign runbook](runbooks/sat-campaign.md) before requesting any human-gated live SAT operation.
+28. Read the [SAT code/documentation audit](audits/sat-code-doc-audit-2026-07-19.md) before treating a live result as evidence.
+29. Read the [financial and accounting analysis modules plan](planning/financial-analysis-modules-plan.md) before adding financial reports, tax/payment analysis, or accounting-oriented CLI commands.
 
 ## Documentation map
 
@@ -60,6 +61,7 @@ This repository is split into the current PostgreSQL-backed CFDI recovery refere
 | Foundation | [Infrastructure boundary](foundation/infrastructure-boundary.md) | PostgreSQL-first recovery runtime, RabbitMQ queue boundary, Redis transient state, Docker services, and future FastAPI ingestion boundary. |
 | Foundation | [Database, queue, and API contract](foundation/database-queue-api-contract.md) | Flyway baseline, PostgreSQL table ownership, queue order/purpose, and planned FastAPI event handoff. |
 | Planning | [Agile planning workspace](planning/README.md) | Sprint roadmap, backlog, team board, delegation model, and agile operating rules. |
+| Planning | [SAT program execution workspace](planning/sat-program/README.md) | Dated Gantt, workstream ownership, handoffs, milestones, and sanitized daily evidence. |
 | Planning | [Living system plan](planning/living-system-plan.md) | Source-of-truth hierarchy, security workstream, architecture/doc gaps, and next work units for the case study. |
 | Planning | [Lightweight governance policy](planning/governance.md) | Solo-maintainer issue policy, PR/CI expectations, and mandatory security gates. |
 | Recovery v2 | [Recovery v2](recovery-v2.md) | Implemented fake SAT, queue/cache/storage ports, Docker, CLI, and next steps. |

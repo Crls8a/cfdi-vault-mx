@@ -1,0 +1,98 @@
+# SAT program workstreams and delegation board
+
+Use this board to assign work. A row is not started until an owner, branch,
+start commit, and reviewer are recorded. A row is not accepted until its exit
+evidence appears in [`daily-evidence.md`](daily-evidence.md).
+
+## Work-unit board
+
+| ID | Owner role | Depends on | Parallel lane | Deliverable | Measurable exit |
+|---|---|---|---|---|---|
+| `SAT-PLAN-001` | QA/documentation | Current branch | Control | One status matrix reconciles plans, code, tests, and gates. | All red/amber claims point to a path and a test/evidence source. |
+| `SAT-PREFLIGHT-001` | Carlos + SAT integration | `SAT-PLAN-001` | A | Human-ready checklist and exact grant for the fixed first window. | Clean tree, scanners, canonical endpoints, external storage, profile, and grant all verified; no SAT contact during preflight. |
+| `SAT-META-REAL-001` | SAT integration | `SAT-PREFLIGHT-001` | A | Two bounded Metadata operations: received and issued, first 14-day window. | Each operation has one durable claim/request; no replacement request; sanitized category recorded. |
+| `SAT-META-WAIT-001` | SAT integration + monitor | `SAT-META-REAL-001` | A | Due-aware verification history up to 48 hours. | No early contact; every attempt has schedule/contact/category/next review; timeout and 5004 are categorized. |
+| `SAT-TXT-WORKER-001` | Storage + worker | `SAT-META-REAL-001` | A | ZIP validation, TXT extraction, opaque parse job, private inventory. | At least one real TXT is extracted outside Git and consumed once by a worker, or a categorized no-data/expired result is recorded. |
+| `SAT-CFDI-REAL-001` | SAT integration + storage | `SAT-TXT-WORKER-001` | A | New `cfdi-proof` grant and first eligible CFDI request/download. | ZIP and XML validation pass; worker consumes XML once; no XML request is made for cancelled/ineligible metadata. |
+| `LEDGER-V5-MAP-001` | Persistence/data | V5 approval, synthetic projection | B | Tenant-safe mapper from projection/write intent into child ledgers. | Concepts, taxes, payments, payroll, and related rows are idempotent, evidence-bound, tenant-safe, and claim-scoped. |
+| `ANALYSIS-DB-001` | Analysis/accounting | `LEDGER-V5-MAP-001` | B | Durable PostgreSQL read/write path for monthly, quality, tax, payment, and payroll aggregates. | Reprocessing does not change counts; currency/period/completeness rules are tested against a disposable PostgreSQL DB. |
+| `ANALYSIS-CLI-001` | Analysis + CLI | `ANALYSIS-DB-001` | B | Private operator report command and sanitized status projection. | Reports include provenance/completeness and never print rows, identifiers, paths, hashes, or raw payloads. |
+| `API-INGEST-001` | API/queue | `SAT-TXT-WORKER-001` | D | FastAPI stored-reference contract and enqueue endpoint. | Raw XML/ZIP/secrets are rejected; valid references create one durable job without inline parsing. |
+| `LEGACY-CLEAN-001` | SAT library | Public CLI contract stable | D | Import-graph cleanup of internal smoke/probe/backfill modules. | Public help remains unchanged, offline tests pass, and no supported path depends on the retired modules. |
+| `DOC-STATUS-001` | QA/documentation | All units | C | Daily evidence and cross-document synchronization. | Every completed unit has a sanitized record and links to code/tests/docs. |
+| `RELEASE-ALPHA-001` | Release + QA | `ANALYSIS-CLI-001`, `API-INGEST-001` decision | D | Public API, consumer example, build, package, and alpha release checklist. | Wheel installs in a clean environment; claims explicitly remain alpha/fake-offline unless separately proven. |
+
+## Owner responsibilities
+
+### Carlos / maintainer
+
+- Supplies and protects the real credential outside the repository.
+- Approves each live grant and the exact date/direction scope.
+- Decides whether a pending, no-data, uncertain, or error result closes the
+  current diagnostic.
+- Accepts or rejects evidence; no agent can self-authorize SAT contact.
+
+### SAT integration owner
+
+- Owns `SatV15Adapter`, campaign runner, VERIFY calendar, result mapping, and
+  live preflight.
+- Stops on identity conflicts, endpoint overrides, signature/configuration
+  errors, uncertain downloads, or third pending state.
+- Does not implement accounting interpretation.
+
+### Persistence/data owner
+
+- Owns Flyway, SQLAlchemy repositories, V5 mapper, claims, tenant boundaries,
+  and exact-key idempotency.
+- Keeps network calls outside transactions.
+- Produces aggregate-only read models and migration rollback evidence.
+
+### Worker/queue owner
+
+- Owns outbox publication, RabbitMQ routing, consumer/inbox deduplication,
+  worker claims, retry categories, and Redis heartbeat.
+- Ensures messages contain references only and ACK occurs after durable work.
+
+### Storage/security owner
+
+- Owns external artifact root, atomic writes, hash verification, ZIP safety,
+  streaming extraction, XML safety, and redaction scanners.
+- Verifies storage is outside the repository and container `/app`.
+
+### Analysis/accounting owner
+
+- Owns normalization projections, monthly/tax/payment/payroll/quality reports,
+  completeness, source precedence, and currency separation.
+- Never infers paid, deductible, taxable, or legal status.
+
+### QA/documentation owner
+
+- Owns daily evidence, status vocabulary, test matrix, scanner runs, and fresh
+  review of every unit.
+- Rejects documentation that calls synthetic behavior SAT evidence.
+
+### Integration maintainer
+
+- Owns branch base (`dev`), merge order, worktree cleanup, CI evidence, and
+  final synchronization of the status matrix.
+
+## Required handoff template
+
+Each owner reports this compact block before handing off:
+
+```text
+work_unit=<ID>
+owner_role=<role>
+branch=<branch>
+start_commit=<short-sha>
+end_commit=<short-sha-or-none>
+files=<sanitized-path-list>
+tests=<command-and-result>
+scanners=<sensitive/sat-context/diff/ruff>
+status=<planned|in_progress|blocked|verified|accepted|inconclusive>
+blocker=<fixed-category-or-none>
+next_step=<one-action>
+```
+
+The handoff must not include RFCs, UUIDs, SAT IDs, SOAP, credentials, local
+paths, hashes, rows, totals, ZIP/TXT/XML content, or raw exception text.

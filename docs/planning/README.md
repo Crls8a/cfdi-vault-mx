@@ -19,6 +19,7 @@ The planning source of truth is Markdown in this repository. This keeps the plan
 9. Use [CLI family refactor plan](cli-family-refactor-plan.md) before changing CLI adapter ownership or resolving CLI merge conflicts.
 10. Use [CLI refactor merge synchronization plan](cli-refactor-merge-synchronization-plan.md) before merging the CLI refactor with SAT/live-gate or other branches that still touch `src/cfdi_vault/cli.py`.
 11. Use [Architecture execution plan](architecture-execution-plan.md) to decide what can run in parallel, what must be sequential, and which worktree owns each stream.
+12. Use the [SAT program execution workspace](sat-program/README.md) for the current dated SAT, worker, accounting, and evidence plan.
 
 ## Planning map
 
@@ -36,6 +37,7 @@ The planning source of truth is Markdown in this repository. This keeps the plan
 | [CLI family refactor plan](cli-family-refactor-plan.md) | Source of truth for CLI family ownership, merge conflict handling, and follow-up task slices. |
 | [CLI refactor merge synchronization plan](cli-refactor-merge-synchronization-plan.md) | Branch inventory, merge topology, conflict-routing rules, and validation gates for synchronizing the CLI split with active WIP branches. |
 | [Architecture execution plan](architecture-execution-plan.md) | Gantt-style dependency plan, worktree waves, branch names, and merge gates for the next implementation streams. |
+| [SAT program execution workspace](sat-program/README.md) | Current master plan, delegated workstreams, ownership, and append-only daily evidence for closing live SAT and financial-analysis milestones. |
 
 ## Editing workflow
 
