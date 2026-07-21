@@ -329,6 +329,17 @@ older result; add a correction entry that points to the original observation.
 - blocker: none
 - next_step: Keep the live SAT gate closed until exact human authorization and external readiness are confirmed.
 
+### 2026-07-21 — E-2026-07-21-026 — SAT-LIVE-HARDEN-001 evidence correction (T2 gate refresh)
+
+- owner_role: QA/documentation
+- scope: live-preflight
+- action: Corrected the current T2 gate count without editing the historical E-025 entry: its implementation report remains `2405 passed, 90 skipped`, while the current T2 verification reports `2406 passed, 90 skipped`.
+- evidence: T2 gate accepted; Ruff, sensitive-fixture scanner, SAT-context scanner, Compose config, and `git diff --check` passed; `sat_contacted=false`; no credentials or sensitive fiscal data.
+- result: confirmed
+- status: accepted
+- blocker: none
+- next_step: Keep the live SAT gate closed until exact human authorization and external readiness are confirmed.
+
 ## Live evidence slots
 
 The following slots remain empty until Carlos authorizes the exact run. An
