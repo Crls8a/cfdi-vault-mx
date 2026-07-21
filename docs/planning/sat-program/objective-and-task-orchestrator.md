@@ -179,7 +179,7 @@ SAT evidence (or a categorized bounded no-data outcome) are recorded.
 | `SAT-TXT-WORKER-001` | Storage/security | Worker/queue | `SAT-META-WAIT-001` | ZIP/TXT validation and one opaque metadata job consumed. |
 | `SAT-CFDI-REAL-001` | SAT integration | Storage/security | `SAT-TXT-WORKER-001` | New grant, one eligible CFDI request, ZIP/XML validation, one XML job. |
 | `ANALYSIS-DB-001` | Analysis/accounting | Persistence/data | `LEDGER-V5-BIND-001` | Umbrella closes only when its required child units and integration evidence are verified. |
-| `ANALYSIS-DB-FIELDS-001` | Persistence/data | Analysis/accounting | `LEDGER-V5-BIND-001` | Conditional field-availability audit records `no_schema_change` or one bounded additive schema decision. |
+| `ANALYSIS-DB-FIELDS-001` | Persistence/data | Analysis/accounting | `LEDGER-V5-BIND-001` | Field-availability matrix records `no_schema_change`, `partial_read_model_required`, or one bounded additive schema decision. |
 | `ANALYSIS-DB-READ-001` | Analysis/accounting | Persistence/data | `ANALYSIS-DB-FIELDS-001` | V5-safe PostgreSQL reads and redacted completeness states. |
 | `ANALYSIS-DB-QUALITY-001` | Analysis/accounting | QA/documentation | `ANALYSIS-DB-READ-001` | Deterministic quality/completeness aggregates for missing, duplicate, conflict, and unknown cases. |
 | `ANALYSIS-DB-REPORT-001` | Analysis/accounting | QA/documentation | `ANALYSIS-DB-READ-001`, `ANALYSIS-DB-QUALITY-001` | Monthly/accounting/quality aggregate report over durable rows. |

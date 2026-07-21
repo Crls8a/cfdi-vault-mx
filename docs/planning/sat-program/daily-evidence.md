@@ -149,6 +149,18 @@ older result; add a correction entry that points to the original observation.
 - blocker: durable analysis implementation and live SAT evidence remain open
 - next_step: dispatch `ANALYSIS-DB-FIELDS-001` and `SAT-PREFLIGHT-001` only when each predecessor and human gate is ready
 
+### 2026-07-21 — E-2026-07-21-011 — ANALYSIS-DB-FIELDS-001
+
+- owner_role: Persistence/data
+- branch_commit: `working-tree` (audit artifact pending review)
+- scope: synthetic
+- action: Audited V5 analytical field availability and documented the safe partial-read boundary.
+- evidence: `analysis-field-matrix.md` classifies monthly, tax, payment, payroll, and quality fields; payroll `payment_date` is absent and no substitute is permitted; no SAT contact.
+- result: confirmed
+- status: in_progress
+- blocker: fresh reviewer and final documentation commit are pending
+- next_step: review the matrix, run scanners, and then dispatch `ANALYSIS-DB-READ-001` with explicit partial statuses
+
 ## Live evidence slots
 
 The following slots remain empty until Carlos authorizes the exact run. An
