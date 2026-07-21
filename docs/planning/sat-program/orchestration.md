@@ -191,10 +191,14 @@ in parallel with the first two units.
 
 1. `SAT-PREFLIGHT-001` — prepare the first live Metadata run without contacting
    SAT; requires Carlos's profile and exact grant before the next unit.
-2. `LEDGER-V5-MAP-001` — implement and verify the synthetic, idempotent V5
-   child-ledger mapper while SAT waits.
-3. `DOC-STATUS-001` — append the handoffs and reconcile plan/code/test status.
-4. `SAT-META-REAL-001` — start only after preflight is `accepted`.
+2. `LEDGER-V5-REPO-001` — implement and verify the atomic V5 repository write
+   surface while SAT waits.
+3. `LEDGER-V5-MAP-001` — map the synthetic projection through that write
+   surface and expose the worker aggregate adapter.
+4. `LEDGER-V5-BIND-001` — harden parent/evidence UUID and related provenance
+   checks.
+5. `DOC-STATUS-001` — append the handoffs and reconcile plan/code/test status.
+6. `SAT-META-REAL-001` — start only after preflight is `accepted`.
 
 ## Completion audit
 

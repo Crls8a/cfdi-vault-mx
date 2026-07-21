@@ -36,8 +36,10 @@ gantt
     SAT-CFDI-REAL-001 CFDI ZIP/XML proof          :xml, after txt, 4d
 
     section Durable accounting lane
-    LEDGER-V5-MAP-001 worker child-ledger mapper  :v5, after plan, 8d
-    ANALYSIS-DB-001 durable analysis read/write   :analysisdb, after v5, 7d
+    LEDGER-V5-REPO-001 atomic V5 repository writes :v5repo, after plan, 3d
+    LEDGER-V5-MAP-001 worker child-ledger mapper  :v5map, after v5repo, 5d
+    LEDGER-V5-BIND-001 evidence binding hardening :v5bind, after v5map, 1d
+    ANALYSIS-DB-001 durable analysis read/write   :analysisdb, after v5bind, 7d
     ANALYSIS-CLI-001 private aggregate reports    :analysiscli, after analysisdb, 5d
 
     section Deferred product lane

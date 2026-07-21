@@ -89,6 +89,42 @@ older result; add a correction entry that points to the original observation.
 - blocker: none
 - next_step: dispatch SAT-PREFLIGHT-001 and LEDGER-V5-MAP-001 using the task packet
 
+### 2026-07-21 — E-2026-07-21-006 — LEDGER-V5-REPO-001
+
+- owner_role: Persistence/data
+- branch_commit: `feb414f`
+- scope: synthetic
+- action: Added the atomic transaction-scoped V5 repository batch surface with exact conflict identities.
+- evidence: Repository batch tests `5 passed`; one short transaction, rollback path, idempotent identities, and no SAT contact.
+- result: confirmed
+- status: verified
+- blocker: none
+- next_step: run LEDGER-V5-MAP-001 against the repository surface
+
+### 2026-07-21 — E-2026-07-21-007 — LEDGER-V5-MAP-001
+
+- owner_role: Persistence/data
+- branch_commit: `50bf982`
+- scope: synthetic
+- action: Mapped deterministic LedgerWriteIntent families to V5 concepts, taxes, payments, and payroll with a worker aggregate adapter.
+- evidence: Mapper tests `5 passed`; related identity omitted with fixed category; no SAT contact.
+- result: confirmed
+- status: verified
+- blocker: parent/evidence UUID hardening remained as a separate bounded unit
+- next_step: run LEDGER-V5-BIND-001
+
+### 2026-07-21 — E-2026-07-21-008 — LEDGER-V5-BIND-001
+
+- owner_role: Persistence/data
+- branch_commit: `2d41d26`
+- scope: synthetic
+- action: Enforced parent/evidence UUID equality and related-row provenance binding in the same transaction.
+- evidence: Repository batch tests `5 passed`; mismatched UUID and related provenance regressions rejected; no SAT contact.
+- result: confirmed
+- status: verified
+- blocker: none
+- next_step: dispatch ANALYSIS-DB-001
+
 ## Live evidence slots
 
 The following slots remain empty until Carlos authorizes the exact run. An

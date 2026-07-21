@@ -80,8 +80,8 @@ accepted. The delegation record names the concrete branch/agent at start time.
 - Repository-wide Ruff now passes.
 - Public SAT CLI is the four-command `sat campaign` family.
 - No real SAT ZIP/TXT/XML has been processed.
-- V5 child-ledger worker mapping, financial database ingestion, and financial
-  operator CLI remain open.
+- V5 child-ledger mapping is synthetically verified; durable financial database
+  ingestion and the financial operator CLI remain open.
 
 The dated plan in [`master-plan.md`](master-plan.md) is the authority for what
 starts next; older sprint documents remain historical references until they are
