@@ -24,9 +24,9 @@ class PayrollReadRow:
     total_perceptions: Decimal | None = field(repr=False)
     total_deductions: Decimal | None = field(repr=False)
     total_other_payments: Decimal | None = field(repr=False)
-    perception_count: int
-    deduction_count: int
-    other_payment_count: int
+    perception_count: int | None
+    deduction_count: int | None
+    other_payment_count: int | None
     incomplete_count: int
 
     def __post_init__(self) -> None:
@@ -45,10 +45,12 @@ class PayrollReadRow:
             value = getattr(self, name)
             if value is not None and (not isinstance(value, Decimal) or not value.is_finite() or value < 0):
                 raise TypeError("payroll-read-decimal-invalid")
-        for name in ("perception_count", "deduction_count", "other_payment_count", "incomplete_count"):
+        for name in ("perception_count", "deduction_count", "other_payment_count"):
             value = getattr(self, name)
-            if type(value) is not int or value < 0:
+            if value is not None and (type(value) is not int or value < 0):
                 raise TypeError("payroll-read-count-invalid")
+        if type(self.incomplete_count) is not int or self.incomplete_count < 0:
+            raise TypeError("payroll-read-count-invalid")
 
     def __repr__(self) -> str:
         """Avoid exposing payroll values in diagnostics."""

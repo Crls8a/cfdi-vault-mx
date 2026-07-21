@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.dialects import postgresql
 
+from cfdi_vault.analysis.accounting import summarize_payments
+from cfdi_vault.analysis.payroll_accounting import summarize_payroll
 from cfdi_vault.analysis.postgres_accounting import (
     AccountingPostgresAdapter,
     payment_records_statement,
@@ -52,38 +54,35 @@ def _row(**values: object) -> SimpleNamespace:
     return SimpleNamespace(**values)
 
 
-def test_tax_read_fails_closed_for_legacy_child_rows_even_when_rows_look_valid() -> None:
+def test_tax_read_uses_v5_rows_and_keeps_unavailable_dimensions_explicit() -> None:
     factory, session = _factory(
         [
             _row(
                 tax_type="transferred",
-                tax="002",
-                factor_type="Tasa",
-                rate_or_quota=Decimal("0.160000"),
-                base=Decimal("10"),
                 amount=Decimal("1.60"),
                 parser_status="complete",
             )
         ]
     )
     result = AccountingPostgresAdapter(factory).tax_records("tenant")
-    assert result.rows == ()
+    assert len(result.rows) == 1
+    assert result.rows[0].tax_type == "transferred"
+    assert result.rows[0].tax == "UNKNOWN"
+    assert result.rows[0].amount == Decimal("1.60")
+    assert result.rows[0].factor_type is None
     assert result.source_status == "partial"
-    assert "tenant_safe_child_key" in result.unavailable_fields
-    assert session.statement is None
-
-    empty_factory, _ = _factory([])
-    assert AccountingPostgresAdapter(empty_factory).tax_records("tenant").source_status == "partial"
+    assert {"tax", "factor_type", "base", "rate_or_quota"}.issubset(result.unavailable_fields)
+    assert session.statement is not None
 
 
-def test_payment_read_fails_closed_before_exposing_legacy_rows() -> None:
+def test_payment_read_maps_v5_money_without_inventing_payment_dimensions() -> None:
     factory, session = _factory(
         [
             _row(
-                payment_date=datetime(2026, 1, 14, 23, 30, tzinfo=timezone.utc),
-                payment_form="03",
                 currency="MXN",
                 amount=Decimal("25.00"),
+                exchange_rate=None,
+                related_document_count=None,
                 parser_status="complete",
             )
         ]
@@ -91,30 +90,45 @@ def test_payment_read_fails_closed_before_exposing_legacy_rows() -> None:
     result = AccountingPostgresAdapter(factory).payment_records(
         "tenant", start=date(2026, 1, 14), end=date(2026, 1, 14)
     )
-    assert result.rows == ()
-    assert result.money_available is False
+    assert len(result.rows) == 1
+    assert result.rows[0].payment_date is None
+    assert result.rows[0].payment_form is None
+    assert result.rows[0].currency == "MXN"
+    assert result.rows[0].amount == Decimal("25.00")
+    assert result.rows[0].related_document_count is None
+    assert result.money_available is True
     assert "related_document_identity" in result.unavailable_fields
-    assert session.statement is None
+    summary = summarize_payments(result.rows, source_status=result.source_status)
+    assert summary.rows == ()
+    assert summary.incomplete_count == 1
+    assert session.statement is not None
 
 
-def test_payroll_read_never_invents_payment_date_or_amounts() -> None:
+def test_payroll_read_maps_v5_totals_without_inventing_dates_or_dimensions() -> None:
     factory, session = _factory(
         [
             _row(
-                payroll_type="O",
-                period_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
-                period_end=datetime(2026, 1, 15, tzinfo=timezone.utc),
+                payroll_type="UNKNOWN",
+                total_perceptions=Decimal("10.00"),
+                total_deductions=Decimal("1.00"),
+                total_other_payments=Decimal("0.00"),
                 parser_status="complete",
             )
         ]
     )
     result = AccountingPostgresAdapter(factory).payroll_records("tenant", start=date(2026, 1, 1), end=date(2026, 1, 31))
+    assert len(result.rows) == 1
+    assert result.rows[0].payroll_type == "UNKNOWN"
+    assert result.rows[0].payment_date is None
+    assert result.rows[0].total_perceptions == Decimal("10.00")
+    assert result.rows[0].perception_count is None
     assert result.money_available is False
-    assert result.rows == ()
-    assert result.money_available is False
-    assert "paid_days" in result.unavailable_fields
+    assert "payment_date" in result.unavailable_fields
+    summary = summarize_payroll(result.rows, source_status=result.source_status)
+    assert summary.rows == ()
+    assert summary.incomplete_count > 0
     assert result.source_status == "partial"
-    assert session.statement is None
+    assert session.statement is not None
 
 
 def test_quality_adapter_returns_only_redacted_observations() -> None:
@@ -253,6 +267,17 @@ def test_quality_statement_is_union_and_does_not_select_identifiers() -> None:
     assert "raw_payload" not in sql
 
 
+def test_v5_accounting_statements_scope_parent_and_evidence_without_legacy_columns() -> None:
+    for builder in (tax_records_statement, payment_records_statement, payroll_records_statement):
+        statement = builder("tenant", start=date(2026, 1, 1), end=date(2026, 1, 14))
+        sql = str(statement.compile(dialect=postgresql.dialect()))
+        assert "tenant_id" in sql
+        assert "source_evidence_id" in sql
+        assert "issue_date" in sql
+        assert "raw_payload" not in sql
+        assert "issuer_rfc" not in sql and "receiver_rfc" not in sql
+
+
 def test_adapter_rejects_blank_tenant_and_inverted_period() -> None:
     factory, _ = _factory([])
     adapter = AccountingPostgresAdapter(factory)
@@ -262,25 +287,6 @@ def test_adapter_rejects_blank_tenant_and_inverted_period() -> None:
         adapter.payroll_records("tenant", start=date(2026, 2, 1), end=date(2026, 1, 1))
     with pytest.raises(TypeError, match="analysis-date-invalid"):
         adapter.tax_records("tenant", start=datetime(2026, 1, 1, tzinfo=timezone.utc))  # type: ignore[arg-type]
-
-
-def test_legacy_child_collision_is_not_resolved_by_uuid_only() -> None:
-    factory, session = _factory(
-        [
-            _row(tax_type="transferred", tax="002", parser_status="complete"),
-            _row(tax_type="transferred", tax="002", parser_status="complete"),
-        ]
-    )
-    result = AccountingPostgresAdapter(factory).tax_records("tenant")
-    assert result.rows == ()
-    assert "v5_accounting_ledger" in result.unavailable_fields
-    assert session.statement is None
-
-
-def test_legacy_child_statements_are_guarded_until_v5() -> None:
-    for builder in (tax_records_statement, payment_records_statement, payroll_records_statement):
-        with pytest.raises(RuntimeError, match="analysis-v5-tenant-safe-ledger-required"):
-            builder("tenant", start=date(2026, 1, 1), end=date(2026, 1, 14))
 
 
 def test_payroll_read_row_validates_type_utc_order_money_and_counts() -> None:
@@ -309,3 +315,4 @@ def test_payroll_read_row_validates_type_utc_order_money_and_counts() -> None:
         replace(valid, paid_days=Decimal("-1"))
     with pytest.raises(TypeError, match="payroll-read-count-invalid"):
         replace(valid, perception_count=-1)
+    assert replace(valid, perception_count=None).perception_count is None

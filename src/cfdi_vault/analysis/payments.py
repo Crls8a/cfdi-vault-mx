@@ -41,7 +41,9 @@ class PaymentRecord:
 
     ``related_document_count`` is deliberately a count rather than a list;
     UUIDs and other attributes from ``DoctoRelacionado`` never enter this
-    object.  ``provenance`` is an opaque, caller-supplied reference.
+    object.  ``None`` means the source did not durably preserve relation
+    evidence and must remain incomplete in downstream summaries.
+    ``provenance`` is an opaque, caller-supplied reference.
     """
 
     payment_date: datetime | None = field(repr=False)
@@ -49,7 +51,7 @@ class PaymentRecord:
     currency: str | None = field(repr=False)
     amount: Decimal | None = field(repr=False)
     exchange_rate: Decimal | None = field(repr=False)
-    related_document_count: int
+    related_document_count: int | None
     provenance: str = field(repr=False)
 
     def __repr__(self) -> str:
