@@ -17,6 +17,7 @@ from zipfile import ZipFile
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import SQLAlchemyError
 
+from cfdi_vault.analysis.projection import AccountingProjection, project_accounting_xml
 from cfdi_vault.cache import InMemoryCache
 from cfdi_vault.cache_contract import ProgressObservation, ProgressStatus
 from cfdi_vault.cache_recovery import AbandonedJobObservation
@@ -35,6 +36,7 @@ from cfdi_vault.domain import (
     SatRequestState,
 )
 from cfdi_vault.fake_sat import FakeSatClient
+from cfdi_vault.ledger_artifact_bridge import LedgerArtifactBinding, LedgerProjectionWriter
 from cfdi_vault.metadata_parser import InvalidMetadataRow, parse_metadata_bytes
 from cfdi_vault.ports import CachePort, QueuePort, SatClientPort, StoragePort
 from cfdi_vault.queue_contract import TerminalQueueError
@@ -219,6 +221,7 @@ class RecoveryService:
         sat_client: SatClientPort | None = None,
         queue: QueuePort | None = None,
         cache: CachePort | None = None,
+        ledger_writer: LedgerProjectionWriter | None = None,
     ) -> None:
         self.engine = create_engine_from_url(database_url)
         init_recovery_schema(self.engine)
@@ -227,6 +230,7 @@ class RecoveryService:
         self.sat_client = sat_client or FakeSatClient()
         self.queue = queue or InMemoryQueue()
         self.cache = cache or InMemoryCache()
+        self.ledger_writer = ledger_writer
 
     def close(self) -> None:
         """Release database resources, useful for Windows test cleanup."""
@@ -372,6 +376,8 @@ class RecoveryService:
     ) -> SyncResult:
         """Consume a campaign artifact reference without putting bytes on RabbitMQ."""
 
+        ledger_bindings: list[tuple[AccountingProjection, LedgerArtifactBinding]] = []
+        ledger_pending = False
         with self.session_factory() as session:
             artifact = session.scalar(select(SatArtifactRecord).where(
                 SatArtifactRecord.artifact_ref == message.job_id,
@@ -393,7 +399,10 @@ class RecoveryService:
                     metadata_count=int(existing_import.record_count),
                     status=JobStatus.SUCCEEDED.value,
                 )
-            if message.queue is QueueName.CFDI_PARSE_XML and artifact.validation_status == "processed":
+            if message.queue is QueueName.CFDI_PARSE_XML and artifact.validation_status in {
+                "processed",
+                "ledger_processed",
+            }:
                 return SyncResult(
                     job_id=message.job_id, request_id="", packages=(),
                     metadata_count=0, status=JobStatus.SUCCEEDED.value,
@@ -445,6 +454,7 @@ class RecoveryService:
                 ))
                 artifact.validation_status = "processed"
             elif artifact.kind == "cfdi_zip":
+                ledger_pending = self.ledger_writer is not None
                 metadata_count = self._store_campaign_xml_package(
                     session,
                     query,
@@ -452,8 +462,9 @@ class RecoveryService:
                     path,
                     campaign_ref=campaign.campaign_ref,
                     work_ref=window.work_ref,
+                    ledger_bindings=ledger_bindings if ledger_pending else None,
                 )
-                artifact.validation_status = "processed"
+                artifact.validation_status = "stored" if ledger_pending else "processed"
             else:
                 raise TerminalQueueError("artifact_kind_invalid")
             self._event(
@@ -461,6 +472,21 @@ class RecoveryService:
                 JobStatus.SUCCEEDED, "campaign artifact processed", {},
             )
             session.commit()
+        if ledger_pending:
+            try:
+                for projection, binding in ledger_bindings:
+                    assert self.ledger_writer is not None
+                    self.ledger_writer.write(projection, binding)
+            except Exception as exc:
+                raise TerminalQueueError("ledger_write_failed") from exc
+            with self.session_factory() as session:
+                artifact = session.scalar(
+                    select(SatArtifactRecord).where(SatArtifactRecord.artifact_ref == message.job_id)
+                )
+                if artifact is None:
+                    raise TerminalQueueError("artifact_reference_not_found")
+                artifact.validation_status = "ledger_processed"
+                session.commit()
         return SyncResult(
             job_id=message.job_id, request_id="", packages=(),
             metadata_count=metadata_count, status=JobStatus.SUCCEEDED.value,
@@ -1041,6 +1067,7 @@ class RecoveryService:
         *,
         campaign_ref: str,
         work_ref: str,
+        ledger_bindings: list[tuple[AccountingProjection, LedgerArtifactBinding]] | None = None,
     ) -> int:
         """Parse one campaign ZIP while keeping XML keys opaque.
 
@@ -1079,6 +1106,36 @@ class RecoveryService:
                     if previous_hash is not None and previous_hash != xml_sha256:
                         raise TerminalQueueError("xml_uuid_conflict")
                     if previous_hash == xml_sha256:
+                        if ledger_bindings is not None:
+                            existing_evidence = session.scalar(
+                                select(XmlEvidence)
+                                .where(
+                                    XmlEvidence.tenant_id == query.tenant_id,
+                                    XmlEvidence.uuid == uuid,
+                                    XmlEvidence.xml_sha256 == xml_sha256,
+                                )
+                                .order_by(XmlEvidence.id.desc())
+                                .limit(1)
+                            )
+                            existing_document = session.scalar(
+                                select(CfdiDocument).where(
+                                    CfdiDocument.tenant_id == query.tenant_id,
+                                    CfdiDocument.uuid == uuid,
+                                )
+                            )
+                            if existing_evidence is not None and existing_document is not None:
+                                ledger_bindings.append(
+                                    (
+                                        project_accounting_xml(xml_bytes),
+                                        LedgerArtifactBinding(
+                                            tenant_id=query.tenant_id,
+                                            work_ref=work_ref,
+                                            document_id=int(existing_document.id),
+                                            source_evidence_id=int(existing_evidence.id),
+                                            parser_version=str(existing_evidence.parser_version),
+                                        ),
+                                    )
+                                )
                         count += 1
                         continue
                     seen_uuid_hashes[uuid] = xml_sha256
@@ -1168,7 +1225,7 @@ class RecoveryService:
                         document.raw_payload = raw_payload
                         document.updated_at = _now()
 
-                    session.add(XmlEvidence(
+                    evidence = XmlEvidence(
                         tenant_id=query.tenant_id,
                         uuid=uuid,
                         source_package_id=package_id,
@@ -1178,7 +1235,22 @@ class RecoveryService:
                         parser_version=f"cfdi-{parsed.version or 'unknown'}",
                         parser_status=parsed.parser_status,
                         created_at=_now(),
-                    ))
+                    )
+                    session.add(evidence)
+                    if ledger_bindings is not None:
+                        session.flush()
+                        ledger_bindings.append(
+                            (
+                                project_accounting_xml(xml_bytes),
+                                LedgerArtifactBinding(
+                                    tenant_id=query.tenant_id,
+                                    work_ref=work_ref,
+                                    document_id=int(document.id),
+                                    source_evidence_id=int(evidence.id),
+                                    parser_version=str(evidence.parser_version),
+                                ),
+                            )
+                        )
                     ledger = session.scalar(select(CfdiMetadataLedger).where(
                         CfdiMetadataLedger.tenant_id == query.tenant_id,
                         CfdiMetadataLedger.uuid == uuid,

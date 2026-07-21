@@ -6,10 +6,13 @@ from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
+from cfdi_vault.accounting_ledger_v5 import AccountingLedgerRepository
+from cfdi_vault.accounting_ledger_v5_mapper import LedgerWriteIntentMapper
 from cfdi_vault.db import create_engine_from_url, create_session_factory
 from cfdi_vault.domain import QueueName, SatRequestState
+from cfdi_vault.ledger_artifact_bridge import V5LedgerProjectionWriter
 from cfdi_vault.queueing import InMemoryQueue
 from cfdi_vault.recovery_db import CfdiDocument, Tenant, XmlEvidence
 from cfdi_vault.recovery_service import RecoveryService
@@ -240,3 +243,106 @@ def test_worker_stores_campaign_xml_under_opaque_key_without_reading_zip_bytes(
     assert uuid not in key
     assert (tmp_path / key).is_file()
     assert queue.pending_count(QueueName.CFDI_PARSE_XML.value) == 0
+
+
+def test_xml_worker_binds_projection_to_v5_ledgers_once_on_duplicate_delivery(
+    reset_postgres_database: str, tmp_path, sample_xml: bytes,
+) -> None:  # type: ignore[no-untyped-def]
+    """The parser callback writes every V5 family once for one package job."""
+
+    engine = create_engine_from_url(reset_postgres_database)
+    factory = create_session_factory(engine)
+    with factory() as session:
+        session.add(Tenant(id="ledger-worker-tenant", name="Synthetic", rfc="SYNTHETIC", created_at=NOW))
+        session.commit()
+    repository = SatCampaignRepository(factory)
+    campaign = repository.create_campaign(
+        campaign_ref="campaign-ledger-worker", tenant_id="ledger-worker-tenant", profile_ref="profile-ledger",
+        manifest_sha256="e" * 64, commit_ref="commit-ledger", phase="cfdi-proof",
+        status="planned", budget=2, now=NOW,
+    )
+    window = repository.reserve_window(
+        campaign_ref=campaign.campaign_ref, work_ref="window-ledger-worker", direction="received",
+        start_date=date(2026, 1, 1), end_date=date(2026, 1, 14), now=NOW,
+    )
+    xml = sample_xml.replace(
+        b'xmlns:tfd="http://www.sat.gob.mx/TimbreFiscalDigital"',
+        b'xmlns:tfd="http://www.sat.gob.mx/TimbreFiscalDigital" '
+        b'xmlns:pago20="http://www.sat.gob.mx/Pagos20" xmlns:nomina="http://www.sat.gob.mx/nomina"',
+    ).replace(
+        b'ObjetoImp="02" />',
+        b'ObjetoImp="02"><cfdi:Impuestos><cfdi:Traslados><cfdi:Traslado Base="123.45" '
+        b'Impuesto="002" TipoFactor="Tasa" TasaOCuota="0.16" Importe="19.75"/>'
+        b'</cfdi:Traslados></cfdi:Impuestos></cfdi:Concepto>',
+    ).replace(
+        b'<cfdi:Complemento>',
+        b'<cfdi:Impuestos><cfdi:Traslados><cfdi:Traslado Base="123.45" Impuesto="002" '
+        b'TipoFactor="Tasa" TasaOCuota="0.16" Importe="19.75"/></cfdi:Traslados></cfdi:Impuestos>'
+        b'<cfdi:Complemento>',
+    ).replace(
+        b'</cfdi:Complemento>',
+        b'<pago20:Pagos Version="2.0"><pago20:Totales MontoTotalPagos="143.20"/>'
+        b'<pago20:Pago FechaPago="2026-03-11T08:00:00" Monto="143.20" MonedaP="MXN" FormaDePagoP="03">'
+        b'<pago20:DoctoRelacionado IdDocumento="00000000-0000-4000-8000-000000000102"/>'
+        b'</pago20:Pago></pago20:Pagos>'
+        b'<nomina:Nomina Version="1.2" TipoNomina="O" FechaPago="2026-03-11T08:00:00" '
+        b'FechaInicialPago="2026-02-16T08:00:00" FechaFinalPago="2026-02-28T08:00:00" NumDiasPagados="13" '
+        b'TotalPercepciones="100" TotalDeducciones="20" TotalOtrosPagos="0">'
+        b'<nomina:Percepciones><nomina:Percepcion TipoPercepcion="001" ImporteGravado="100" ImporteExento="0"/>'
+        b'</nomina:Percepciones><nomina:Deducciones><nomina:Deduccion TipoDeduccion="001" Importe="20"/>'
+        b'</nomina:Deducciones><nomina:OtrosPagos><nomina:OtroPago TipoOtroPago="001" Importe="0"/>'
+        b'</nomina:OtrosPagos></nomina:Nomina></cfdi:Complemento>',
+    )
+    archive = BytesIO()
+    with ZipFile(archive, "w", ZIP_DEFLATED) as zipped:
+        zipped.writestr("invoice.xml", xml)
+    package = archive.getvalue()
+    storage_key = "sat-cfdi/ledger-worker/package.zip"
+    package_path = tmp_path / storage_key
+    package_path.parent.mkdir(parents=True)
+    package_path.write_bytes(package)
+    repository.record_artifact(
+        campaign_ref=campaign.campaign_ref, window_ref=window.work_ref,
+        artifact_ref="artifact-ledger-worker", kind="cfdi_zip", storage_key=storage_key,
+        sha256=sha256(package).hexdigest(), size_bytes=len(package), validation_status="valid", now=NOW,
+    )
+    queue = InMemoryQueue()
+    publish_artifact_parse_job(
+        queue.publish, tenant_id="ledger-worker-tenant", artifact_ref="artifact-ledger-worker",
+        kind="cfdi_zip", now=NOW,
+    )
+    writer = V5LedgerProjectionWriter(LedgerWriteIntentMapper(AccountingLedgerRepository(factory)))
+    calls = 0
+
+    class CountingWriter:
+        def write(self, projection, binding):  # type: ignore[no-untyped-def]
+            nonlocal calls
+            calls += 1
+            return writer.write(projection, binding)
+
+    service = RecoveryService(
+        database_url=reset_postgres_database, storage_root=tmp_path, queue=queue, ledger_writer=CountingWriter(),
+    )
+    try:
+        worker = RecoveryWorker(service)
+        first = worker.run_once(queue_name=QueueName.CFDI_PARSE_XML.value)
+        publish_artifact_parse_job(
+            queue.publish, tenant_id="ledger-worker-tenant", artifact_ref="artifact-ledger-worker",
+            kind="cfdi_zip", now=NOW,
+        )
+        duplicate = worker.run_once(queue_name=QueueName.CFDI_PARSE_XML.value)
+        with engine.connect() as connection:
+            counts = tuple(
+                connection.execute(
+                    text(f"SELECT count(*) FROM {table} WHERE tenant_id = 'ledger-worker-tenant'")
+                ).scalar_one()
+                for table in ("cfdi_concepts", "cfdi_taxes", "cfdi_payments", "cfdi_payroll")
+            )
+    finally:
+        service.close()
+        engine.dispose()
+
+    assert first.processed == 1
+    assert duplicate.processed == 0
+    assert calls == 1
+    assert counts == (1, 2, 1, 1)
