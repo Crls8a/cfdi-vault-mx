@@ -77,6 +77,18 @@ older result; add a correction entry that points to the original observation.
 - blocker: none
 - next_step: record the final commit lineage in a correction entry, then dispatch SAT-PREFLIGHT-001 and LEDGER-V5-MAP-001
 
+### 2026-07-21 — E-2026-07-21-005 — SAT-ORCH-001 correction
+
+- owner_role: QA/documentation
+- branch_commit: `a845a95`
+- scope: synthetic
+- action: Corrected the prior pre-commit evidence entry with the commit that contains the orchestration contract and dependency alignment.
+- evidence: `a845a95` contains the requester contract, singular owner/reviewer assignments, stable prerequisites, aligned Gantt, and sanitized evidence rules; no SAT contact.
+- result: confirmed
+- status: verified
+- blocker: none
+- next_step: dispatch SAT-PREFLIGHT-001 and LEDGER-V5-MAP-001 using the task packet
+
 ## Live evidence slots
 
 The following slots remain empty until Carlos authorizes the exact run. An
