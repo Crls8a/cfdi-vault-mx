@@ -362,6 +362,16 @@ empty slot is not a failure and must not be filled with synthetic output.
 - blocker: none
 - next_step: Run the same campaign grant only after `next_check_at` is due.
 
+### 2026-07-21 — E-LIVE-META-SUBMISSION-001 — evidence clarification
+
+- owner_role: QA/documentation
+- scope: live; Metadata; received and issued; 2026-01-01..2026-01-14
+- clarification: `sat_contacted=true`; one request per direction was accepted and persisted; no VERIFY contact or package download has occurred yet.
+- result: confirmed
+- status: waiting_verify
+- blocker: none
+- next_step: Do not run before the persisted `next_check_at`; continue with the same grant.
+
 ### 2026-07-21 — E-LIVE-META-ISSUED-001 — first real submission
 
 - owner_role: SAT integration
