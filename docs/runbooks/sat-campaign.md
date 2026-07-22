@@ -169,3 +169,33 @@ The campaign schema starts at `db/migration/V3__sat_campaign_state.sql` and
 are documented in `docs/sat-download/async-verify-scheduler.md` and
 `docs/api/sat-v15-public-api.md`. Real SAT state and artifacts are intentionally
 not copied into this repository; only sanitized aggregates may be documented.
+
+## Scheduler operations
+
+The platform scheduler is optional and human-managed. It invokes the same
+one-shot `campaign run` command; it is not a second SAT client and it never
+replaces a pending request. Keep these defaults until the operator has reviewed
+the exact grant and commit:
+
+```text
+SAT_MONITOR_ENABLED=0
+CFDI_VAULT_LIVE_WORKER_ENABLED=0
+SAT_MONITOR_ADAPTIVE_ENABLED=0
+SAT_MONITOR_WATCHDOG_SECONDS=300
+SAT_MONITOR_NOTIFY_CHANNEL=sat_schedule_changed
+```
+
+Windows Task Scheduler and POSIX cron templates, including rollback steps, are
+maintained in [`async-verify-scheduler.md`](../sat-download/async-verify-scheduler.md).
+They wake every five minutes, while PostgreSQL `next_check_at` decides whether
+any SAT contact is permitted. No task is registered by Compose or by the CLI.
+
+Do not mount Windows profile directories, `.cer`, `.key`, `.pfx`, or other
+credential material into the Linux Compose service. Credentials remain in the
+human-controlled local profile provider. Disable the scheduler and the live
+flags before profile maintenance or rollback; durable requests, claims, and
+`verify_history` remain unchanged.
+
+Operator output is aggregate-only: fixed categories, counts, due timestamps,
+and an opaque campaign reference. It never prints RFCs, UUIDs, SAT IDs,
+SOAP/XML/TXT rows, hashes, local paths, raw exceptions, or secrets.

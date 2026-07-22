@@ -30,12 +30,19 @@ class RuntimeSettingsError(ValueError):
 _DEFAULTS: dict[str, str] = {
     "SAT_MONITOR_ENABLED": "0",
     "CFDI_VAULT_LIVE_WORKER_ENABLED": "0",
+    "SAT_MONITOR_WATCHDOG_SECONDS": "300",
+    "SAT_MONITOR_NOTIFY_CHANNEL": "sat_schedule_changed",
+    "SAT_MONITOR_ADAPTIVE_ENABLED": "0",
 }
-_BOOLEAN_KEYS = frozenset({"SAT_MONITOR_ENABLED", "CFDI_VAULT_LIVE_WORKER_ENABLED"})
+SAT_MONITOR_NOTIFY_CHANNEL = "sat_schedule_changed"
+_BOOLEAN_KEYS = frozenset(
+    {"SAT_MONITOR_ENABLED", "CFDI_VAULT_LIVE_WORKER_ENABLED", "SAT_MONITOR_ADAPTIVE_ENABLED"}
+)
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 _REFERENCE_KEYS = frozenset({"CFDI_VAULT_COMMIT_REF", "SAT_CAMPAIGN_PROFILE", "SAT_CAMPAIGN_REF", "SAT_CAMPAIGN_GRANT"})
 _DOTENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_NOTIFY_CHANNEL = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 
 
 @dataclass(frozen=True)
@@ -53,6 +60,9 @@ class RuntimeSettings:
     storage_root: Path
     sat_monitor_enabled: bool
     live_worker_enabled: bool
+    sat_monitor_watchdog_seconds: int
+    sat_monitor_notify_channel: str
+    sat_monitor_adaptive_enabled: bool
     commit_ref: str | None
     campaign_profile: str | None
     campaign_ref: str | None
@@ -111,6 +121,13 @@ class RuntimeSettings:
             live_worker_enabled=_boolean(
                 value("CFDI_VAULT_LIVE_WORKER_ENABLED"), "CFDI_VAULT_LIVE_WORKER_ENABLED"
             ),
+            sat_monitor_watchdog_seconds=_positive_int(
+                value("SAT_MONITOR_WATCHDOG_SECONDS"), "sat-monitor-watchdog"
+            ),
+            sat_monitor_notify_channel=_notify_channel(value("SAT_MONITOR_NOTIFY_CHANNEL")),
+            sat_monitor_adaptive_enabled=_boolean(
+                value("SAT_MONITOR_ADAPTIVE_ENABLED"), "SAT_MONITOR_ADAPTIVE_ENABLED"
+            ),
             commit_ref=_optional_reference(value("CFDI_VAULT_COMMIT_REF"), "CFDI_VAULT_COMMIT_REF"),
             campaign_profile=_optional_reference(value("SAT_CAMPAIGN_PROFILE"), "SAT_CAMPAIGN_PROFILE"),
             campaign_ref=_optional_reference(value("SAT_CAMPAIGN_REF"), "SAT_CAMPAIGN_REF"),
@@ -127,6 +144,9 @@ class RuntimeSettings:
             "storage_configured": bool(str(self.storage_root)),
             "sat_monitor_enabled": self.sat_monitor_enabled,
             "live_worker_enabled": self.live_worker_enabled,
+            "sat_monitor_watchdog_seconds": self.sat_monitor_watchdog_seconds,
+            "sat_monitor_notify_channel": self.sat_monitor_notify_channel,
+            "sat_monitor_adaptive_enabled": self.sat_monitor_adaptive_enabled,
             "commit_ref_set": bool(self.commit_ref),
             "campaign_profile_set": bool(self.campaign_profile),
             "campaign_ref_set": bool(self.campaign_ref),
@@ -238,6 +258,26 @@ def _boolean(value: str | None, name: str) -> bool:
     if normalized in _FALSE_VALUES:
         return False
     raise RuntimeSettingsError(f"runtime-{name.lower()}-invalid")
+
+
+def _positive_int(value: str | None, name: str) -> int:
+    try:
+        parsed = int(value or "")
+    except ValueError as exc:
+        raise RuntimeSettingsError(f"runtime-{name}-invalid") from exc
+    if parsed < 60:
+        raise RuntimeSettingsError(f"runtime-{name}-invalid")
+    return parsed
+
+
+def _notify_channel(value: str | None) -> str:
+    if (
+        not value
+        or _NOTIFY_CHANNEL.fullmatch(value) is None
+        or value != SAT_MONITOR_NOTIFY_CHANNEL
+    ):
+        raise RuntimeSettingsError("runtime-sat-monitor-notify-channel-invalid")
+    return value
 
 
 def _optional_reference(value: str | None, name: str) -> str | None:

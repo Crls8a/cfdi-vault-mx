@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,7 @@ from cfdi_vault.sat_monitor_service import (
     SatMonitorService,
     ScheduleWakeSignal,
     _build_adaptive_monitor_service,
+    _build_fixed_monitor_service,
     build_monitor_lease,
 )
 
@@ -134,6 +136,15 @@ def test_postgres_listener_reconnects_after_connection_failure() -> None:
     assert signal.wait(0) == "reconnect"
 
 
+def test_schedule_channel_is_fixed_across_trigger_and_listener() -> None:
+    migration = Path(__file__).resolve().parents[1] / "db/migration/V8__sat_monitor_schedule.sql"
+    sql = migration.read_text(encoding="utf-8")
+    assert "pg_notify('sat_schedule_changed', '')" in " ".join(sql.split())
+    assert PostgresScheduleListener(SimpleNamespace())._channel == "sat_schedule_changed"  # noqa: SLF001
+    with pytest.raises(ValueError, match="schedule channel is fixed"):
+        PostgresScheduleListener(SimpleNamespace(), channel="sat_schedule_changed_v2")
+
+
 def test_adaptive_service_heartbeats_waiting_cycle_without_sat_contact() -> None:
     class ScheduleRepository:
         def get_next_due_at(self, *, now: datetime) -> datetime:
@@ -165,10 +176,29 @@ def test_adaptive_monitor_builder_wires_durable_schedule_inputs() -> None:
     repository = object()
     service = _build_adaptive_monitor_service(
         Runner(), Lease(), SimpleNamespace(), repository, lambda _result: None,
+        channel="sat_schedule_changed", watchdog_seconds=900,
     )
 
     assert service._schedule_repository is repository  # noqa: SLF001
     assert isinstance(service._schedule_listener, PostgresScheduleListener)  # noqa: SLF001
+    assert service._watchdog_seconds == 900  # noqa: SLF001
+    assert service._schedule_listener._channel == "sat_schedule_changed"  # noqa: SLF001
+    with pytest.raises(ValueError, match="schedule channel is fixed"):
+        _build_adaptive_monitor_service(
+            Runner(), Lease(), SimpleNamespace(), repository, lambda _result: None,
+            channel="sat_schedule_changed_v2",
+        )
+    default_service = _build_adaptive_monitor_service(
+        Runner(), Lease(), SimpleNamespace(), repository, lambda _result: None,
+    )
+    assert default_service._watchdog_seconds == 300  # noqa: SLF001
+
+
+def test_fixed_monitor_builder_preserves_one_shot_fallback() -> None:
+    service = _build_fixed_monitor_service(Runner(), Lease(), lambda _result: None, 900)
+
+    assert service._schedule_repository is None  # noqa: SLF001
+    assert service._interval == 900  # noqa: SLF001
 
 
 def test_adaptive_service_records_sanitized_runner_error_before_propagating() -> None:

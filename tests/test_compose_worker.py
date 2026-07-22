@@ -33,6 +33,22 @@ def test_compose_monitor_uses_external_artifact_volume_and_flyway_gate() -> None
     assert "./storage:/var/lib/cfdi-vault/storage" not in compose
 
 
+def test_compose_monitor_exposes_safe_adaptive_settings_without_credentials() -> None:
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    monitor_match = re.search(
+        r"(?ms)^  sat-monitor:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:|\Z)",
+        compose,
+    )
+
+    assert monitor_match is not None
+    body = monitor_match.group("body")
+    assert "SAT_MONITOR_WATCHDOG_SECONDS: ${SAT_MONITOR_WATCHDOG_SECONDS:-300}" in body
+    assert "SAT_MONITOR_NOTIFY_CHANNEL: ${SAT_MONITOR_NOTIFY_CHANNEL:-sat_schedule_changed}" in body
+    assert "SAT_MONITOR_ADAPTIVE_ENABLED: ${SAT_MONITOR_ADAPTIVE_ENABLED:-0}" in body
+    assert "env_file:" not in body
+    assert ".cer" not in body and ".key" not in body and "C:\\" not in body
+
+
 def test_compose_ledger_publisher_is_separate_and_disabled_by_default() -> None:
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     publisher_match = re.search(

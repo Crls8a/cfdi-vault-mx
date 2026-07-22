@@ -35,6 +35,38 @@ def test_resolve_precedence_and_defaults() -> None:
     assert settings.live_worker_enabled is False
 
 
+def test_monitor_schedule_settings_default_safe_and_explicit() -> None:
+    defaults = RuntimeSettings.resolve(environment=BASE_ENV)
+    assert defaults.sat_monitor_watchdog_seconds == 300
+    assert defaults.sat_monitor_notify_channel == "sat_schedule_changed"
+    assert defaults.sat_monitor_adaptive_enabled is False
+
+    configured = RuntimeSettings.resolve(
+        environment={
+            **BASE_ENV,
+            "SAT_MONITOR_WATCHDOG_SECONDS": "900",
+            "SAT_MONITOR_NOTIFY_CHANNEL": "sat_schedule_changed",
+            "SAT_MONITOR_ADAPTIVE_ENABLED": "true",
+        }
+    )
+    assert configured.sat_monitor_watchdog_seconds == 900
+    assert configured.sat_monitor_notify_channel == "sat_schedule_changed"
+    assert configured.sat_monitor_adaptive_enabled is True
+
+
+def test_monitor_schedule_settings_reject_invalid_values() -> None:
+    with pytest.raises(RuntimeSettingsError, match="runtime-sat-monitor-watchdog-invalid"):
+        RuntimeSettings.resolve(environment={**BASE_ENV, "SAT_MONITOR_WATCHDOG_SECONDS": "59"})
+    with pytest.raises(RuntimeSettingsError, match="runtime-sat-monitor-watchdog-invalid"):
+        RuntimeSettings.resolve(environment={**BASE_ENV, "SAT_MONITOR_WATCHDOG_SECONDS": "not-int"})
+    with pytest.raises(RuntimeSettingsError, match="runtime-sat-monitor-notify-channel-invalid"):
+        RuntimeSettings.resolve(environment={**BASE_ENV, "SAT_MONITOR_NOTIFY_CHANNEL": "SAT-CHANNEL"})
+    with pytest.raises(RuntimeSettingsError, match="runtime-sat-monitor-notify-channel-invalid"):
+        RuntimeSettings.resolve(
+            environment={**BASE_ENV, "SAT_MONITOR_NOTIFY_CHANNEL": "sat_schedule_changed_v2"}
+        )
+
+
 def test_load_dotenv_mapping_supports_safe_lines_and_resolve_precedence(tmp_path: Path) -> None:
     dotenv_path = tmp_path / ".env"
     dotenv_path.write_text(

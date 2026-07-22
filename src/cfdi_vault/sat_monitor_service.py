@@ -14,6 +14,7 @@ from uuid import uuid4
 from sqlalchemy import text
 
 from cfdi_vault.queue_safety import validate_reference_string
+from cfdi_vault.runtime_settings import SAT_MONITOR_NOTIFY_CHANNEL
 
 if TYPE_CHECKING:
     from cfdi_vault.runtime_settings import RuntimeSettings
@@ -118,7 +119,9 @@ class PostgresScheduleListener:
 
     _CHANNEL = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 
-    def __init__(self, engine: object, *, channel: str = "sat_schedule_changed") -> None:
+    def __init__(self, engine: object, *, channel: str = SAT_MONITOR_NOTIFY_CHANNEL) -> None:
+        if channel != SAT_MONITOR_NOTIFY_CHANNEL:
+            raise ValueError("schedule channel is fixed")
         if self._CHANNEL.fullmatch(channel) is None:
             raise ValueError("schedule channel is invalid")
         self._engine = engine
@@ -626,13 +629,22 @@ def redis_heartbeat_callback(
     return heartbeat
 
 
+def _build_fixed_monitor_service(
+    runner: MonitorRunner, lease: MonitorLease, heartbeat: Callable[[object], None],
+    interval_seconds: int,
+) -> SatMonitorService:
+    return SatMonitorService(runner, lease, heartbeat=heartbeat, interval_seconds=interval_seconds)
+
+
 def _build_adaptive_monitor_service(
     runner: MonitorRunner, lease: MonitorLease, engine: object, repository: object,
     heartbeat: Callable[[object], None],
+    *, channel: str = SAT_MONITOR_NOTIFY_CHANNEL, watchdog_seconds: int = 300,
 ) -> SatMonitorService:
     return SatMonitorService(
-        runner, lease, heartbeat=heartbeat, schedule_repository=repository,
-        schedule_listener=PostgresScheduleListener(engine),
+        runner, lease, heartbeat=heartbeat, interval_seconds=watchdog_seconds,
+        schedule_repository=repository, watchdog_seconds=watchdog_seconds,
+        schedule_listener=PostgresScheduleListener(engine, channel=channel),
     )
 
 
@@ -678,16 +690,21 @@ def main() -> None:
             grant_ref=grant_ref,
             environ=_effective_environment(),
         )
-        _build_adaptive_monitor_service(
-            DatabaseDueInspector(engine, runner),
-            build_monitor_lease(engine, settings.redis_url),
-            engine,
-            repository,
-            redis_heartbeat_callback(
-                settings.redis_url,
-                environ=_effective_environment(),
-            ),
-        ).run_forever()
+        lease = build_monitor_lease(engine, settings.redis_url)
+        heartbeat = redis_heartbeat_callback(
+            settings.redis_url, environ=_effective_environment(),
+        )
+        if settings.sat_monitor_adaptive_enabled:
+            _build_adaptive_monitor_service(
+                DatabaseDueInspector(engine, runner), lease, engine, repository, heartbeat,
+                channel=settings.sat_monitor_notify_channel,
+                watchdog_seconds=settings.sat_monitor_watchdog_seconds,
+            ).run_forever()
+        else:
+            _build_fixed_monitor_service(
+                DatabaseDueInspector(engine, runner), lease, heartbeat,
+                settings.sat_monitor_watchdog_seconds,
+            ).run_forever()
     finally:
         engine.dispose()
 

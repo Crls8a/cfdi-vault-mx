@@ -14,6 +14,7 @@ from cfdi_vault.db import create_engine_from_url, create_session_factory, ensure
 from cfdi_vault.recovery_db import SatCampaignRecord, Tenant
 from cfdi_vault.sat_campaign_manifest import build_campaign_manifest
 from cfdi_vault.sat_campaign_repository import SatCampaignRepository
+from cfdi_vault.sat_campaign_repository_constants import VERIFY_RESULTS
 
 
 class CampaignDatabaseError(RuntimeError):
@@ -358,6 +359,12 @@ def _summary(status: dict[str, object] | None, campaign_ref: str) -> dict[str, o
     base = sum(int(value) for key, value in windows.items() if key in {"planned", "reserved", "metadata", "cfdi", "no_data", "complete", "failed", "manual_review"})
     packages = status.get("packages", {})
     package_count = sum(int(value) for value in packages.values()) if isinstance(packages, dict) else 0
+    last_result = status.get("last_verify_result")
+    if not isinstance(last_result, str) or last_result not in VERIFY_RESULTS:
+        last_result = None
+    service_window_state = status.get("service_window_state", "legacy")
+    if not isinstance(service_window_state, str) or service_window_state not in {"legacy", "active", "exceeded"}:
+        service_window_state = "legacy"
     return {
         "campaign_ref": campaign_ref, "base_count": status.get("base_count", base),
         "split_count": status.get("split_count", 0),
@@ -369,6 +376,6 @@ def _summary(status: dict[str, object] | None, campaign_ref: str) -> dict[str, o
         "threshold_blocked_count": windows.get("manual_review", 0), "verify_attempts": status.get("verify_attempts", 0),
         "next_check_at": status.get("next_check_at") or "", "package_count": package_count,
         "zip_valid_count": 0, "txt_count": 0, "verify_history_count": status.get("verify_attempts", 0),
-        "last_verify_result": status.get("last_verify_result"),
-        "service_window_state": status.get("service_window_state", "legacy"),
+        "last_verify_result": last_result,
+        "service_window_state": service_window_state,
     }

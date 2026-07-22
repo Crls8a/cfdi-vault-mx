@@ -110,6 +110,24 @@ def test_campaign_status_uses_db_aggregate(monkeypatch: pytest.MonkeyPatch) -> N
     }
 
 
+def test_campaign_summary_redacts_untrusted_last_result() -> None:
+    from cfdi_vault.sat_campaign_db_cli import _summary
+
+    status = {
+        "windows": {},
+        "packages": {},
+        "last_verify_result": "raw-rfc-uuid-and-path",
+    }
+
+    assert _summary(status, "campaign-opaque")["last_verify_result"] is None
+    status["last_verify_result"] = "no_data"
+    assert _summary(status, "campaign-opaque")["last_verify_result"] == "no_data"
+    status["last_verify_result"] = ["raw", "value"]
+    assert _summary(status, "campaign-opaque")["last_verify_result"] is None
+    status["service_window_state"] = ["raw", "value"]
+    assert _summary(status, "campaign-opaque")["service_window_state"] == "legacy"
+
+
 @pytest.mark.parametrize(
     ("failure", "reason"),
     [(SetupError(["private profile detail"]), "campaign-profile-invalid"),
