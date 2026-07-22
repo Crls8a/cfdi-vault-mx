@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,8 +39,151 @@ class MonitorRunner(Protocol):
         """Process due work without waiting."""
 
 
+class WaitStrategy(Protocol):
+    """Wait for a durable deadline or a non-durable schedule hint."""
+
+    def wait_until(
+        self, deadline: datetime | None, wake: Callable[[float], bool | str], watchdog_seconds: int,
+    ) -> str:
+        """Return ``due``, ``schedule_changed`` or ``watchdog``."""
+
+
+class ScheduleListener(Protocol):
+    """Lifecycle contract for a non-durable schedule hint listener."""
+
+    def start(self, signal: ScheduleWakeSignal) -> None:
+        """Start forwarding generic wake signals."""
+
+    def stop(self) -> None:
+        """Stop and release the listener connection."""
+
+
+class ScheduleWakeSignal:
+    """Cross-platform event used by the PostgreSQL listener and watchdog."""
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        self._reason = "schedule_changed"
+
+    def notify(self, reason: str = "schedule_changed") -> None:
+        if reason not in {"schedule_changed", "reconnect"}:
+            raise ValueError("schedule wake reason is invalid")
+        self._reason = reason
+        self._event.set()
+
+    def wait(self, timeout: float) -> bool | str:
+        if not self._event.wait(max(timeout, 0.0)):
+            return False
+        reason = self._reason
+        self._reason = "schedule_changed"
+        self._event.clear()
+        return reason
+
+
+class AdaptiveWaitStrategy:
+    """Wait once, bounded by the durable deadline and watchdog interval."""
+
+    def __init__(
+        self, *, now: Callable[[], datetime] | None = None,
+        monotonic: Callable[[], float] | None = None,
+    ) -> None:
+        self._now = now or (lambda: datetime.now(timezone.utc))
+        self._monotonic = monotonic or time.monotonic
+
+    def wait_until(
+        self, deadline: datetime | None, wake: Callable[[float], bool], watchdog_seconds: int,
+    ) -> str:
+        if type(watchdog_seconds) is not int or watchdog_seconds < 1:
+            raise ValueError("watchdog must be positive")
+        deadline_limited = False
+        if deadline is not None:
+            remaining = (_utc(deadline) - _utc(self._now())).total_seconds()
+            if remaining <= 0:
+                return "due"
+            timeout = min(float(watchdog_seconds), remaining)
+            deadline_limited = remaining <= float(watchdog_seconds)
+        else:
+            timeout = float(watchdog_seconds)
+        started = self._monotonic()
+        wake_reason = wake(timeout)
+        if wake_reason:
+            return wake_reason if isinstance(wake_reason, str) else "schedule_changed"
+        if deadline is not None and self._monotonic() - started >= timeout:
+            return "due" if deadline_limited else "watchdog"
+        return "watchdog"
+
+
+class PostgresScheduleListener:
+    """Listen for a generic PostgreSQL schedule hint on a dedicated connection."""
+
+    _CHANNEL = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+
+    def __init__(self, engine: object, *, channel: str = "sat_schedule_changed") -> None:
+        if self._CHANNEL.fullmatch(channel) is None:
+            raise ValueError("schedule channel is invalid")
+        self._engine = engine
+        self._channel = channel
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._signal: ScheduleWakeSignal | None = None
+
+    def start(self, signal: ScheduleWakeSignal) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._signal = signal
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._listen, name="sat-schedule-listener", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        self._thread = None
+
+    def _listen(self) -> None:
+        while not self._stop.is_set():
+            raw = None
+            try:
+                raw = self._engine.raw_connection()
+                connection = getattr(raw, "driver_connection", raw)
+                connection.autocommit = True
+                cursor = connection.cursor()
+                cursor.execute(f"LISTEN {self._channel}")
+                while not self._stop.wait(0.5):
+                    self._notify_if_messages(connection)
+            except Exception:
+                if self._signal is not None:
+                    self._signal.notify("reconnect")
+                if self._stop.wait(1.0):
+                    break
+            finally:
+                try:
+                    if raw is not None:
+                        raw.close()
+                except Exception:
+                    pass
+
+    def _notify_if_messages(self, connection: object) -> None:
+        if hasattr(connection, "poll"):
+            connection.poll()
+        notifies = getattr(connection, "notifies", None)
+        if callable(notifies):
+            try:
+                messages = list(notifies(timeout=0))
+            except TypeError:
+                messages = list(notifies())
+        elif isinstance(notifies, list):
+            messages = list(notifies)
+            del notifies[:]
+        else:
+            messages = []
+        if messages and self._signal is not None:
+            self._signal.notify()
+
+
 class SatMonitorService:
-    """Wake periodically and delegate only one due-runner invocation."""
+    """Wake on durable due time or a generic schedule hint."""
 
     def __init__(
         self,
@@ -48,6 +193,12 @@ class SatMonitorService:
         heartbeat: Callable[[object], None] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         interval_seconds: int = 300,
+        schedule_repository: object | None = None,
+        wait_strategy: WaitStrategy | None = None,
+        schedule_listener: ScheduleListener | None = None,
+        schedule_signal: ScheduleWakeSignal | None = None,
+        watchdog_seconds: int | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         if type(interval_seconds) is not int or interval_seconds < 60:
             raise ValueError("monitor interval must be at least one minute")
@@ -56,27 +207,86 @@ class SatMonitorService:
         self._heartbeat = heartbeat or (lambda _: None)
         self._sleep = sleep
         self._interval = interval_seconds
+        self._schedule_repository = schedule_repository
+        self._schedule_signal = schedule_signal or ScheduleWakeSignal()
+        self._wait_strategy = wait_strategy or AdaptiveWaitStrategy()
+        self._schedule_listener = schedule_listener
+        self._watchdog_seconds = watchdog_seconds if watchdog_seconds is not None else interval_seconds
+        if type(self._watchdog_seconds) is not int or self._watchdog_seconds < 60:
+            raise ValueError("monitor watchdog must be at least one minute")
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
 
-    def run_once(self, *, now: datetime | None = None) -> object:
+    def run_once(self, *, now: datetime | None = None, emit_heartbeat: bool = True) -> object:
         """Run once, returning ``busy`` without contacting SAT if leased out."""
 
         if not self._lease.acquire():
             result = {"busy": True, "contacted_count": 0}
-            self._heartbeat(result)
+            if emit_heartbeat:
+                self._heartbeat(result)
             return result
         try:
             result = self._runner.run(now=_utc(now or datetime.now(timezone.utc)), limit=2)
-            self._heartbeat(result)
+            if emit_heartbeat:
+                self._heartbeat(result)
             return result
         finally:
             self._lease.release()
 
     def run_forever(self, *, stop: Callable[[], bool] = lambda: False) -> None:
-        """Wake every five minutes; the runner itself decides whether work is due."""
+        """Wait adaptively; PostgreSQL due checks remain the final gate."""
 
-        while not stop():
-            self.run_once()
-            self._sleep(self._interval)
+        if self._schedule_repository is None:
+            while not stop():
+                self.run_once()
+                self._sleep(self._interval)
+            return
+
+        if self._schedule_listener is not None:
+            self._schedule_listener.start(self._schedule_signal)
+        try:
+            while not stop():
+                started = _utc(self._clock())
+                deadline = self._schedule_repository.get_next_due_at(now=started)
+                reason = self._wait_strategy.wait_until(
+                    deadline, self._schedule_signal.wait, self._watchdog_seconds,
+                )
+                if stop():
+                    break
+                now = _utc(self._clock())
+                due = self._schedule_repository.get_next_due_at(now=now)
+                due_count = int(due is not None and due <= now)
+                result: object = {"monitor_state": "waiting", "due_count": due_count, "contacted_count": 0}
+                try:
+                    if due_count:
+                        result = self.run_once(now=now, emit_heartbeat=False)
+                except Exception:
+                    result = {"error_count": 1, "terminal_category": "runner_error"}
+                    self._record_cycle(started, now, reason, result, due_count)
+                    raise
+                self._record_cycle(started, now, reason, result, due_count)
+        finally:
+            if self._schedule_listener is not None:
+                self._schedule_listener.stop()
+
+    def _record_cycle(
+        self, started: datetime, finished: datetime, reason: str, result: object, due_count: int,
+    ) -> None:
+        recorder = getattr(self._schedule_repository, "record_monitor_run", None)
+        if not callable(recorder):
+            recorder = None
+        aggregates = _monitor_aggregates(result)
+        if recorder is not None:
+            recorder(
+                started_at=started, finished_at=finished, wake_reason=_wake_reason(reason),
+                due_count=due_count,
+                duration_ms=max(0, int((finished - started).total_seconds() * 1000)),
+                watchdog_wake=reason == "watchdog", now=finished, **aggregates,
+            )
+        self._heartbeat({
+            "monitor_state": "processed" if due_count else "waiting",
+            "due_count": due_count,
+            **aggregates,
+        })
 
 
 class PostgresAdvisoryLease:
@@ -167,6 +377,37 @@ def build_monitor_lease(engine: object, redis_url: str | None) -> MonitorLease:
 
 def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def _wake_reason(value: str) -> str:
+    return value if value in {"startup", "schedule_changed", "watchdog", "reconnect", "manual"} else "unknown"
+
+
+def _aggregate_count(result: object, *keys: str) -> int:
+    if not isinstance(result, Mapping):
+        return 0
+    for key in keys:
+        value = result.get(key)
+        if type(value) is int and value >= 0:
+            return value
+    return 0
+
+
+def _monitor_aggregates(result: object) -> dict[str, object]:
+    terminal = result.get("terminal_category") if isinstance(result, Mapping) else None
+    if (
+        not isinstance(terminal, str) or not terminal or len(terminal) > 32
+        or not terminal[0].islower()
+        or not all(char.islower() or char.isdigit() or char in ".-_" for char in terminal)
+    ):
+        terminal = None
+    return {
+        "contacted_count": _aggregate_count(result, "contacted_count"),
+        "package_count": _aggregate_count(result, "package_count", "packages_found"),
+        "no_data_count": _aggregate_count(result, "no_data_count"),
+        "error_count": _aggregate_count(result, "error_count"),
+        "terminal_category": terminal,
+    }
 
 
 class DatabaseDueInspector:
@@ -335,7 +576,7 @@ def healthcheck() -> None:
     settings = _resolve_monitor_settings()
     engine = create_engine_from_url(settings.database_url)
     try:
-        ensure_tables_exist(engine, ("sat_campaigns", "sat_requests", "sat_claims"))
+        ensure_tables_exist(engine, ("sat_campaigns", "sat_requests", "sat_claims", "sat_monitor_runs"))
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))
     finally:
@@ -385,6 +626,16 @@ def redis_heartbeat_callback(
     return heartbeat
 
 
+def _build_adaptive_monitor_service(
+    runner: MonitorRunner, lease: MonitorLease, engine: object, repository: object,
+    heartbeat: Callable[[object], None],
+) -> SatMonitorService:
+    return SatMonitorService(
+        runner, lease, heartbeat=heartbeat, schedule_repository=repository,
+        schedule_listener=PostgresScheduleListener(engine),
+    )
+
+
 def main() -> None:
     """Run the durable monitor loop when explicitly enabled.
 
@@ -408,7 +659,9 @@ def main() -> None:
 
     engine = create_engine_from_url(settings.database_url)
     try:
-        ensure_tables_exist(engine, ("sat_campaigns", "sat_requests", "sat_claims"))
+        ensure_tables_exist(
+            engine, ("sat_campaigns", "sat_requests", "sat_claims", "sat_monitor_runs"),
+        )
         profile_id = settings.campaign_profile or ""
         campaign_ref = settings.campaign_ref or ""
         grant_ref = settings.campaign_grant or ""
@@ -425,10 +678,12 @@ def main() -> None:
             grant_ref=grant_ref,
             environ=_effective_environment(),
         )
-        SatMonitorService(
+        _build_adaptive_monitor_service(
             DatabaseDueInspector(engine, runner),
             build_monitor_lease(engine, settings.redis_url),
-            heartbeat=redis_heartbeat_callback(
+            engine,
+            repository,
+            redis_heartbeat_callback(
                 settings.redis_url,
                 environ=_effective_environment(),
             ),

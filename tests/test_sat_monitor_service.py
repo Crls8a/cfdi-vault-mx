@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
 from cfdi_vault.sat_monitor_service import (
+    AdaptiveWaitStrategy,
     PostgresAdvisoryLease,
+    PostgresScheduleListener,
     RedisMonitorLease,
     SatMonitorService,
+    ScheduleWakeSignal,
+    _build_adaptive_monitor_service,
     build_monitor_lease,
 )
 
@@ -92,6 +96,113 @@ def test_loop_wakes_at_interval_without_busy_waiting() -> None:
     SatMonitorService(runner, lease, sleep=sleeps.append).run_forever(stop=lambda: next(rounds))
     assert len(runner.calls) == 1
     assert sleeps == [300]
+
+
+def test_adaptive_wait_timeout_before_longer_deadline_is_watchdog() -> None:
+    ticks = iter((0.0, 300.0))
+    strategy = AdaptiveWaitStrategy(now=lambda: NOW, monotonic=lambda: next(ticks))
+    result = strategy.wait_until(NOW + timedelta(minutes=20), lambda _timeout: False, watchdog_seconds=300)
+    assert result == "watchdog"
+
+
+def test_postgres_listener_reconnects_after_connection_failure() -> None:
+    stop = SimpleNamespace(waits=0)
+    stop.is_set = lambda: stop.waits >= 3
+    stop.wait = lambda _timeout: setattr(stop, "waits", stop.waits + 1) or stop.is_set()
+
+    class Engine:
+        calls = 0
+
+        def raw_connection(self) -> SimpleNamespace:
+            self.calls += 1
+            def poll() -> None:
+                if self.calls == 1:
+                    raise RuntimeError("listener connection lost")
+
+            return SimpleNamespace(
+                autocommit=False, notifies=[], poll=poll,
+                cursor=lambda: SimpleNamespace(execute=lambda _sql: None), close=lambda: None,
+            )
+
+    engine, signal = Engine(), ScheduleWakeSignal()
+    listener = PostgresScheduleListener(engine)
+    listener._stop = stop  # noqa: SLF001
+    listener._signal = signal  # noqa: SLF001
+
+    listener._listen()  # noqa: SLF001
+    assert engine.calls == 2
+    assert signal.wait(0) == "reconnect"
+
+
+def test_adaptive_service_heartbeats_waiting_cycle_without_sat_contact() -> None:
+    class ScheduleRepository:
+        def get_next_due_at(self, *, now: datetime) -> datetime:
+            return now + timedelta(minutes=20)
+
+        def record_monitor_run(self, **_kwargs: object) -> None:
+            return None
+
+    class Wait:
+        def wait_until(self, _deadline, _wake, _watchdog_seconds):  # type: ignore[no-untyped-def]
+            return "watchdog"
+
+    heartbeats: list[object] = []
+    service = SatMonitorService(
+        Runner(), Lease(), heartbeat=heartbeats.append, schedule_repository=ScheduleRepository(),
+        wait_strategy=Wait(), clock=lambda: NOW,
+    )
+    rounds = iter((False, False, True))
+
+    service.run_forever(stop=lambda: next(rounds))
+
+    assert len(heartbeats) == 1
+    assert heartbeats[0]["monitor_state"] == "waiting"
+    assert heartbeats[0]["due_count"] == 0
+    assert heartbeats[0]["contacted_count"] == 0
+
+
+def test_adaptive_monitor_builder_wires_durable_schedule_inputs() -> None:
+    repository = object()
+    service = _build_adaptive_monitor_service(
+        Runner(), Lease(), SimpleNamespace(), repository, lambda _result: None,
+    )
+
+    assert service._schedule_repository is repository  # noqa: SLF001
+    assert isinstance(service._schedule_listener, PostgresScheduleListener)  # noqa: SLF001
+
+
+def test_adaptive_service_records_sanitized_runner_error_before_propagating() -> None:
+    class ScheduleRepository:
+        def __init__(self) -> None:
+            self.cycles: list[dict[str, object]] = []
+
+        def get_next_due_at(self, *, now: datetime) -> datetime | None:
+            return now
+
+        def record_monitor_run(self, **kwargs: object) -> None:
+            self.cycles.append(kwargs)
+
+    class BrokenRunner:
+        def run(self, *, now: datetime, limit: int = 2) -> object:
+            raise RuntimeError("synthetic runner failure")
+
+    class Wait:
+        def wait_until(self, deadline, wake, watchdog_seconds):  # type: ignore[no-untyped-def]
+            return "due"
+
+    repository, heartbeats = ScheduleRepository(), []
+    service = SatMonitorService(
+        BrokenRunner(), Lease(), schedule_repository=repository, wait_strategy=Wait(),
+        heartbeat=heartbeats.append, clock=lambda: NOW,
+    )
+    rounds = iter((False, False, True))
+
+    with pytest.raises(RuntimeError, match="synthetic runner failure"):
+        service.run_forever(stop=lambda: next(rounds))
+
+    assert repository.cycles[0]["error_count"] == 1
+    assert repository.cycles[0]["terminal_category"] == "runner_error"
+    assert heartbeats[0]["error_count"] == 1
 
 
 def test_advisory_lease_closes_connection_when_lock_query_fails() -> None:
