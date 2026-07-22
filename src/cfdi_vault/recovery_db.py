@@ -393,6 +393,47 @@ class SatVerifyAttemptRecord(Base):
     )
 
 
+class SatMonitorRunRecord(Base):
+    """Append-only sanitized aggregates for one monitor wake cycle."""
+
+    __tablename__ = "sat_monitor_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    run_ref: Mapped[str] = mapped_column(String(96), unique=True, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    wake_reason: Mapped[str] = mapped_column(String(32), nullable=False)
+    due_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    contacted_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    package_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    no_data_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    terminal_category: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    watchdog_wake: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "finished_at >= started_at", name="ck_sat_monitor_runs_time",
+        ),
+        CheckConstraint(
+            "wake_reason IN ('startup', 'schedule_changed', 'watchdog', 'reconnect', 'manual', 'unknown')",
+            name="ck_sat_monitor_runs_reason",
+        ),
+        CheckConstraint(
+            "due_count >= 0 AND contacted_count >= 0 AND package_count >= 0 "
+            "AND no_data_count >= 0 AND error_count >= 0 AND duration_ms >= 0",
+            name="ck_sat_monitor_runs_counts",
+        ),
+        CheckConstraint(
+            "terminal_category IS NULL OR terminal_category ~ '^[a-z][a-z0-9._-]{0,31}$'",
+            name="ck_sat_monitor_runs_terminal",
+        ),
+        Index("ix_sat_monitor_runs_started_at", "started_at", "id"),
+    )
+
+
 class SatMetadataImportRecord(Base):
     """Sanitized structural and aggregate results for one metadata TXT import."""
 

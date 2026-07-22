@@ -20,6 +20,7 @@ from cfdi_vault.recovery_db import (
     SatCampaignWindowRecord,
     SatClaimRecord,
     SatMetadataImportRecord,
+    SatMonitorRunRecord,
     SatPackageRecord,
     SatRequestRecord,
     SatVerifyAttemptRecord,
@@ -49,6 +50,87 @@ class SatCampaignRepository(SatCampaignRepositoryCampaignMixin, SatCampaignStatu
 
         with self._session_factory() as session:
             return session.get(SatRequestRecord, request_id)
+
+    def get_next_due_at(self, *, now: datetime | None = None) -> datetime | None:
+        """Return the earliest durable VERIFY schedule, if one exists.
+
+        ``now`` is accepted so callers can use one clock snapshot for the
+        wait decision and the subsequent claim. PostgreSQL remains the source
+        of truth; this read never marks work as due or contacts SAT.
+        """
+
+        del now
+        with self._session_factory() as session:
+            effective_due = func.least(
+                SatRequestRecord.next_check_at, SatRequestRecord.service_window_expires_at,
+            )
+            return session.scalar(select(func.min(effective_due)).where(
+                SatRequestRecord.status.in_(("submitted", "waiting_verify")),
+                or_(
+                    SatRequestRecord.next_check_at.is_not(None),
+                    SatRequestRecord.service_window_expires_at.is_not(None),
+                ),
+            ))
+
+    def record_monitor_run(
+        self, *, started_at: datetime, finished_at: datetime, wake_reason: str,
+        due_count: int, contacted_count: int, package_count: int = 0,
+        no_data_count: int = 0, error_count: int = 0,
+        terminal_category: str | None = None, duration_ms: int,
+        watchdog_wake: bool = False, now: datetime | None = None,
+    ) -> SatMonitorRunRecord:
+        """Append one sanitized monitor-cycle aggregate in a short transaction."""
+
+        if finished_at < started_at:
+            raise ValueError("monitor run finished before it started")
+        if wake_reason not in {"startup", "schedule_changed", "watchdog", "reconnect", "manual", "unknown"}:
+            raise ValueError("monitor wake reason is invalid")
+        counts = (due_count, contacted_count, package_count, no_data_count, error_count, duration_ms)
+        if any(type(value) is not int or value < 0 for value in counts):
+            raise ValueError("monitor run counts are invalid")
+        if terminal_category is not None and (
+            not terminal_category or len(terminal_category) > 32
+            or not all(char.islower() or char.isdigit() or char in ".-_" for char in terminal_category)
+            or not terminal_category[0].islower()
+        ):
+            raise ValueError("monitor terminal category is invalid")
+        stamp = now or finished_at
+        with self._session_factory() as session:
+            record = SatMonitorRunRecord(
+                run_ref=f"monitor-run-{uuid4().hex}", started_at=started_at,
+                finished_at=finished_at, wake_reason=wake_reason, due_count=due_count,
+                contacted_count=contacted_count, package_count=package_count,
+                no_data_count=no_data_count, error_count=error_count,
+                terminal_category=terminal_category, duration_ms=duration_ms,
+                watchdog_wake=bool(watchdog_wake), created_at=stamp,
+            )
+            session.add(record)
+            session.commit()
+            return record
+
+    def get_monitor_status(self) -> dict[str, object]:
+        """Return only aggregate monitor history; never expose transport data."""
+
+        with self._session_factory() as session:
+            totals = session.execute(select(
+                func.count(SatMonitorRunRecord.id),
+                func.coalesce(func.sum(SatMonitorRunRecord.due_count), 0),
+                func.coalesce(func.sum(SatMonitorRunRecord.contacted_count), 0),
+                func.coalesce(func.sum(SatMonitorRunRecord.package_count), 0),
+                func.coalesce(func.sum(SatMonitorRunRecord.no_data_count), 0),
+                func.coalesce(func.sum(SatMonitorRunRecord.error_count), 0),
+            )).one()
+            latest = session.scalar(select(SatMonitorRunRecord).order_by(
+                SatMonitorRunRecord.started_at.desc(), SatMonitorRunRecord.id.desc(),
+            ).limit(1))
+            return {
+                "total_runs": int(totals[0] or 0), "due_count": int(totals[1] or 0),
+                "contacted_count": int(totals[2] or 0), "package_count": int(totals[3] or 0),
+                "no_data_count": int(totals[4] or 0), "error_count": int(totals[5] or 0),
+                "last_wake_reason": latest.wake_reason if latest else None,
+                "last_terminal_category": latest.terminal_category if latest else None,
+                "last_watchdog_wake": latest.watchdog_wake if latest else None,
+            }
 
     def get_claim(self, claim_ref: str) -> SatClaimRecord | None:
         """Return one detached claim snapshot for an already durable claim."""
