@@ -351,6 +351,28 @@ empty slot is not a failure and must not be filled with synthetic output.
 | `E-LIVE-META-ISSUED-001` | `SAT-META-REAL-001` | Window, attempts, category, `zip_valid`, `txt_valid`, package/job counts. | `planned` |
 | `E-LIVE-CFDI-001` | `SAT-CFDI-REAL-001` | Window, attempts, category, `zip_valid`, `xml_valid`, package/job counts. | `planned` |
 
+### 2026-07-21 — E-LIVE-META-RECEIVED-001 — first real submission
+
+- owner_role: SAT integration
+- scope: live; Metadata; received; 2026-01-01..2026-01-14
+- action: Submitted one authorized request through the v1.5 adapter after the local profile, storage, PostgreSQL, Flyway, RabbitMQ, Redis, scanner, and clean-tree gates passed.
+- evidence: Durable request state is `submitted`; verify attempts `0`; packages `0`; next verification is due according to the persisted five-minute schedule; no identifiers or fiscal rows were recorded.
+- result: confirmed
+- status: waiting_verify
+- blocker: none
+- next_step: Run the same campaign grant only after `next_check_at` is due.
+
+### 2026-07-21 — E-LIVE-META-ISSUED-001 — first real submission
+
+- owner_role: SAT integration
+- scope: live; Metadata; issued; 2026-01-01..2026-01-14
+- action: Submitted one authorized request through the v1.5 adapter after the local profile, storage, PostgreSQL, Flyway, RabbitMQ, Redis, scanner, and clean-tree gates passed.
+- evidence: Durable request state is `submitted`; verify attempts `0`; packages `0`; next verification is due according to the persisted five-minute schedule; no identifiers or fiscal rows were recorded.
+- result: confirmed
+- status: waiting_verify
+- blocker: none
+- next_step: Run the same campaign grant only after `next_check_at` is due.
+
 ## Review rule
 
 At each review, compare this log with [`master-plan.md`](master-plan.md),
