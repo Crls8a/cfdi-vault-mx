@@ -372,6 +372,17 @@ empty slot is not a failure and must not be filled with synthetic output.
 - blocker: none
 - next_step: Do not run before the persisted `next_check_at`; continue with the same grant.
 
+### 2026-07-21 — E-LIVE-META-RUNTIME-001 — pre-contact retry
+
+- owner_role: SAT integration
+- scope: live-preflight; Metadata; no SAT effect
+- action: The first one-shot runner invocation stopped before adapter construction because local scanner/repository attestations were not supplied to the runtime process.
+- evidence: Sanitized error `campaign-live-runtime-unavailable`; retry marked safe; durable state showed zero requests before the corrected invocation.
+- result: confirmed
+- status: verified
+- blocker: none after the corrected local invocation
+- next_step: Preserve the two already-submitted requests and wait for their persisted `next_check_at`.
+
 ### 2026-07-21 — E-LIVE-META-ISSUED-001 — first real submission
 
 - owner_role: SAT integration
