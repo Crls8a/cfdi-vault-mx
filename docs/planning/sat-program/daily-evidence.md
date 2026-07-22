@@ -406,6 +406,18 @@ empty slot is not a failure and must not be filled with synthetic output.
 - blocker: Both persisted `next_check_at` values must be due before repeating VERIFY; package and worker stages remain pending.
 - next_step: Re-run VERIFY for the same campaign/grant-bound state only when each persisted `next_check_at` is due.
 
+### 2026-07-21 — E-LIVE-META-VERIFY-002 — due Metadata VERIFY refresh
+
+- owner_role: SAT integration
+- scope: live; Metadata; received and issued
+- action: After the persisted `next_check_at` became due, ran one VERIFY contact from the exact campaign/grant-bound revision.
+- evidence: The campaign now has three total VERIFY attempts; the latest attempt remains `pending`; `next_check_at` persisted for the next due window; `package_count=0`; ZIP/TXT/worker jobs remain `0`.
+- contact_summary: `sat_contacted=true` for this one due VERIFY contact; no SAT contact occurred beyond this completed attempt.
+- result: pending
+- status: waiting_verify
+- blocker: Await the next persisted `next_check_at`; package and worker stages remain pending.
+- next_step: Re-run VERIFY for the same campaign/grant-bound state only when the persisted `next_check_at` is due.
+
 ## Review rule
 
 At each review, compare this log with [`master-plan.md`](master-plan.md),
