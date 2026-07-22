@@ -394,6 +394,18 @@ empty slot is not a failure and must not be filled with synthetic output.
 - blocker: none
 - next_step: Run the same campaign grant only after `next_check_at` is due.
 
+### 2026-07-21 — E-LIVE-META-VERIFY-001 — bounded Metadata VERIFY result
+
+- owner_role: SAT integration
+- scope: live; Metadata; received and issued
+- action: Resumed from an isolated clean checkout at the exact campaign/grant-bound revision after a safe commit-mismatch stop; performed exactly two VERIFY contacts, one for received and one for issued.
+- evidence: Both VERIFY operations remain `pending`; `next_check_at` persisted for each direction; no packages, ZIP, TXT, or worker job exists yet; the earlier commit-mismatch stop made no SAT contact (`sat_contacted=false`).
+- contact_summary: This bounded VERIFY run contacted SAT exactly twice; the earlier safe commit-mismatch stop contacted SAT zero times.
+- result: pending
+- status: waiting_verify
+- blocker: Both persisted `next_check_at` values must be due before repeating VERIFY; package and worker stages remain pending.
+- next_step: Re-run VERIFY for the same campaign/grant-bound state only when each persisted `next_check_at` is due.
+
 ## Review rule
 
 At each review, compare this log with [`master-plan.md`](master-plan.md),
