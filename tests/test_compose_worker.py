@@ -45,6 +45,9 @@ def test_compose_monitor_exposes_safe_adaptive_settings_without_credentials() ->
     assert "SAT_MONITOR_WATCHDOG_SECONDS: ${SAT_MONITOR_WATCHDOG_SECONDS:-300}" in body
     assert "SAT_MONITOR_NOTIFY_CHANNEL: ${SAT_MONITOR_NOTIFY_CHANNEL:-sat_schedule_changed}" in body
     assert "SAT_MONITOR_ADAPTIVE_ENABLED: ${SAT_MONITOR_ADAPTIVE_ENABLED:-0}" in body
+    assert "SAT_TRANSPORT_TIMEOUT_SECONDS: ${SAT_TRANSPORT_TIMEOUT_SECONDS:-90}" in body
+    assert "SAT_TRANSPORT_CONNECT_TIMEOUT_SECONDS: ${SAT_TRANSPORT_CONNECT_TIMEOUT_SECONDS:-15}" in body
+    assert "SAT_TRANSPORT_READ_TIMEOUT_SECONDS: ${SAT_TRANSPORT_READ_TIMEOUT_SECONDS:-60}" in body
     assert "env_file:" not in body
     assert ".cer" not in body and ".key" not in body and "C:\\" not in body
 

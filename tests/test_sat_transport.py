@@ -280,6 +280,56 @@ def test_http_adapter_sends_request_body_bytes_and_headers_unchanged() -> None:
     assert captured_headers["accept"] == "text/xml"
 
 
+def test_http_adapter_caps_connected_socket_read_to_total_budget(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    captured: dict[str, float] = {}
+
+    class Socket:
+        def settimeout(self, value: float) -> None:
+            captured["timeout"] = value
+
+    class Response:
+        status = 200
+        reason = "OK"
+
+        def getheaders(self) -> list[tuple[str, str]]:
+            return []
+
+        def read(self) -> bytes:
+            return b"SYNTHETIC_RESPONSE"
+
+    class Connection:
+        sock = Socket()
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def connect(self) -> None:
+            pass
+
+        def request(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def getresponse(self) -> Response:
+            return Response()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("cfdi_vault.sat_transport.HTTPSConnection", Connection)
+    response = GuardedSoapHttpTransport(guard_input_factory=_passing_guard).send(
+        SoapTransportRequest(
+            endpoint="https://synthetic.invalid/sat",
+            body=SAFE_BODY,
+            timeout_seconds=30,
+            connect_timeout_seconds=20,
+            read_timeout_seconds=60,
+        )
+    )
+
+    assert response.status_code == 200
+    assert 0 < captured["timeout"] <= 30
+
+
 def test_live_sat_guard_accepts_noninteractive_permit_without_credentials_for_transport_probe() -> None:
     validate_live_sat_guard(
         LiveSatGuardInput(

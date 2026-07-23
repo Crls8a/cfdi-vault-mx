@@ -7,6 +7,7 @@ replace PostgreSQL with a local database.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -27,12 +28,62 @@ class RuntimeSettingsError(ValueError):
         super().__init__(reason)
 
 
+@dataclass(frozen=True)
+class SatTransportSettings:
+    """Bounded, non-secret timeouts for one SAT SOAP call."""
+
+    timeout_seconds: float
+    connect_timeout_seconds: float
+    read_timeout_seconds: float
+
+    @classmethod
+    def resolve(
+        cls,
+        *,
+        cli: Mapping[str, object] | None = None,
+        environment: Mapping[str, str] | None = None,
+        dotenv: Mapping[str, str] | None = None,
+    ) -> "SatTransportSettings":
+        """Resolve transport values without requiring database or storage config."""
+
+        sources = (cli or {}, environment or {}, dotenv or {})
+
+        def value(key: str) -> str:
+            for source in sources:
+                if key in source and source[key] is not None:
+                    return str(source[key]).strip()
+            return _DEFAULTS[key]
+
+        total = _bounded_seconds(value("SAT_TRANSPORT_TIMEOUT_SECONDS"), "timeout", 300)
+        connect = _bounded_seconds(
+            value("SAT_TRANSPORT_CONNECT_TIMEOUT_SECONDS"), "connect-timeout", 120,
+        )
+        read = _bounded_seconds(value("SAT_TRANSPORT_READ_TIMEOUT_SECONDS"), "read-timeout", 300)
+        if connect > total:
+            raise RuntimeSettingsError("runtime-sat-transport-connect-timeout-invalid")
+        if read > total:
+            raise RuntimeSettingsError("runtime-sat-transport-read-timeout-invalid")
+        return cls(total, connect, read)
+
+    def redacted(self) -> dict[str, float]:
+        """Return safe numeric values for status output."""
+
+        return {
+            "sat_transport_timeout_seconds": self.timeout_seconds,
+            "sat_transport_connect_timeout_seconds": self.connect_timeout_seconds,
+            "sat_transport_read_timeout_seconds": self.read_timeout_seconds,
+        }
+
+
 _DEFAULTS: dict[str, str] = {
     "SAT_MONITOR_ENABLED": "0",
     "CFDI_VAULT_LIVE_WORKER_ENABLED": "0",
     "SAT_MONITOR_WATCHDOG_SECONDS": "300",
     "SAT_MONITOR_NOTIFY_CHANNEL": "sat_schedule_changed",
     "SAT_MONITOR_ADAPTIVE_ENABLED": "0",
+    "SAT_TRANSPORT_TIMEOUT_SECONDS": "90",
+    "SAT_TRANSPORT_CONNECT_TIMEOUT_SECONDS": "15",
+    "SAT_TRANSPORT_READ_TIMEOUT_SECONDS": "60",
 }
 SAT_MONITOR_NOTIFY_CHANNEL = "sat_schedule_changed"
 _BOOLEAN_KEYS = frozenset(
@@ -63,6 +114,9 @@ class RuntimeSettings:
     sat_monitor_watchdog_seconds: int
     sat_monitor_notify_channel: str
     sat_monitor_adaptive_enabled: bool
+    sat_transport_timeout_seconds: float
+    sat_transport_connect_timeout_seconds: float
+    sat_transport_read_timeout_seconds: float
     commit_ref: str | None
     campaign_profile: str | None
     campaign_ref: str | None
@@ -111,6 +165,9 @@ class RuntimeSettings:
         if not storage_text:
             raise RuntimeSettingsError("runtime-storage-root-required")
         storage_root = _validate_storage_root(storage_text, repository_root)
+        transport = SatTransportSettings.resolve(
+            cli=cli_values, environment=env_values, dotenv=dotenv_values,
+        )
 
         return cls(
             database_url=database_url,
@@ -128,6 +185,9 @@ class RuntimeSettings:
             sat_monitor_adaptive_enabled=_boolean(
                 value("SAT_MONITOR_ADAPTIVE_ENABLED"), "SAT_MONITOR_ADAPTIVE_ENABLED"
             ),
+            sat_transport_timeout_seconds=transport.timeout_seconds,
+            sat_transport_connect_timeout_seconds=transport.connect_timeout_seconds,
+            sat_transport_read_timeout_seconds=transport.read_timeout_seconds,
             commit_ref=_optional_reference(value("CFDI_VAULT_COMMIT_REF"), "CFDI_VAULT_COMMIT_REF"),
             campaign_profile=_optional_reference(value("SAT_CAMPAIGN_PROFILE"), "SAT_CAMPAIGN_PROFILE"),
             campaign_ref=_optional_reference(value("SAT_CAMPAIGN_REF"), "SAT_CAMPAIGN_REF"),
@@ -147,6 +207,9 @@ class RuntimeSettings:
             "sat_monitor_watchdog_seconds": self.sat_monitor_watchdog_seconds,
             "sat_monitor_notify_channel": self.sat_monitor_notify_channel,
             "sat_monitor_adaptive_enabled": self.sat_monitor_adaptive_enabled,
+            "sat_transport_timeout_seconds": self.sat_transport_timeout_seconds,
+            "sat_transport_connect_timeout_seconds": self.sat_transport_connect_timeout_seconds,
+            "sat_transport_read_timeout_seconds": self.sat_transport_read_timeout_seconds,
             "commit_ref_set": bool(self.commit_ref),
             "campaign_profile_set": bool(self.campaign_profile),
             "campaign_ref_set": bool(self.campaign_ref),
@@ -267,6 +330,16 @@ def _positive_int(value: str | None, name: str) -> int:
         raise RuntimeSettingsError(f"runtime-{name}-invalid") from exc
     if parsed < 60:
         raise RuntimeSettingsError(f"runtime-{name}-invalid")
+    return parsed
+
+
+def _bounded_seconds(value: str, name: str, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeSettingsError(f"runtime-sat-transport-{name}-invalid") from exc
+    if not math.isfinite(parsed) or parsed <= 0 or parsed > maximum:
+        raise RuntimeSettingsError(f"runtime-sat-transport-{name}-invalid")
     return parsed
 
 

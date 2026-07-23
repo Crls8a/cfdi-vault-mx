@@ -11,6 +11,7 @@ import errno
 import os
 import socket
 import ssl
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from http.client import HTTPConnection, HTTPSConnection
@@ -271,6 +272,7 @@ class GuardedSoapHttpTransport:
             )
         else:
             connection = HTTPConnection(parts.hostname, port=parts.port, timeout=connect_timeout)
+        started = time.monotonic()
         try:
             try:
                 connection.connect()
@@ -278,8 +280,17 @@ class GuardedSoapHttpTransport:
                 if _looks_like_timeout(exc):
                     raise SoapConnectTimeout("soap-connect-timeout") from exc
                 raise
-            if connection.sock is not None and read_timeout is not None:
-                connection.sock.settimeout(read_timeout)
+            if connection.sock is not None:
+                remaining = _remaining_timeout(request.timeout_seconds, started)
+                if remaining is not None and remaining <= 0:
+                    raise SoapReadTimeout("soap-total-timeout")
+                effective_read_timeout = (
+                    min(read_timeout, remaining)
+                    if remaining is not None and read_timeout is not None
+                    else remaining or read_timeout
+                )
+                if effective_read_timeout is not None:
+                    connection.sock.settimeout(effective_read_timeout)
             try:
                 connection.request("POST", path, body=request.body, headers=dict(request.headers))
                 response = connection.getresponse()
@@ -288,6 +299,8 @@ class GuardedSoapHttpTransport:
                 if _looks_like_timeout(exc):
                     raise SoapReadTimeout("soap-read-timeout") from exc
                 raise
+            if request.timeout_seconds is not None and time.monotonic() - started > request.timeout_seconds:
+                raise SoapReadTimeout("soap-total-timeout")
             return SoapTransportResponse(
                 status_code=response.status,
                 headers=dict(response.getheaders()),
@@ -312,6 +325,14 @@ def _looks_like_timeout(exc: BaseException) -> bool:
         errno.ETIMEDOUT,
         getattr(errno, "WSAETIMEDOUT", -1),
     }
+
+
+def _remaining_timeout(total: float | None, started: float) -> float | None:
+    """Return the remaining total budget for a connected SOAP socket."""
+
+    if total is None:
+        return None
+    return total - (time.monotonic() - started)
 
 
 def _redact_headers(headers: Mapping[str, str]) -> dict[str, str]:

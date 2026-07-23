@@ -58,6 +58,9 @@ these non-secret defaults to `sat-monitor`:
 | `SAT_MONITOR_ADAPTIVE_ENABLED` | `0` | Chooses the adaptive listener path; `0` preserves the one-shot/fixed fallback. |
 | `SAT_MONITOR_WATCHDOG_SECONDS` | `300` | Upper bound for a missed `NOTIFY` wake; minimum is 60 seconds. |
 | `SAT_MONITOR_NOTIFY_CHANNEL` | `sat_schedule_changed` | Fixed PostgreSQL channel required by the V8 trigger; other values are rejected. Payloads remain empty. |
+| `SAT_TRANSPORT_TIMEOUT_SECONDS` | `90` | Total limit for one guarded SOAP call; maximum 300 seconds. |
+| `SAT_TRANSPORT_CONNECT_TIMEOUT_SECONDS` | `15` | Connection limit; maximum 120 seconds and never above the total limit. |
+| `SAT_TRANSPORT_READ_TIMEOUT_SECONDS` | `60` | Read limit; maximum 300 seconds and never above the total limit. |
 
 Safe baseline for a local stack:
 
@@ -67,6 +70,9 @@ CFDI_VAULT_LIVE_WORKER_ENABLED=0
 SAT_MONITOR_ADAPTIVE_ENABLED=0
 SAT_MONITOR_WATCHDOG_SECONDS=300
 SAT_MONITOR_NOTIFY_CHANNEL=sat_schedule_changed
+SAT_TRANSPORT_TIMEOUT_SECONDS=90
+SAT_TRANSPORT_CONNECT_TIMEOUT_SECONDS=15
+SAT_TRANSPORT_READ_TIMEOUT_SECONDS=60
 ```
 
 `SAT_MONITOR_NOTIFY_CHANNEL` is intentionally fixed. The V8 trigger emits only

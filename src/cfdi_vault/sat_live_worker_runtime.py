@@ -14,6 +14,7 @@ from typing import Mapping
 
 from cfdi_vault.domain import DateTimePeriod, DownloadDirection, DownloadQuery, RequestType
 from cfdi_vault.os_secret_providers import OsSecretProviderError, native_provider_for_reference
+from cfdi_vault.runtime_settings import RuntimeSettingsError, SatTransportSettings
 from cfdi_vault.sat_campaign_repository import SatCampaignRepository
 from cfdi_vault.sat_transport import GuardedSoapHttpTransport, LiveSatGuardInput
 from cfdi_vault.sat_v15_adapter import SatV15Adapter
@@ -107,6 +108,10 @@ def _build_worker_factories(
     # ``{}`` is an intentional injection in tests and in isolated workers;
     # do not silently replace it with the host process environment.
     env = environ if environ is not None else os.environ
+    try:
+        transport_settings = SatTransportSettings.resolve(environment=env)
+    except RuntimeSettingsError as exc:
+        raise SatLiveWorkerRuntimeError("sat-transport-settings-invalid") from exc
     if env.get("CFDI_VAULT_LIVE_WORKER_ENABLED") != "1":
         raise SatLiveWorkerRuntimeError("live-worker-disabled")
     if env.get("CI"):
@@ -177,6 +182,9 @@ def _build_worker_factories(
         profile=profile,
         provider=provider,
         transport=transport,
+        timeout_seconds=transport_settings.timeout_seconds,
+        connect_timeout_seconds=transport_settings.connect_timeout_seconds,
+        read_timeout_seconds=transport_settings.read_timeout_seconds,
         max_range_days=14,
         request_type=request_type,
         _credential_purpose=f"sat-{expected_phase}",

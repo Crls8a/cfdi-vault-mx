@@ -54,6 +54,48 @@ def test_monitor_schedule_settings_default_safe_and_explicit() -> None:
     assert configured.sat_monitor_adaptive_enabled is True
 
 
+def test_sat_transport_settings_are_bounded_and_redacted() -> None:
+    defaults = RuntimeSettings.resolve(environment=BASE_ENV)
+    assert defaults.sat_transport_timeout_seconds == 90.0
+    assert defaults.sat_transport_connect_timeout_seconds == 15.0
+    assert defaults.sat_transport_read_timeout_seconds == 60.0
+
+    configured = RuntimeSettings.resolve(
+        environment={
+            **BASE_ENV,
+            "SAT_TRANSPORT_TIMEOUT_SECONDS": "120",
+            "SAT_TRANSPORT_CONNECT_TIMEOUT_SECONDS": "20",
+            "SAT_TRANSPORT_READ_TIMEOUT_SECONDS": "90",
+        }
+    )
+    assert configured.sat_transport_timeout_seconds == 120.0
+    assert configured.sat_transport_connect_timeout_seconds == 20.0
+    assert configured.sat_transport_read_timeout_seconds == 90.0
+    safe = configured.redacted()
+    assert safe["sat_transport_timeout_seconds"] == 120.0
+    assert safe["sat_transport_connect_timeout_seconds"] == 20.0
+    assert safe["sat_transport_read_timeout_seconds"] == 90.0
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "reason"),
+    [
+        ("SAT_TRANSPORT_TIMEOUT_SECONDS", "0", "runtime-sat-transport-timeout-invalid"),
+        ("SAT_TRANSPORT_TIMEOUT_SECONDS", "301", "runtime-sat-transport-timeout-invalid"),
+        ("SAT_TRANSPORT_CONNECT_TIMEOUT_SECONDS", "0", "runtime-sat-transport-connect-timeout-invalid"),
+        ("SAT_TRANSPORT_CONNECT_TIMEOUT_SECONDS", "121", "runtime-sat-transport-connect-timeout-invalid"),
+        ("SAT_TRANSPORT_READ_TIMEOUT_SECONDS", "0", "runtime-sat-transport-read-timeout-invalid"),
+        ("SAT_TRANSPORT_READ_TIMEOUT_SECONDS", "301", "runtime-sat-transport-read-timeout-invalid"),
+        ("SAT_TRANSPORT_READ_TIMEOUT_SECONDS", "91", "runtime-sat-transport-read-timeout-invalid"),
+    ],
+)
+def test_sat_transport_settings_reject_invalid_values(
+    key: str, value: str, reason: str,
+) -> None:
+    with pytest.raises(RuntimeSettingsError, match=reason):
+        RuntimeSettings.resolve(environment={**BASE_ENV, key: value})
+
+
 def test_monitor_schedule_settings_reject_invalid_values() -> None:
     with pytest.raises(RuntimeSettingsError, match="runtime-sat-monitor-watchdog-invalid"):
         RuntimeSettings.resolve(environment={**BASE_ENV, "SAT_MONITOR_WATCHDOG_SECONDS": "59"})

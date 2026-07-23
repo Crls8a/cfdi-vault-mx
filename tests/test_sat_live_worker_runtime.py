@@ -225,6 +225,33 @@ def test_cfdi_proof_runtime_uses_cfdi_lane_when_campaign_is_still_metadata(monke
     assert query.document_status == "Vigente"
 
 
+def test_runtime_wires_bounded_sat_transport_timeouts(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    repository = _patch_ready_runtime(monkeypatch, grant_phase="metadata-proof")
+    captured: dict[str, object] = {}
+
+    def adapter_factory(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("cfdi_vault.sat_live_worker_runtime.SatV15Adapter", adapter_factory)
+    build_metadata_worker_factories(
+        "profile", repository, campaign_ref="campaign", grant_ref="grant",
+        environ={
+            "CFDI_VAULT_LIVE_WORKER_ENABLED": "1",
+            "CFDI_VAULT_COMMIT_REF": "synthetic-commit",
+            "CFDI_VAULT_SCANNER_PASSED": "1",
+            "CFDI_VAULT_REPO_CLEAN": "1",
+            "SAT_TRANSPORT_TIMEOUT_SECONDS": "120",
+            "SAT_TRANSPORT_CONNECT_TIMEOUT_SECONDS": "20",
+            "SAT_TRANSPORT_READ_TIMEOUT_SECONDS": "90",
+        },
+    )
+
+    assert captured["timeout_seconds"] == 120.0
+    assert captured["connect_timeout_seconds"] == 20.0
+    assert captured["read_timeout_seconds"] == 90.0
+
+
 @pytest.mark.parametrize("outcome", [False, RuntimeError("synthetic-provider-error")])
 def test_provider_readiness_fails_before_sat_factory(monkeypatch, outcome) -> None:  # type: ignore[no-untyped-def]
     """A missing native phrase must stop before transport/adapter creation."""
