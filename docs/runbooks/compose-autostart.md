@@ -104,3 +104,10 @@ up -d postgres rabbitmq redis worker`. Their restart policy is now
 to `Up`. The disabled `ledger-publisher` was separately recreated with no
 restart policy, so it exits once with `feature_disabled` instead of looping.
 The SAT monitor was not started and no SAT contact occurred.
+
+At the same status-only check, both existing requests were past their local
+service-window deadline and one still had a due verification. Because the
+monitor was disabled, the rows were not automatically projected to
+`service_window_exceeded`; they remain `uncertain`/`pending` evidence requiring
+manual reconciliation. This must not be interpreted as `no_data`, and no
+replacement request was created.
