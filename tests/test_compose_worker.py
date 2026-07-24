@@ -73,3 +73,22 @@ def test_compose_ledger_publisher_is_separate_and_disabled_by_default() -> None:
     # SAT monitor's Redis dependency or an artifact volume.
     assert "redis:" not in body
     assert "CFDI_STORAGE_MOUNT" not in body
+
+
+def test_compose_persistent_services_restart_without_restarting_sat_monitor() -> None:
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    for service in ("postgres", "rabbitmq", "redis", "worker", "ledger-publisher"):
+        match = re.search(
+            rf"(?ms)^  {re.escape(service)}:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:|\Z)",
+            compose,
+        )
+        assert match is not None
+        assert "restart: unless-stopped" in match.group("body")
+
+    monitor_match = re.search(
+        r"(?ms)^  sat-monitor:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:|\Z)",
+        compose,
+    )
+    assert monitor_match is not None
+    assert "restart:" not in monitor_match.group("body")

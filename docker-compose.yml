@@ -46,6 +46,7 @@ services:
       - ${CFDI_STORAGE_MOUNT:-sat_artifacts_data}:/var/lib/cfdi-vault/storage
       - ./logs:/app/logs
     command: ["worker", "run", "--loop", "--queue", "all"]
+    restart: unless-stopped
 
   ledger-publisher:
     build: .
@@ -68,6 +69,7 @@ services:
       rabbitmq:
         condition: service_healthy
     command: ["-m", "cfdi_vault.ledger_outbox_service", "--loop"]
+    restart: unless-stopped
 
   sat-monitor:
     build: .
@@ -104,7 +106,6 @@ services:
       - ${CFDI_STORAGE_MOUNT:-sat_artifacts_data}:/var/lib/cfdi-vault/storage
       - ./logs:/app/logs
     command: ["-m", "cfdi_vault.sat_monitor_service"]
-    restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import cfdi_vault.sat_monitor_service as m; m.healthcheck()"]
       interval: 30s
@@ -121,6 +122,7 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cfdi_vault} -d ${POSTGRES_DB:-cfdi_vault}"]
       interval: 10s
@@ -152,6 +154,7 @@ services:
       - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
@@ -164,6 +167,7 @@ services:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s

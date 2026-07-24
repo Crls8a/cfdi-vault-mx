@@ -15,3 +15,15 @@ def test_scheduler_docs_are_review_only_and_cross_platform() -> None:
     assert "does not install or activate" in scheduler
     assert "No task is registered by Compose or by the CLI" in runbook
     assert "C:\\Users\\" not in scheduler + runbook
+
+
+def test_compose_autostart_runbook_documents_restart_boundary() -> None:
+    runbook = (ROOT / "docs/runbooks/compose-autostart.md").read_text(encoding="utf-8")
+    normalized = " ".join(runbook.split())
+
+    assert "PM2 is not used" in normalized
+    assert "restart: unless-stopped" in runbook
+    assert "sat-monitor" in runbook
+    assert "docker compose up -d postgres rabbitmq redis worker ledger-publisher" in runbook
+    assert "docker compose down --volumes" in runbook
+    assert "C:\\Users\\" not in runbook
