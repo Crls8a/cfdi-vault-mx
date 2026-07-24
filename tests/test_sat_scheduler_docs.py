@@ -24,6 +24,7 @@ def test_compose_autostart_runbook_documents_restart_boundary() -> None:
     assert "PM2 is not used" in normalized
     assert "restart: unless-stopped" in runbook
     assert "sat-monitor" in runbook
-    assert "docker compose up -d postgres rabbitmq redis worker ledger-publisher" in runbook
+    assert "docker compose up -d postgres rabbitmq redis worker" in runbook
+    assert "LEDGER_OUTBOX_ENABLED = '1'" in runbook
     assert "docker compose down --volumes" in runbook
     assert "C:\\Users\\" not in runbook

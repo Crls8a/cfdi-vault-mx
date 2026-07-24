@@ -12,13 +12,14 @@ The following services use `restart: unless-stopped`:
 - `rabbitmq` (volume: `rabbitmq_data`)
 - `redis` (volume: `redis_data`)
 - `worker`
-- `ledger-publisher`
 
 If Docker Desktop/the Docker daemon starts again, these containers are
 restarted automatically unless an operator explicitly stopped them. The
 named volumes preserve durable state. `flyway` remains a one-shot migration
 job and is started by its dependency gate; `app` remains a one-shot `doctor`
-container.
+container. `ledger-publisher` is also intentionally not restarted: its
+default `LEDGER_OUTBOX_ENABLED=0` makes it exit cleanly, so a restart policy
+would create a busy loop.
 
 `sat-monitor` deliberately has no restart policy. It is disabled by default
 and must remain fail-closed until a human-reviewed SAT activation. Do not add
@@ -30,9 +31,9 @@ Enable **Start Docker Desktop when you sign in** in Docker Desktop, then run
 the following from the repository checkout:
 
 ```powershell
-docker compose up -d postgres rabbitmq redis worker ledger-publisher
+docker compose up -d postgres rabbitmq redis worker
 docker compose ps
-docker compose logs --tail=50 worker ledger-publisher
+docker compose logs --tail=50 worker
 ```
 
 Compose starts `flyway` as required by the dependency graph. The first command
@@ -48,7 +49,7 @@ after Docker Desktop has had time to start:
 ```powershell
 $action = New-ScheduledTaskAction `
   -Execute 'docker.exe' `
-  -Argument 'compose up -d postgres rabbitmq redis worker ledger-publisher' `
+  -Argument 'compose up -d postgres rabbitmq redis worker' `
   -WorkingDirectory '<checkout>'
 ```
 
@@ -61,7 +62,7 @@ SAT.
 To roll back, disable/remove that task and run:
 
 ```powershell
-docker compose stop worker ledger-publisher
+docker compose stop worker
 ```
 
 Do not use `docker compose down --volumes` unless deliberately deleting the
@@ -71,11 +72,19 @@ local database, broker, cache, and artifact volumes.
 
 ```powershell
 docker compose ps
-docker compose logs --tail=100 postgres rabbitmq redis worker ledger-publisher
+docker compose logs --tail=100 postgres rabbitmq redis worker
 docker compose config --quiet
 ```
 
-`worker` and `ledger-publisher` should show `Up`; `postgres`, `rabbitmq`, and
-`redis` should become healthy. A stopped `sat-monitor` is expected while the
-SAT feature flags are `0`. Restart policies do not replace `next_check_at`,
-claims, or the 48-hour SAT service window; those remain PostgreSQL rules.
+`worker` should show `Up`; `postgres`, `rabbitmq`, and `redis` should become
+healthy. `ledger-publisher` is expected to show `Exited (0)` while disabled.
+Enable it explicitly only when the outbox publisher is needed:
+
+```powershell
+$env:LEDGER_OUTBOX_ENABLED = '1'
+docker compose up -d ledger-publisher
+```
+
+A stopped `sat-monitor` is expected while the SAT feature flags are `0`.
+Restart policies do not replace `next_check_at`, claims, or the 48-hour SAT
+service window; those remain PostgreSQL rules.

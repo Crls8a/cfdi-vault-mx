@@ -69,7 +69,6 @@ services:
       rabbitmq:
         condition: service_healthy
     command: ["-m", "cfdi_vault.ledger_outbox_service", "--loop"]
-    restart: unless-stopped
 
   sat-monitor:
     build: .
