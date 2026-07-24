@@ -88,3 +88,19 @@ docker compose up -d ledger-publisher
 A stopped `sat-monitor` is expected while the SAT feature flags are `0`.
 Restart policies do not replace `next_check_at`, claims, or the 48-hour SAT
 service window; those remain PostgreSQL rules.
+
+## Observed local recovery (2026-07-24)
+
+Before this runbook was applied, the existing PostgreSQL, RabbitMQ, Redis, and
+worker containers had stopped together and still had `restart: no` because
+they had been created by an older Compose definition. The named volumes were
+still present. The database showed two existing requests, but zero packages,
+artifacts, metadata imports, or parsing jobs; worker logs reported no queue
+messages. This is local infrastructure evidence only and is not SAT evidence.
+
+The services were recreated with the current definition using `docker compose
+up -d postgres rabbitmq redis worker`. Their restart policy is now
+`unless-stopped`, and a controlled worker-process restart returned the worker
+to `Up`. The disabled `ledger-publisher` was separately recreated with no
+restart policy, so it exits once with `feature_disabled` instead of looping.
+The SAT monitor was not started and no SAT contact occurred.
