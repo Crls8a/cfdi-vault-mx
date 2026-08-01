@@ -111,3 +111,38 @@ monitor was disabled, the rows were not automatically projected to
 `service_window_exceeded`; they remain `uncertain`/`pending` evidence requiring
 manual reconciliation. This must not be interpreted as `no_data`, and no
 replacement request was created.
+
+## Host port 5432 conflict with a native PostgreSQL service (2026-07-31)
+
+On a machine that already runs PostgreSQL as a native Windows service, that
+service can hold host port 5432 before Compose starts. Compose's `postgres`
+service still starts and reports healthy internally, but Docker Desktop does
+not surface a port-bind error in this situation; `docker inspect` shows an
+empty `NetworkSettings.Ports` mapping instead of the expected
+`5432/tcp -> 5432`. Any host-side client aimed at `localhost:5432` (the CLI,
+the FIEL onboarding wizard's Doctor/Preflight buttons) silently reaches the
+unrelated native service instead of the project's container, and fails
+authentication because the passwords differ.
+
+Symptom: `cfdi-vault preflight` (or the wizard's Preflight button) reports
+`postgresql status=failed reason=local-check-failed` even though `docker
+compose ps` shows `postgres` healthy.
+
+Fix: publish the project's Postgres on a different host port and point
+`DATABASE_URL` at that port instead. Do not stop or reconfigure the native
+service; it may belong to an unrelated project.
+
+```powershell
+docker compose stop postgres
+docker compose rm -f postgres
+$env:POSTGRES_PORT = "5433"
+docker compose up -d postgres
+docker compose up flyway
+```
+
+Do not persist `POSTGRES_PORT` in a repo-root `.env` file: the sensitive
+fixture scanner (`scripts/scan_sensitive_fixtures.py`) forbids any `.env`
+file's mere presence, regardless of content, so a locally created `.env`
+fails that check even though it is `.gitignore`d and never committed. Export
+`POSTGRES_PORT` as a shell/session variable instead, or set it as a
+Windows user environment variable outside the repository checkout.
