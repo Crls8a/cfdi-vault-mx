@@ -54,6 +54,7 @@ Documentation = "https://github.com/Crls8a/cfdi-vault-mx/tree/main/docs"
 
 [project.scripts]
 cfdi-vault = "cfdi_vault.cli:app"
+cfdi-vault-fiel-wizard = "cfdi_vault.adapters.ui.fiel_wizard:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
