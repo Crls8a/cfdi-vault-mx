@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd user agent template. Copy to
+  ~/Library/LaunchAgents/com.cfdi-vault-mx.sat-campaign-watch.plist,
+  replace every <REPLACE_*> placeholder, then load it with:
+
+    launchctl load ~/Library/LaunchAgents/com.cfdi-vault-mx.sat-campaign-watch.plist
+
+  Runs as the logged-in user so it can reach the macOS Keychain the FIEL
+  phrase is stored in (a launchd daemon running before login cannot).
+  StartInterval is in seconds; 900 = 15 minutes, matching the Windows
+  Scheduled Task default. Holds no credential values here: the
+  campaign/grant/commit refs below are opaque non-secret references, and
+  the FIEL phrase is never passed as an argument or environment variable.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.cfdi-vault-mx.sat-campaign-watch</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string><REPLACE_REPO_ROOT>/scripts/sat_campaign_watch.sh</string>
+    <string>--profile</string>
+    <string><REPLACE_PROFILE_ID></string>
+    <string>--campaign-ref</string>
+    <string><REPLACE_CAMPAIGN_REF></string>
+    <string>--grant</string>
+    <string><REPLACE_GRANT_REF></string>
+    <string>--commit-ref</string>
+    <string><REPLACE_COMMIT_REF></string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string><REPLACE_REPO_ROOT></string>
+
+  <key>StartInterval</key>
+  <integer>900</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string><REPLACE_HOME>/Library/Application Support/cfdi-vault-mx/logs/sat-campaign-watch.launchd.log</string>
+
+  <key>StandardErrorPath</key>
+  <string><REPLACE_HOME>/Library/Application Support/cfdi-vault-mx/logs/sat-campaign-watch.launchd.log</string>
+</dict>
+</plist>

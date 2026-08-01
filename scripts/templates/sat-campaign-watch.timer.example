@@ -1,0 +1,20 @@
+[Unit]
+# Linux systemd --user timer template. Copy to
+# ~/.config/systemd/user/sat-campaign-watch.timer alongside the paired
+# .service file, then run:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now sat-campaign-watch.timer
+# If the user is not always logged in, also run once:
+#   loginctl enable-linger "$USER"
+# so the --user systemd instance keeps running after logout. Note that
+# enable-linger alone does not guarantee an unlocked Secret Service
+# keyring is available; if the watch log shows repeated failures, log in
+# interactively at least once so GNOME Keyring/KWallet unlocks.
+Description=Timer for sat-campaign-watch.service
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+
+[Install]
+WantedBy=timers.target

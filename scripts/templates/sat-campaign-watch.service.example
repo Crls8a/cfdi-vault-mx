@@ -1,0 +1,21 @@
+[Unit]
+# Linux systemd --user service template. Copy to
+# ~/.config/systemd/user/sat-campaign-watch.service, replace every
+# <REPLACE_*> placeholder, then enable the paired .timer (see
+# sat-campaign-watch.timer.example) instead of enabling this service
+# directly.
+#
+# Must run as a --user unit, not a system-wide root unit: the Linux
+# Secret Service (GNOME Keyring) or KWallet backend the FIEL phrase is
+# stored in is reachable only from the logged-in user's own D-Bus session
+# bus. A root/system service has no path to that session keyring.
+Description=Re-check one authorized SAT campaign grant
+
+[Service]
+Type=oneshot
+WorkingDirectory=<REPLACE_REPO_ROOT>
+ExecStart=<REPLACE_REPO_ROOT>/scripts/sat_campaign_watch.sh \
+  --profile <REPLACE_PROFILE_ID> \
+  --campaign-ref <REPLACE_CAMPAIGN_REF> \
+  --grant <REPLACE_GRANT_REF> \
+  --commit-ref <REPLACE_COMMIT_REF>

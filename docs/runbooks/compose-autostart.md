@@ -150,40 +150,10 @@ Windows user environment variable outside the repository checkout.
 ## Unattended re-check of an authorized live SAT campaign grant (2026-07-31)
 
 `sat-monitor` (docker-compose service) cannot be used to automate periodic
-re-checks on a machine where the FIEL phrase is stored in Windows Credential
-Manager: `sat-monitor` runs inside a Linux container and has no path to that
-native Windows API. `docker compose up -d sat-monitor` would build and start,
-but any live credential resolution inside it would fail closed.
-
-The working alternative is a host-side Windows Scheduled Task that invokes
-the CLI directly, where Windows Credential Manager is reachable. It never
-creates or authorizes a campaign on its own — it only re-runs
-`cfdi-vault sat campaign run` for a grant a human already authorized, and
-relies on the campaign repository's own `next_check_at <= now` filter
-(`sat_campaign_repository.py`) to make early calls a safe no-op instead of
-extra SAT contact.
-
-```powershell
-$repoRoot = "<repo checkout>"
-$scriptPath = Join-Path $repoRoot "scripts\sat_campaign_watch.ps1"
-$argumentList = "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" " +
-  "-ProfileId `"<profile>`" -CampaignRef `"<campaign-ref>`" " +
-  "-GrantRef `"<grant-ref>`" -CommitRef `"<commit-ref>`""
-
-$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $argumentList -WorkingDirectory $repoRoot
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days 30)
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
-Register-ScheduledTask -TaskName "CfdiVaultMx-SatCampaignWatch" -Action $action -Trigger $trigger -Settings $settings -Force
-```
-
-`scripts/sat_campaign_watch.ps1` never accepts or prints the FIEL phrase; it
-resolves through the same OS secret provider the interactive CLI and wizard
-use. It logs one line per invocation to
-`%LOCALAPPDATA%\cfdi-vault-mx\logs\sat-campaign-watch.log`, including
-no-op runs, so a stalled campaign is visible without opening a terminal.
-`RepetitionDuration` is intentionally bounded (30 days, not indefinite):
-`Register-ScheduledTask` rejects `[TimeSpan]::MaxValue` as an out-of-range
-XML duration, and a bounded window also forces a periodic human check-in
-before it silently re-authorizes itself past a grant's own 1-14 day expiry.
-
-To stop it: `Unregister-ScheduledTask -TaskName "CfdiVaultMx-SatCampaignWatch" -Confirm:$false`.
+re-checks on any host where the FIEL phrase lives in a native OS secret
+store (Windows Credential Manager, macOS Keychain, Linux Secret
+Service/KWallet): it runs inside a Linux container with no path to any of
+those. Windows, macOS, and Linux each need a host-side scheduled task
+instead. See
+[sat-campaign-watch-cross-platform.md](sat-campaign-watch-cross-platform.md)
+for the Task Scheduler / launchd / systemd setup on each platform.
