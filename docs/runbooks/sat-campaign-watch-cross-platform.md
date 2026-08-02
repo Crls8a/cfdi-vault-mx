@@ -36,15 +36,18 @@ authorized: `--profile`, `--campaign-ref`, `--grant`, and `--commit-ref`
 ```powershell
 $repoRoot = "<repo checkout>"
 $scriptPath = Join-Path $repoRoot "scripts\sat_campaign_watch.ps1"
-$argumentList = "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" " +
+$argumentList = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" " +
   "-ProfileId `"<profile>`" -CampaignRef `"<campaign-ref>`" " +
   "-GrantRef `"<grant-ref>`" -CommitRef `"<commit-ref>`""
 
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $argumentList -WorkingDirectory $repoRoot
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days 30)
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -Hidden
 Register-ScheduledTask -TaskName "CfdiVaultMx-SatCampaignWatch" -Action $action -Trigger $trigger -Settings $settings -Force
 ```
+
+`-WindowStyle Hidden` plus the task's own `-Hidden` setting keep a console
+window from flashing on screen every 15 minutes; only the log file changes.
 
 Log: `%LOCALAPPDATA%\cfdi-vault-mx\logs\sat-campaign-watch.log`.
 Registered without an explicit principal, so it runs as the current user
