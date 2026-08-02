@@ -20,6 +20,9 @@ without putting fiscal data in Git, logs, issues, or chat.
    after each working day or completed unit.
 6. Update the status in the same commit as the code or documentation it
    describes.
+7. Append a code-grounded entry to [`known-gaps.md`](known-gaps.md) whenever
+   operating the pipeline surfaces a defect that is not blocking today but
+   should be fixed before it causes a silent failure later.
 
 ## Scope
 
