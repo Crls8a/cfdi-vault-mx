@@ -1,6 +1,10 @@
 # Local Installer Alpha
 
-This alpha path gives a technical Windows user a repeatable local install without `PYTHONPATH=src`. It creates a normal Python virtual environment, installs the package in editable mode, validates the installed CLI, and runs fake/offline checks only.
+This alpha path gives a technical Windows user a repeatable local install without `PYTHONPATH=src`. It creates a normal Python virtual environment, installs the package in editable mode, validates the installed package imports, and runs an offline profile/dependency smoke check only.
+
+There is no `cfdi-vault` CLI anymore — it was retired in favor of the local
+control-panel API (`cfdi-vault-webapi`) and its Next.js frontend under `web/`.
+See `docs/adr/0004-local-control-panel.md`.
 
 ## Quick path
 
@@ -15,12 +19,10 @@ From the repository root:
 Expected result:
 
 - `.venv` exists locally and remains untracked;
-- `pip install -e ".[dev]"` succeeds;
-- `cfdi-vault --help` works as an installed command;
-- `cfdi-vault setup --help` works;
-- `cfdi-vault doctor --help` works;
+- `pip install -e ".[dev,webapi]"` succeeds;
+- `cfdi_vault.adapters.webapi.app`, `cfdi_vault.doctor_runner`, `cfdi_vault.worker_runner`, and `cfdi_vault.sat_campaign_run_service` import cleanly as the installed package;
 - scanner and pytest pass;
-- fake/offline download smoke passes with a temporary synthetic profile outside the repo;
+- offline profile/doctor smoke passes with a temporary synthetic profile outside the repo;
 - SAT real is not executed.
 
 ## Manual editable install
@@ -30,10 +32,8 @@ Use this when you want to control each step yourself:
 ```powershell
 py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\cfdi-vault.exe --help
-.\.venv\Scripts\cfdi-vault.exe setup --help
-.\.venv\Scripts\cfdi-vault.exe doctor --help
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,webapi]"
+.\.venv\Scripts\python.exe -c "import cfdi_vault.adapters.webapi.app"
 ```
 
 Do not set `PYTHONPATH=src` for normal local use. Editable install is the supported alpha path.
@@ -42,17 +42,19 @@ Do not set `PYTHONPATH=src` for normal local use. Editable install is the suppor
 
 Use a real operator profile only on the operator machine and never commit local profile files. For docs or PR evidence, use placeholders and redacted summaries.
 
-| Step | Command | Purpose |
-|---|---|---|
-| Setup | `cfdi-vault setup --source-folder <external-folder>` | Create the local AppData profile and import credential file references safely. |
-| Status | `cfdi-vault status --profile-id <profile>` | Show redacted profile readiness. |
-| Doctor | `cfdi-vault doctor --profile-id <profile>` | Check local recovery dependencies, queue/cache fallback, storage, and profile readiness. Docker recovery uses PostgreSQL/RabbitMQ/Redis. |
-| Plan | `cfdi-vault download plan --profile <profile> --from 2024-01-01 --to 2024-01-31 --kind metadata --direction received` | Validate a fake/offline query without submission. |
-| Request | `cfdi-vault download request --profile <profile> --from 2024-01-01 --to 2024-01-31 --kind metadata --direction received` | Submit a synthetic request to the fake SAT simulator only. |
-| Sync | `cfdi-vault download sync --profile <profile> --from 2024-01-01 --to 2024-01-31 --kind metadata --direction received` | Run the fake/offline pipeline and persist local recovery state. |
-| Status readback | `cfdi-vault download status --profile <profile> --job-id <job-id>` | Read safe aggregate status for the local fake job. |
+Start the panel API (`cfdi-vault-webapi`, loopback-only, ADR 0004) and drive
+these from the web frontend, or call the same endpoints directly:
 
-For package/XML fake evidence, use `--kind cfdi` only with synthetic/local data and keep output redacted.
+| Step | Endpoint | Purpose |
+|---|---|---|
+| Setup | `POST /api/setup` | Create the local AppData profile and import credential file references safely. |
+| Status | `GET /api/profile/{profile_id}/status` | Show redacted profile readiness. |
+| Doctor | `GET /api/system/doctor` | Check local recovery dependencies, queue/cache fallback, storage, and profile readiness. Docker recovery uses PostgreSQL/RabbitMQ/Redis. |
+
+The fake/offline SAT download pipeline (`download plan/request/sync/status`)
+that used to appear here was retired along with the CLI: it was already a
+parallel harness disconnected from the real PostgreSQL-backed campaign path
+(see `docs/runbooks/sat-campaign.md`), and nothing replaced it.
 
 ## Bootstrap options
 
@@ -60,12 +62,11 @@ For package/XML fake evidence, use `--kind cfdi` only with synthetic/local data 
 |---|---|
 | `-VenvPath <path>` | You want a virtual environment somewhere other than `.venv`. |
 | `-ProfileId <profile>` | You want the temporary smoke profile to use a different id. |
-| `-From YYYY-MM-DD -To YYYY-MM-DD` | You want a different synthetic smoke range. Keep it small. |
-| `-DatabaseUrl <url>` | Runtime PostgreSQL database for the fake/offline smoke. |
+| `-DatabaseUrl <url>` | Runtime PostgreSQL database for the offline smoke. |
 | `-TestDatabaseUrl <url>` | Disposable PostgreSQL test database. The database name should contain `test` because pytest resets its schema from the Flyway baseline. |
 | `-SkipScanner` | You are only checking install mechanics locally. Do not use before PR. |
 | `-SkipTests` | You are only checking install mechanics locally. Do not use before PR. |
-| `-SkipOfflineSmoke` | You cannot run the fake smoke, but still want install/help validation. |
+| `-SkipOfflineSmoke` | You cannot run the offline smoke, but still want install/import validation. |
 
 ## Safety boundaries
 

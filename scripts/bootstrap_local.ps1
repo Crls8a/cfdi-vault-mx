@@ -1,8 +1,6 @@
 param(
     [string]$VenvPath = ".venv",
     [string]$ProfileId = "alpha-local",
-    [string]$From = "2024-01-01",
-    [string]$To = "2024-01-02",
     [string]$DatabaseUrl = $env:DATABASE_URL,
     [string]$TestDatabaseUrl = $env:CFDI_VAULT_TEST_DATABASE_URL,
     [switch]$SkipScanner,
@@ -65,17 +63,17 @@ if ($null -eq $venvFullPath) {
 }
 
 $python = Join-Path $venvFullPath "Scripts\python.exe"
-$cli = Join-Path $venvFullPath "Scripts\cfdi-vault.exe"
 
-Invoke-Step "Install editable package with dev dependencies" {
+Invoke-Step "Install editable package with dev and webapi dependencies" {
     & $python -m pip install --upgrade pip
-    & $python -m pip install -e ".[dev]"
+    & $python -m pip install -e ".[dev,webapi]"
 }
 
-Invoke-Step "Validate installed CLI help" {
-    & $cli --help | Out-Null
-    & $cli setup --help | Out-Null
-    & $cli doctor --help | Out-Null
+Invoke-Step "Validate installed package imports" {
+    # There is no cfdi-vault CLI anymore (retired in favor of the control
+    # panel); this validates the console-script entry points import cleanly
+    # instead of running a --help command that no longer exists.
+    & $python -c "import cfdi_vault.adapters.webapi.app, cfdi_vault.doctor_runner, cfdi_vault.worker_runner, cfdi_vault.sat_campaign_run_service" | Out-Null
 }
 
 if (-not $SkipScanner) {
@@ -146,24 +144,33 @@ setup_flow.write_profile(profile, paths.profile_json)
         }
 
         Invoke-Step "Run offline status and doctor" {
-            & $cli status --profile-id $ProfileId | Out-Null
-            & $cli doctor --profile-id $ProfileId --storage (Join-Path $smokeRoot "doctor-storage") | Out-Null
+            $env:CFDI_VAULT_DOCTOR_STORAGE = Join-Path $smokeRoot "doctor-storage"
+            @"
+import os
+from pathlib import Path
+from cfdi_vault.setup_status import inspect_profile, format_profile_status
+from cfdi_vault.panel_services import recovery_service
+
+profile_id = os.environ["CFDI_VAULT_ALPHA_PROFILE"]
+print(format_profile_status(inspect_profile(profile_id)))
+
+service = recovery_service(os.environ["DATABASE_URL"], Path(os.environ["CFDI_VAULT_DOCTOR_STORAGE"]))
+try:
+    for check in service.doctor():
+        print(f"{'OK' if check.ok else 'FAIL'} {check.name}: {check.detail}")
+finally:
+    service.close()
+"@ | & $python -
         }
 
-        Invoke-Step "Run fake/offline download plan and request" {
-            & $cli download plan --profile $ProfileId --from $From --to $To --kind metadata --direction received | Out-Null
-            & $cli download request --profile $ProfileId --from $From --to $To --kind metadata --direction received | Out-Null
-        }
-
-        Invoke-Step "Run fake/offline download sync and status" {
-            $syncOutput = & $cli download sync --profile $ProfileId --from $From --to $To --kind metadata --direction received
-            $jobLine = $syncOutput | Where-Object { $_ -like "job_id=*" } | Select-Object -First 1
-            if (-not $jobLine) {
-                throw "download sync did not return a job_id"
-            }
-            $jobId = $jobLine.Substring("job_id=".Length)
-            & $cli download status --profile $ProfileId --job-id $jobId | Out-Null
-        }
+        # The fake/offline "download plan/request/sync/status" pipeline this
+        # step used to smoke-test was deleted along with the Typer CLI: it was
+        # already a parallel, disconnected harness (fake SAT client, its own
+        # table set) with no bearing on the real PostgreSQL-backed campaign
+        # path (docs/runbooks/sat-campaign.md), and nothing replaced it. There
+        # is deliberately no smoke step here anymore - see the CLI-retirement
+        # commit for why porting it forward was rejected rather than skipped
+        # by oversight.
     }
     finally {
         if ($null -eq $previousLocalAppData) {
@@ -184,6 +191,7 @@ setup_flow.write_profile(profile, paths.profile_json)
         else {
             $env:DATABASE_URL = $previousDatabaseUrl
         }
+        Remove-Item Env:\CFDI_VAULT_DOCTOR_STORAGE -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
