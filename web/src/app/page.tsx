@@ -14,6 +14,11 @@ import {
   startDockerService,
   stopDockerService,
 } from "@/lib/api";
+import { CampaignAuthorizeCard } from "./_components/CampaignAuthorizeCard";
+import { CampaignCreateCard } from "./_components/CampaignCreateCard";
+import { Section } from "./_components/Section";
+import { SecretCard } from "./_components/SecretCard";
+import { SetupCard } from "./_components/SetupCard";
 
 const POLL_INTERVAL_MS = 5000;
 
@@ -27,7 +32,11 @@ export default function Dashboard() {
         </header>
 
         <ProfileStatusCard />
+        <SetupCard />
+        <CampaignCreateCard />
+        <CampaignAuthorizeCard />
         <CampaignCard />
+        <SecretCard />
         <DockerServicesCard />
       </div>
     </div>
@@ -72,21 +81,6 @@ function HealthIndicator() {
       <span className={`h-2.5 w-2.5 rounded-full ${color}`} />
       <span className="text-zinc-600 dark:text-zinc-400">{label}</span>
     </div>
-  );
-}
-
-function Section({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
-      <h2 className="mb-4 text-lg font-medium">{title}</h2>
-      {children}
-    </section>
   );
 }
 

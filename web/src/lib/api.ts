@@ -103,6 +103,153 @@ export function runCampaign(
   );
 }
 
+// ADR 0006 typed-confirmation gate. `confirm` must equal `profileId` exactly:
+// case-sensitive, no trimming, no normalization. The backend re-checks this as
+// its first statement, so a disabled button in the panel is convenience only —
+// the server is the security boundary.
+export function createCampaign(
+  profileId: string,
+  confirm: string,
+): Promise<CampaignRecord> {
+  return request<CampaignRecord>(
+    `/api/campaign/${encodeURIComponent(profileId)}/create`,
+    {
+      method: "POST",
+      body: JSON.stringify({ confirm }),
+    },
+  );
+}
+
+export interface CampaignAuthorizeRequest {
+  confirm: string;
+  phase: string;
+  expires_days: number;
+  reason: string;
+}
+
+export interface CampaignAuthorizeResponse {
+  grant_ref: string;
+  phase: string;
+  expires_at: string;
+  max_open_operations: number;
+}
+
+// Same gate as createCampaign, but `confirm` must equal `campaignRef`. The
+// value rules for phase/expires_days/reason live in the backend and surface as
+// `campaign-grant-*` reason codes — do not duplicate them here (ADR 0006).
+export function authorizeCampaign(
+  profileId: string,
+  campaignRef: string,
+  body: CampaignAuthorizeRequest,
+): Promise<CampaignAuthorizeResponse> {
+  return request<CampaignAuthorizeResponse>(
+    `/api/campaign/${encodeURIComponent(profileId)}/${encodeURIComponent(campaignRef)}/authorize`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export type CredentialMode = "copied" | "referenced";
+
+// `source_folder`, `certificate_path` and `private_key_path` are filesystem
+// paths on the machine running the panel API, typed by the operator — never
+// browser uploads. ADR 0004 forbids sending certificate or private-key bytes
+// through the browser, so there is no multipart route and no file input.
+//
+// `phrase` travels in the request body only. It must never be placed in a URL,
+// query string, log line, or any browser storage (ADR 0004/0006).
+export interface SetupRequest {
+  rfc: string;
+  source_folder: string;
+  phrase: string;
+  profile_id?: string;
+  certificate_path?: string;
+  private_key_path?: string;
+  credential_mode?: CredentialMode;
+}
+
+// The response never carries the phrase back; `rfc` arrives already redacted.
+export interface SetupResponse {
+  profile_id: string;
+  rfc: string;
+  credential_mode: string;
+  credentials_imported: boolean;
+  phrase_stored: boolean;
+}
+
+export function runSetup(body: SetupRequest): Promise<SetupResponse> {
+  return request<SetupResponse>("/api/setup", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+// `value` carries raw credential material and is handled exactly like the FIEL
+// phrase: body-only, never logged, never persisted client-side.
+export interface SecretRegisterRequest {
+  reference: string;
+  value: string;
+  kind?: string;
+  purpose?: string;
+}
+
+// Echoes the reference and kind only — never the registered value.
+export interface SecretRegisterResponse {
+  reference: string;
+  kind: string;
+}
+
+export function registerSecret(
+  body: SecretRegisterRequest,
+): Promise<SecretRegisterResponse> {
+  return request<SecretRegisterResponse>("/api/secret/register", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export interface SecretDeleteRequest {
+  reference: string;
+  kind?: string;
+  purpose?: string;
+}
+
+export interface SecretDeleteResponse {
+  reference: string;
+  kind: string;
+  deleted: boolean;
+}
+
+// POST, not DELETE /api/secret/{reference}: a credential reference is a full
+// scheme URI and cannot ride in a path segment without hand-written escaping
+// (ADR 0006).
+export function deleteSecret(
+  body: SecretDeleteRequest,
+): Promise<SecretDeleteResponse> {
+  return request<SecretDeleteResponse>("/api/secret/delete", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export interface SecretVerifyResponse {
+  reference: string;
+  kind: string;
+  exists: boolean;
+}
+
+// Existence check only. The query string carries the reference and kind — both
+// non-secret identifiers. A credential *value* must never reach a query string.
+export function verifySecret(
+  reference: string,
+  kind = "generic",
+): Promise<SecretVerifyResponse> {
+  const query = new URLSearchParams({ reference, kind });
+  return request<SecretVerifyResponse>(`/api/secret/verify?${query.toString()}`);
+}
+
 export interface DockerServiceStatus {
   service: string;
   state: string;
