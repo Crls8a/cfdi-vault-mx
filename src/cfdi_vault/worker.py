@@ -22,6 +22,18 @@ from cfdi_vault.queue_contract import (
 )
 from cfdi_vault.recovery_service import RecoveryService
 
+# Queues that the generic ``--queue all`` fan-out must never consume.
+#
+# ``SAT_CAMPAIGN_RUN`` is a wake hint for a live, human-authorized SAT campaign
+# run (ADR 0005). The docker-compose ``worker`` container runs this fan-out on a
+# ``FakeSatClient``-backed ``RecoveryService`` and cannot reach the Windows
+# Credential Manager that holds the FIEL phrase, so it must never claim or
+# acknowledge a campaign-run hint: doing so would silently swallow the wake for
+# the real consumer, and would route a live SAT command through the generic
+# retry/dead-letter machinery that ADR 0004/0005 forbid for live SAT work. The
+# only consumer is the host-only ``cfdi_vault.sat_campaign_run_service``.
+FAN_OUT_EXCLUDED_QUEUES = frozenset({QueueName.SAT_CAMPAIGN_RUN})
+
 
 @dataclass(frozen=True)
 class WorkerReport:
@@ -150,6 +162,8 @@ class RecoveryWorker:
 
         if queue_name == "all":
             for candidate in QueueName:
+                if candidate in FAN_OUT_EXCLUDED_QUEUES:
+                    continue
                 report = self._run_once(queue_name=candidate.value)
                 if report.processed or not report.detail.startswith("No "):
                     return report

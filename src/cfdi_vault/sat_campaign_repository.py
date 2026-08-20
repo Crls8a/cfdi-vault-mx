@@ -33,10 +33,16 @@ from cfdi_vault.sat_campaign_repository_constants import (
     RepositoryBusy,
 )
 from cfdi_vault.sat_campaign_repository_helpers import SatCampaignRepositoryHelpers
+from cfdi_vault.sat_campaign_repository_runs import SatCampaignRunQueueMixin
 from cfdi_vault.sat_campaign_repository_status import SatCampaignStatusMixin
 
 
-class SatCampaignRepository(SatCampaignRepositoryCampaignMixin, SatCampaignStatusMixin, SatCampaignRepositoryHelpers):
+class SatCampaignRepository(
+    SatCampaignRepositoryCampaignMixin,
+    SatCampaignRunQueueMixin,
+    SatCampaignStatusMixin,
+    SatCampaignRepositoryHelpers,
+):
     """Persist campaign state in independent SQLAlchemy transactions; no network calls."""
     def __init__(self, session_factory: Any) -> None:
         self._session_factory = session_factory

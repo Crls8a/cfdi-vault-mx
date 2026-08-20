@@ -33,6 +33,12 @@ class QueueName(StrEnum):
     SAT_REQUEST = "sat.request"
     SAT_VERIFY = "sat.verify"
     SAT_DOWNLOAD = "sat.download"
+    # Wake hint only (ADR 0005). The message carries no work item: the durable
+    # ``sat_campaign_runs`` row is the work, and the consumer always re-claims
+    # it from PostgreSQL. This mirrors the V8 ``sat_schedule_changed`` NOTIFY.
+    # There is deliberately no matching ``WorkerJobType`` member, and
+    # ``worker.py`` excludes this queue from its ``all`` fan-out.
+    SAT_CAMPAIGN_RUN = "sat.campaign.run"
     CFDI_PARSE_METADATA = "cfdi.parse.metadata"
     CFDI_PARSE_XML = "cfdi.parse.xml"
     CFDI_RECONCILE = "cfdi.reconcile"

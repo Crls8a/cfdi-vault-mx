@@ -149,7 +149,9 @@ supported LIB-005B and LIB-005C rows are public library API.
 | `cfdi_vault.sat_campaign_repository_campaign` | Internal reference-system persistence | Campaign, window, and grant repository mixin; not a supported import. |
 | `cfdi_vault.sat_campaign_repository_constants` | Internal reference-system persistence | Allowlisted database states and repository errors; not a supported import. |
 | `cfdi_vault.sat_campaign_repository_helpers` | Internal reference-system persistence | Private claim, artifact, and transaction validation helpers. |
+| `cfdi_vault.sat_campaign_repository_runs` | Internal reference-system persistence | Durable campaign-run queue rows, leases, and the abandon reaper; not a supported import. |
 | `cfdi_vault.sat_campaign_repository_status` | Internal reference-system reporting | Database aggregate projection without fiscal rows or SAT identifiers. |
+| `cfdi_vault.sat_campaign_run_service` | Internal operations service | Host-only consumer for queued campaign runs; every outcome is terminal and no run is ever retried by broker policy. |
 | `cfdi_vault.sat_campaign_jobs` | Internal reference-system queue handoff | Publishes opaque artifact references to metadata/XML parsing queues; never embeds package bytes or fiscal rows. |
 | `cfdi_vault.sat_campaign_ledger_handoff` | Internal durable queue handoff | Registers reference-only parse jobs and outbox events in PostgreSQL; broker publication occurs only after the artifact transaction commits. |
 | `cfdi_vault.sat_campaign_status` | Internal reference-system reporting | Read-only manifest-bound recovery aggregates; not a supported import and never contacts SAT. |

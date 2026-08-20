@@ -79,6 +79,7 @@ _DEFAULTS: dict[str, str] = {
     "SAT_MONITOR_ENABLED": "0",
     "CFDI_VAULT_LIVE_WORKER_ENABLED": "0",
     "SAT_MONITOR_WATCHDOG_SECONDS": "300",
+    "SAT_CAMPAIGN_RUN_LEASE_SECONDS": "900",
     "SAT_MONITOR_NOTIFY_CHANNEL": "sat_schedule_changed",
     "SAT_MONITOR_ADAPTIVE_ENABLED": "0",
     "SAT_TRANSPORT_TIMEOUT_SECONDS": "90",
@@ -86,6 +87,7 @@ _DEFAULTS: dict[str, str] = {
     "SAT_TRANSPORT_READ_TIMEOUT_SECONDS": "60",
 }
 SAT_MONITOR_NOTIFY_CHANNEL = "sat_schedule_changed"
+SAT_CAMPAIGN_RUN_LEASE_ENV = "SAT_CAMPAIGN_RUN_LEASE_SECONDS"
 _BOOLEAN_KEYS = frozenset(
     {"SAT_MONITOR_ENABLED", "CFDI_VAULT_LIVE_WORKER_ENABLED", "SAT_MONITOR_ADAPTIVE_ENABLED"}
 )
@@ -112,6 +114,7 @@ class RuntimeSettings:
     sat_monitor_enabled: bool
     live_worker_enabled: bool
     sat_monitor_watchdog_seconds: int
+    sat_campaign_run_lease_seconds: int
     sat_monitor_notify_channel: str
     sat_monitor_adaptive_enabled: bool
     sat_transport_timeout_seconds: float
@@ -181,6 +184,9 @@ class RuntimeSettings:
             sat_monitor_watchdog_seconds=_positive_int(
                 value("SAT_MONITOR_WATCHDOG_SECONDS"), "sat-monitor-watchdog"
             ),
+            sat_campaign_run_lease_seconds=_positive_int(
+                value(SAT_CAMPAIGN_RUN_LEASE_ENV), "sat-campaign-run-lease"
+            ),
             sat_monitor_notify_channel=_notify_channel(value("SAT_MONITOR_NOTIFY_CHANNEL")),
             sat_monitor_adaptive_enabled=_boolean(
                 value("SAT_MONITOR_ADAPTIVE_ENABLED"), "SAT_MONITOR_ADAPTIVE_ENABLED"
@@ -205,6 +211,7 @@ class RuntimeSettings:
             "sat_monitor_enabled": self.sat_monitor_enabled,
             "live_worker_enabled": self.live_worker_enabled,
             "sat_monitor_watchdog_seconds": self.sat_monitor_watchdog_seconds,
+            "sat_campaign_run_lease_seconds": self.sat_campaign_run_lease_seconds,
             "sat_monitor_notify_channel": self.sat_monitor_notify_channel,
             "sat_monitor_adaptive_enabled": self.sat_monitor_adaptive_enabled,
             "sat_transport_timeout_seconds": self.sat_transport_timeout_seconds,
@@ -215,6 +222,22 @@ class RuntimeSettings:
             "campaign_ref_set": bool(self.campaign_ref),
             "campaign_grant_set": bool(self.campaign_grant),
         }
+
+
+def campaign_run_lease_seconds(environment: Mapping[str, str] | None = None) -> int:
+    """Resolve the bounded campaign-run lease without requiring full settings.
+
+    Both the panel process (which writes the queued row) and the host-only
+    campaign-run consumer (which claims it) need this one value, and neither
+    should have to resolve a storage root to read it.  The lease is what makes
+    an unclaimed run detectable: a row nobody ever started is abandoned by the
+    reaper once ``lease_until`` passes.
+    """
+
+    values = environment if environment is not None else os.environ
+    raw = values.get(SAT_CAMPAIGN_RUN_LEASE_ENV)
+    text = str(raw).strip() if raw is not None else ""
+    return _positive_int(text or _DEFAULTS[SAT_CAMPAIGN_RUN_LEASE_ENV], "sat-campaign-run-lease")
 
 
 def _reject_direct_credentials(*sources: Mapping[str, object]) -> None:

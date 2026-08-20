@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from cfdi_vault.db import create_engine_from_url, create_session_factory, ensure_tables_exist
 from cfdi_vault.recovery_db import SatCampaignRecord, Tenant
+from cfdi_vault.runtime_settings import campaign_run_lease_seconds
 from cfdi_vault.sat_campaign_manifest import build_campaign_manifest
 from cfdi_vault.sat_campaign_repository import SatCampaignRepository
 from cfdi_vault.sat_campaign_repository_constants import VERIFY_RESULTS
@@ -68,7 +69,10 @@ def create_campaign(
                 campaign_ref=record.campaign_ref, work_ref=item.work_ref, direction=item.direction.value,
                 start_date=item.start, end_date=item.end, status="planned", now=now,
             )
-        return _summary(repository.get_campaign_status(record.campaign_ref), manifest.campaign_ref)
+        return _summary(
+            repository.get_campaign_status(record.campaign_ref), manifest.campaign_ref,
+            repository.get_last_campaign_run(record.campaign_ref),
+        )
     finally:
         engine.dispose()
 
@@ -138,7 +142,7 @@ def campaign_status(profile_id: str, campaign_ref: str, *, environ: Mapping[str,
             raise CampaignDatabaseError("campaign-profile-mismatch") from exc
         if status is None:
             raise CampaignDatabaseError("campaign-not-found")
-        return _summary(status, campaign_ref)
+        return _summary(status, campaign_ref, repository.get_last_campaign_run(campaign_ref))
     finally:
         engine.dispose()
 
@@ -167,6 +171,122 @@ def run_without_adapter(profile_id: str, campaign_ref: str, grant_ref: str, *, e
         engine.dispose()
 
 
+def resolve_run_lane(
+    repository: SatCampaignRepository, profile_id: str, campaign_ref: str, grant_ref: str,
+    *, commit_ref: str,
+) -> str:
+    """Validate the grant and resolve which lane a run would execute.
+
+    This is the exact pre-check the synchronous runner has always performed
+    before touching a SAT factory.  The asynchronous panel path calls it too, so
+    a run that could never succeed is rejected while the operator is still
+    looking at the request instead of failing later inside a background process.
+
+    A ``ValueError`` from :meth:`SatCampaignRepository.validate_grant` is left to
+    propagate so each caller keeps its own established error mapping.
+    """
+
+    grant = repository.validate_grant(
+        campaign_ref=campaign_ref, grant_ref=grant_ref, profile_ref=profile_id,
+        commit_ref=commit_ref, phase=None,
+    )
+    lane_phase = grant.phase
+    if grant.phase == "continue":
+        lane_phase = str(repository.get_campaign_status(
+            campaign_ref, profile_ref=profile_id,
+        ).get("phase", ""))
+    if lane_phase not in {"metadata-proof", "cfdi-proof"}:
+        raise CampaignDatabaseError("campaign-lane-required")
+    return lane_phase
+
+
+def enqueue_campaign_run(
+    profile_id: str, campaign_ref: str, grant_ref: str, *, requested_via: str = "panel",
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Queue one campaign run durably instead of executing it in this process.
+
+    The same synchronous pre-checks the runner performs happen here, so an
+    unusable request still fails fast for the caller.  Only after those pass is
+    a ``sat_campaign_runs`` row committed; the SAT sequence itself runs later in
+    the host-only consumer that owns the credential store (ADR 0005).
+
+    Returns the existing run when one is already active for this grant, so a
+    repeated request never authorizes a second live SAT sequence.
+    """
+
+    environment = environ if environ is not None else os.environ
+    commit_ref = _commit_ref(environment)
+    lease_seconds = campaign_run_lease_seconds(environment)
+    repository, engine = _repository(environment)
+    try:
+        try:
+            status = repository.get_campaign_status(campaign_ref, profile_ref=profile_id)
+        except ValueError as exc:
+            raise CampaignDatabaseError("campaign-profile-mismatch") from exc
+        if status is None:
+            raise CampaignDatabaseError("campaign-not-found")
+        try:
+            resolve_run_lane(
+                repository, profile_id, campaign_ref, grant_ref, commit_ref=commit_ref,
+            )
+            record = repository.enqueue_campaign_run(
+                campaign_ref=campaign_ref, grant_ref=grant_ref, profile_ref=profile_id,
+                commit_ref=commit_ref, requested_via=requested_via, lease_seconds=lease_seconds,
+            )
+        except ValueError as exc:
+            raise CampaignDatabaseError("campaign-grant-invalid") from exc
+        return {
+            "status": "queued",
+            "run_ref": record.run_ref,
+            "campaign_ref": campaign_ref,
+            "requested_at": record.requested_at.isoformat(),
+        }
+    finally:
+        engine.dispose()
+
+
+def publish_campaign_run_hint(
+    profile_id: str, campaign_ref: str, grant_ref: str, run_ref: str,
+    *, environ: Mapping[str, str] | None = None,
+) -> bool:
+    """Publish the non-durable wake hint for an already committed run row.
+
+    This must only be called *after* the ``sat_campaign_runs`` row is committed,
+    the same ordering the durable ledger outbox uses.  The message carries no
+    work item and losing it is harmless: the consumer polls PostgreSQL, and the
+    reaper closes a row nobody ever claimed.  A broker failure therefore returns
+    ``False`` instead of raising and undoing an accepted request.
+    """
+
+    environment = environ if environ is not None else os.environ
+    rabbitmq_url = str(environment.get("RABBITMQ_URL", "")).strip()
+    if not rabbitmq_url:
+        return False
+    try:
+        from cfdi_vault.domain import QueueMessage, QueueName
+        from cfdi_vault.queueing import RabbitMqQueue
+
+        repository, engine = _repository(environment)
+        try:
+            tenant_id = repository.tenant_id_for_campaign(campaign_ref)
+        finally:
+            engine.dispose()
+        RabbitMqQueue(rabbitmq_url).publish(QueueMessage(
+            queue=QueueName.SAT_CAMPAIGN_RUN,
+            tenant_id=tenant_id,
+            profile_id=profile_id,
+            job_id=run_ref,
+            correlation_id=run_ref,
+            idempotency_key=f"campaign-run:{campaign_ref}:{grant_ref}",
+        ))
+        return True
+    except Exception:
+        # PostgreSQL is the source of truth. A missing hint only delays the run
+        # until the consumer's next poll; it never loses or duplicates it.
+        return False
+
+
 def run_from_environment(
     profile_id: str, campaign_ref: str, grant_ref: str, *, environ: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
@@ -183,24 +303,13 @@ def run_from_environment(
         )
 
         if hasattr(repository, "validate_grant"):
-            grant = repository.validate_grant(
-                campaign_ref=campaign_ref,
-                grant_ref=grant_ref,
-                profile_ref=profile_id,
-                commit_ref=_commit_ref(environment),
-                phase=None,
+            lane_phase = resolve_run_lane(
+                repository, profile_id, campaign_ref, grant_ref, commit_ref=_commit_ref(environment),
             )
-            lane_phase = grant.phase
-            if grant.phase == "continue":
-                lane_phase = str(repository.get_campaign_status(
-                    campaign_ref, profile_ref=profile_id,
-                ).get("phase", ""))
             if lane_phase == "metadata-proof":
                 build_factories = build_metadata_worker_factories
-            elif lane_phase == "cfdi-proof":
-                build_factories = build_cfdi_worker_factories
             else:
-                raise CampaignDatabaseError("campaign-lane-required")
+                build_factories = build_cfdi_worker_factories
         else:
             # Tests and explicit adapter callers may provide a narrow fake
             # repository; the guarded factory still validates the real grant.
@@ -350,7 +459,10 @@ def _manifest_digest(manifest: object) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _summary(status: dict[str, object] | None, campaign_ref: str) -> dict[str, object]:
+def _summary(
+    status: dict[str, object] | None, campaign_ref: str,
+    last_run: dict[str, object] | None = None,
+) -> dict[str, object]:
     if status is None:
         raise CampaignDatabaseError("campaign-not-found")
     windows = status.get("windows", {})
@@ -378,4 +490,8 @@ def _summary(status: dict[str, object] | None, campaign_ref: str) -> dict[str, o
         "zip_valid_count": 0, "txt_count": 0, "verify_history_count": status.get("verify_attempts", 0),
         "last_verify_result": last_result,
         "service_window_state": service_window_state,
+        # A run that fails before it ever reaches a VERIFY attempt leaves no
+        # trace in any of the counters above.  This projection is the only place
+        # the operator can see that the run was requested at all (ADR 0005).
+        "last_run": last_run,
     }

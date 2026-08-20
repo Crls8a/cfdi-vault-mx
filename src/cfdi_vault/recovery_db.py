@@ -434,6 +434,69 @@ class SatMonitorRunRecord(Base):
     )
 
 
+class SatCampaignRunRecord(Base):
+    """Durable request for one bounded campaign run (ADR 0005).
+
+    The row is the work item; the ``sat.campaign.run`` queue message is only a
+    wake hint. A terminal row is never re-run automatically: an expired lease
+    becomes ``abandoned`` and a new run needs a new human request.
+    """
+
+    __tablename__ = "sat_campaign_runs"
+
+    run_ref: Mapped[str] = mapped_column(String(96), primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(Integer, ForeignKey("sat_campaigns.id"), nullable=False)
+    grant_ref: Mapped[str] = mapped_column(String(96), nullable=False)
+    profile_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    commit_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="queued", nullable=False)
+    requested_via: Mapped[str] = mapped_column(String(16), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    worker_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    result_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    contacted_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    submitted_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    package_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'claimed', 'running', 'succeeded', 'failed', 'abandoned')",
+            name="ck_sat_campaign_runs_status",
+        ),
+        CheckConstraint(
+            "requested_via IN ('panel', 'cli')", name="ck_sat_campaign_runs_requested_via",
+        ),
+        CheckConstraint(
+            "result_code IS NULL OR result_code ~ '^[a-z][a-z0-9._-]{0,63}$'",
+            name="ck_sat_campaign_runs_result",
+        ),
+        CheckConstraint(
+            "contacted_count >= 0 AND submitted_count >= 0 AND package_count >= 0",
+            name="ck_sat_campaign_runs_counts",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded', 'failed', 'abandoned')) = (finished_at IS NOT NULL)",
+            name="ck_sat_campaign_runs_completion",
+        ),
+        Index(
+            "uq_sat_campaign_runs_active", "campaign_id", "grant_ref", unique=True,
+            postgresql_where=text("status IN ('queued', 'claimed', 'running')"),
+        ),
+        Index(
+            "ix_sat_campaign_runs_queued", "requested_at", "run_ref",
+            postgresql_where=text("status = 'queued'"),
+        ),
+        Index(
+            "ix_sat_campaign_runs_lease", "lease_until",
+            postgresql_where=text("status IN ('queued', 'claimed', 'running')"),
+        ),
+        Index("ix_sat_campaign_runs_campaign_requested", "campaign_id", "requested_at", "run_ref"),
+    )
+
+
 class SatMetadataImportRecord(Base):
     """Sanitized structural and aggregate results for one metadata TXT import."""
 
