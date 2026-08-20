@@ -46,6 +46,11 @@ release = [
     "build>=1.2,<2.0",
     "twine>=5.0,<7.0",
 ]
+webapi = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.30,<1.0",
+    "httpx>=0.27,<1.0",
+]
 
 [project.urls]
 Repository = "https://github.com/Crls8a/cfdi-vault-mx"
@@ -55,6 +60,8 @@ Documentation = "https://github.com/Crls8a/cfdi-vault-mx/tree/main/docs"
 [project.scripts]
 cfdi-vault = "cfdi_vault.cli:app"
 cfdi-vault-fiel-wizard = "cfdi_vault.adapters.ui.fiel_wizard:main"
+cfdi-vault-webapi = "cfdi_vault.adapters.webapi.app:run"
+cfdi-vault-campaign-run-worker = "cfdi_vault.sat_campaign_run_service:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -80,14 +87,7 @@ select = ["E4", "E7", "E9", "F", "I"]
 # legacy shims are migrated to typed, module-local imports.
 [tool.ruff.lint.per-file-ignores]
 "src/cfdi_vault/adapters/cli/download.py" = ["F403", "F405"]
-"src/cfdi_vault/adapters/cli/live.py" = ["F403", "F405"]
 "src/cfdi_vault/adapters/cli/operations.py" = ["F403", "F405"]
-"src/cfdi_vault/adapters/cli/sat_auth.py" = ["F403", "F405"]
-"src/cfdi_vault/adapters/cli/sat_backfill.py" = ["F403", "F405"]
-"src/cfdi_vault/adapters/cli/sat_common.py" = ["F403", "F405"]
-"src/cfdi_vault/adapters/cli/sat_metadata.py" = ["F403", "F405"]
-"src/cfdi_vault/adapters/cli/sat_probes.py" = ["F403", "F405"]
-"src/cfdi_vault/adapters/cli/sat_verify.py" = ["F403", "F405"]
 "src/cfdi_vault/adapters/cli/secrets.py" = ["F403", "F405"]
 
 [tool.hatch.build.targets.wheel]
