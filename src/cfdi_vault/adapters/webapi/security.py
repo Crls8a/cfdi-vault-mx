@@ -20,7 +20,10 @@ from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp
 
 _STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "DELETE", "PATCH"})
-REDACTED_FIELD_NAMES = frozenset({"phrase", "phrase_value", "phrase_confirmation"})
+# ``value`` is the credential-registration body field (``POST /api/secret/register``,
+# ADR 0006).  It carries raw credential material and therefore gets exactly the
+# same access-log treatment as the FIEL phrase.
+REDACTED_FIELD_NAMES = frozenset({"phrase", "phrase_value", "phrase_confirmation", "value"})
 REDACTED_PLACEHOLDER = "<redacted>"
 
 

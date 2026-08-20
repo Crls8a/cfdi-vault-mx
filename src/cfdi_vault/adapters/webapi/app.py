@@ -1,16 +1,31 @@
 """FastAPI app factory for the local control-panel API (ADR 0004).
 
 A thin HTTP adapter over the same functions already used by the CLI
-(``setup_status``, ``sat_campaign_db_cli``) — no SAT business logic,
-credential handling, or campaign state machine is reimplemented here. No
-``sat campaign create``/``authorize`` endpoint is exposed: authorizing a new
-grant remains a deliberate CLI-only action (ADR 0004).
+(``setup_status``, ``sat_campaign_db_cli``, ``setup_service.run_setup``) — no
+SAT business logic, credential handling, or campaign state machine is
+reimplemented here.
 
 ``POST .../run`` queues a durable ``sat_campaign_runs`` row and returns 202; the
 live SAT sequence is executed by the separate host-only campaign-run consumer
 (``cfdi_vault.sat_campaign_run_service``, ADR 0005).  This process must not set
 ``CFDI_VAULT_LIVE_WORKER_ENABLED``: leaving it unset keeps the old synchronous
 path failing closed if anything ever reaches it.
+
+``create``/``authorize`` are exposed here per ADR 0006, which amends ADR 0004's
+"CLI-only" rule: the CLI that provided the deliberation friction is being
+retired, so the friction moves into the API itself as a typed-confirmation
+gate.  Every such request must carry a ``confirm`` field whose value is exactly
+the resource identifier being acted on.  That check is a server-side security
+boundary, not frontend UX: it is the first statement in each handler and runs
+before any profile load or database call, so a caller that bypasses the panel
+entirely still cannot create or authorize anything unconfirmed.
+
+Credential-bearing endpoints (``POST /api/setup``, ``POST /api/secret/register``)
+implement the FIEL phrase contract ADR 0004 already specified: the secret
+arrives only in a JSON request body, is consumed immediately, and is never
+echoed in a response, an error message, or a log line.  Failures are mapped to
+bounded reason slugs — never to raw exception text — because the underlying
+``SetupError`` messages can carry filesystem paths.
 """
 
 from __future__ import annotations
@@ -30,8 +45,8 @@ from cfdi_vault.adapters.cli.analysis import _build_report as _analysis_build_re
 from cfdi_vault.adapters.cli.analysis import _database_url as _analysis_database_url
 from cfdi_vault.adapters.cli.analysis import _load_exact_profile as _analysis_load_exact_profile
 from cfdi_vault.adapters.cli.analysis import _parse_date as _analysis_parse_date
+from cfdi_vault.adapters.cli.common import _provider_for_reference, _setup_provider
 from cfdi_vault.adapters.cli.common import _service as _recovery_service
-from cfdi_vault.adapters.cli.common import _setup_provider
 from cfdi_vault.adapters.cli.secrets import _credential_reference
 from cfdi_vault.adapters.cli.storage import _default_service as _storage_service
 from cfdi_vault.adapters.webapi.config import WebApiSettings
@@ -41,22 +56,123 @@ from cfdi_vault.os_secret_providers import native_provider_for_reference
 from cfdi_vault.runtime_settings import RuntimeSettingsError
 from cfdi_vault.sat_campaign_db_cli import (
     CampaignDatabaseError,
+    authorize_campaign,
     campaign_status,
+    create_campaign,
     enqueue_campaign_run,
     publish_campaign_run_hint,
 )
-from cfdi_vault.secrets import CredentialProviderError
-from cfdi_vault.setup_core import SetupError, find_repo_root, load_profile
+from cfdi_vault.secrets import CredentialProviderError, CredentialReference
+from cfdi_vault.setup_core import CredentialMode, SetupError, find_repo_root, load_profile, redact_rfc
+from cfdi_vault.setup_service import run_setup
 from cfdi_vault.setup_status import format_profile_status, inspect_profile
 from cfdi_vault.storage_observability import InvalidStorageReferenceError, StorageObservationError
 
 ALLOWED_DOCKER_SERVICES = ("postgres", "rabbitmq", "redis", "worker")
+CONFIRMATION_MISMATCH_REASON = "confirmation-mismatch"
+
+# ``SetupError`` messages are operator-facing CLI text and can embed a raw
+# filesystem path (source folder, explicit .cer/.key path), which ADR 0004
+# forbids in any API response.  So a failure is never echoed: its first
+# recognized marker selects one bounded slug from this table instead.  None of
+# these markers, and no ``SetupError`` raised anywhere on the ``run_setup``
+# path, can carry the phrase value itself — the only phrase-related message is
+# the fixed "private-key phrase must be provided..." string.
+_SETUP_FAILURE_REASONS: tuple[tuple[str, str], ...] = (
+    ("private-key phrase must be provided", "setup-phrase-required"),
+    ("phrase reference could not be prepared", "setup-phrase-rollback-unsafe"),
+    ("credential intake is not allowed in ci", "setup-ci-not-allowed"),
+    ("direct credential environment variables", "setup-direct-credential-env-forbidden"),
+    ("must be outside the repository", "setup-path-inside-repository"),
+    ("source folder does not exist", "setup-source-folder-invalid"),
+    ("does not exist or is not a file", "setup-credential-file-invalid"),
+    ("candidate found in source folder", "setup-credential-candidate-missing"),
+    ("ambiguous", "setup-credential-candidate-ambiguous"),
+    ("extension", "setup-credential-extension-invalid"),
+    ("must not be empty", "setup-credential-file-empty"),
+    ("is not readable", "setup-credential-file-unreadable"),
+    ("appears unencrypted", "setup-private-key-unencrypted"),
+    ("rfc must be", "setup-rfc-invalid"),
+    ("profile id must use", "setup-profile-id-invalid"),
+    ("unsupported platform", "setup-platform-unsupported"),
+    ("unsupported credential mode or status", "setup-profile-invalid"),
+    ("profile is not configured", "setup-profile-invalid"),
+    ("profile json is invalid", "setup-profile-invalid"),
+)
 
 
 class CampaignRunRequest(BaseModel):
     """Request body for triggering an already-authorized campaign run."""
 
     grant: str
+
+
+class CampaignCreateRequest(BaseModel):
+    """Typed-confirmation body for creating a campaign (ADR 0006).
+
+    ``confirm`` must repeat the ``profile_id`` path parameter exactly, the same
+    way the retired CLI made the operator type ``--profile <id>``.
+    """
+
+    confirm: str
+
+
+class CampaignAuthorizeRequest(BaseModel):
+    """Typed-confirmation body for authorizing a campaign grant (ADR 0006).
+
+    ``confirm`` must repeat the ``campaign_ref`` path parameter exactly.
+    ``phase``/``expires_days``/``reason`` are only shape-checked here; their
+    value rules (allowed phases, 1-14 day validity, non-empty bounded reason)
+    stay in ``sat_campaign_db_cli.authorize_campaign``, which owns them and
+    reports them as ``campaign-grant-*`` reason codes.  Re-validating them here
+    would duplicate the rule and answer with a different status and vocabulary.
+    """
+
+    confirm: str
+    phase: str
+    expires_days: int
+    reason: str
+
+
+class SetupRequest(BaseModel):
+    """FIEL onboarding body — the panel equivalent of ``cfdi-vault setup``.
+
+    ``source_folder``/``certificate_path``/``private_key_path`` are filesystem
+    paths read by this process, never browser uploads (ADR 0004).  ``phrase``
+    is body-only: it must never appear in a query string, and its field name is
+    already covered by ``security.REDACTED_FIELD_NAMES``.
+    """
+
+    rfc: str
+    source_folder: str
+    phrase: str
+    profile_id: str = "default"
+    certificate_path: str | None = None
+    private_key_path: str | None = None
+    credential_mode: str = "copied"
+
+
+class SecretRegisterRequest(BaseModel):
+    """Credential-registration body; ``value`` is treated exactly like the phrase."""
+
+    reference: str
+    value: str
+    kind: str = "generic"
+    purpose: str = "webapi-register"
+
+
+class SecretDeleteRequest(BaseModel):
+    """Credential-deletion body.
+
+    A ``CredentialReference.uri`` is a full scheme URI
+    (``windows-credential-manager://cfdi-vault/setup/<profile>/private-key-phrase``),
+    so it cannot ride in a path segment without escaping; the reference travels
+    in the body instead of ``DELETE /api/secret/{reference}``.
+    """
+
+    reference: str
+    kind: str = "generic"
+    purpose: str = "webapi-delete"
 
 
 def create_app(settings: WebApiSettings | None = None) -> FastAPI:
@@ -102,6 +218,130 @@ def create_app(settings: WebApiSettings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail={"reason": error.reason}) from None
         publish_campaign_run_hint(profile_id, campaign_ref, body.grant, str(queued["run_ref"]))
         return queued
+
+    @app.post("/api/campaign/{profile_id}/create")
+    def campaign_create_endpoint(profile_id: str, body: CampaignCreateRequest) -> dict[str, object]:
+        """Create the fixed campaign, gated on a typed confirmation (ADR 0006).
+
+        The gate is the first statement on purpose: nothing — not the profile
+        load, not ``DATABASE_URL`` resolution, not a single query — may run for
+        an unconfirmed request, and no earlier branch exists that could skip it.
+        """
+
+        _require_typed_confirmation(body.confirm, profile_id)
+        try:
+            loaded = load_profile(profile_id)
+        except SetupError:
+            raise HTTPException(status_code=400, detail={"reason": "campaign-profile-invalid"}) from None
+        # Mirror ``sat_campaign.py::_load_exact_profile``: a profile whose
+        # document disagrees with the requested id must not be acted on.
+        if loaded.profile_id != profile_id:
+            raise HTTPException(status_code=400, detail={"reason": "campaign-profile-mismatch"})
+        try:
+            return create_campaign(profile_id, tenant_rfc=loaded.rfc)
+        except CampaignDatabaseError as error:
+            raise HTTPException(status_code=400, detail={"reason": error.reason}) from None
+        except Exception:
+            raise HTTPException(
+                status_code=400, detail={"reason": "campaign-database-operation-failed"},
+            ) from None
+
+    @app.post("/api/campaign/{profile_id}/{campaign_ref}/authorize")
+    def campaign_authorize_endpoint(
+        profile_id: str, campaign_ref: str, body: CampaignAuthorizeRequest
+    ) -> dict[str, object]:
+        """Create one grant, gated on a typed confirmation (ADR 0006).
+
+        As in ``create``, the gate is the first statement and precedes every
+        database call; the grant rules themselves stay in the same
+        ``authorize_campaign`` the CLI called.
+        """
+
+        _require_typed_confirmation(body.confirm, campaign_ref)
+        try:
+            return authorize_campaign(
+                profile_id, campaign_ref, body.phase, body.expires_days, body.reason,
+            )
+        except CampaignDatabaseError as error:
+            raise HTTPException(status_code=400, detail={"reason": error.reason}) from None
+        except Exception:
+            raise HTTPException(
+                status_code=400, detail={"reason": "campaign-database-authorize-failed"},
+            ) from None
+
+    @app.post("/api/setup")
+    def setup_endpoint(body: SetupRequest) -> dict[str, object]:
+        """Run the FIEL onboarding flow the Tkinter wizard and CLI already run.
+
+        The phrase is read once out of the request body, handed straight to
+        ``run_setup``, and never referenced again.  Every failure path answers
+        with a bounded slug from ``_setup_failure_reason``; no branch here
+        interpolates ``body.phrase``, ``str(exc)``, or ``exc.errors`` into a
+        response, so the phrase cannot reach the client even on failure.
+        """
+
+        try:
+            mode = CredentialMode(body.credential_mode.strip().lower())
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail={"reason": "setup-credential-mode-invalid"},
+            ) from None
+        try:
+            provider = _setup_provider(body.profile_id)
+            result = run_setup(
+                profile_id=body.profile_id,
+                rfc=body.rfc,
+                source_folder=Path(body.source_folder),
+                certificate_path=Path(body.certificate_path) if body.certificate_path else None,
+                private_key_path=Path(body.private_key_path) if body.private_key_path else None,
+                phrase_value=body.phrase,
+                provider=provider,
+                mode=mode,
+            )
+        except (SetupError, CredentialProviderError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail={"reason": _setup_failure_reason(exc)}) from None
+        except Exception:
+            # Anything else on this path (``typer.BadParameter`` from
+            # ``_setup_provider``, an OSError from the staged copy, a provider
+            # adapter fault) carries a raw path or driver text that may not be
+            # echoed, and must not surface as an unhandled 500.
+            raise HTTPException(status_code=400, detail={"reason": "setup-failed"}) from None
+        return {
+            "profile_id": result.profile.profile_id,
+            "rfc": redact_rfc(result.profile.rfc),
+            "credential_mode": result.profile.credential_mode.value,
+            "credentials_imported": True,
+            "phrase_stored": True,
+        }
+
+    @app.post("/api/secret/register")
+    def secret_register(body: SecretRegisterRequest) -> dict[str, str]:
+        """Store one credential value through the native provider, echoing nothing."""
+
+        reference, provider = _secret_reference_and_provider(body.reference, body.kind)
+        try:
+            provider.store(reference, body.value, purpose=body.purpose)
+        except CredentialProviderError:
+            raise HTTPException(
+                status_code=400, detail={"reason": "secret-registration-failed"},
+            ) from None
+        return {"reference": reference.uri, "kind": reference.kind.value}
+
+    @app.post("/api/secret/delete")
+    def secret_delete(body: SecretDeleteRequest) -> dict[str, object]:
+        """Delete one credential reference.
+
+        No typed-confirmation gate: ADR 0006 gates the direction that *grants*
+        access (create/authorize/register).  Removing a reference grants
+        nothing — it fails closed — so it keeps the plain error mapping.
+        """
+
+        reference, provider = _secret_reference_and_provider(body.reference, body.kind)
+        try:
+            deleted = provider.delete(reference, purpose=body.purpose)
+        except CredentialProviderError:
+            raise HTTPException(status_code=400, detail={"reason": "secret-deletion-failed"}) from None
+        return {"reference": reference.uri, "kind": reference.kind.value, "deleted": bool(deleted)}
 
     @app.get("/api/docker/services")
     def docker_services() -> list[dict[str, str]]:
@@ -247,6 +487,59 @@ def _doctor_check_dict(check: object) -> dict[str, object]:
     if name == "storage":
         return {"name": name, "ok": True, "detail": "layout ensured"}
     return {"name": name, "ok": True, "detail": check.detail}
+
+
+def _require_typed_confirmation(submitted: str, expected: str) -> None:
+    """Reject a state-changing request whose typed confirmation does not match.
+
+    Exact, case-sensitive string equality with no trimming: this replaces the
+    friction the retired CLI provided by making the operator name the resource,
+    so "close enough" must not pass.  Callers invoke this as the first
+    statement of the handler, before any profile load or database call.
+    """
+
+    if submitted != expected:
+        raise HTTPException(status_code=400, detail={"reason": CONFIRMATION_MISMATCH_REASON})
+
+
+def _setup_failure_reason(exc: Exception) -> str:
+    """Map a setup failure to a bounded slug without echoing its message.
+
+    ``SetupError.errors`` is a tuple of operator-facing strings that can embed
+    a filesystem path; the raw text therefore never leaves this process.  The
+    phrase value is not among the things those strings can contain — the only
+    phrase-related message ``run_setup`` raises is fixed text — but this
+    function ignores the message content either way and returns a slug.
+    """
+
+    errors = exc.errors if isinstance(exc, SetupError) else ()
+    for error in errors:
+        lowered = error.lower()
+        for marker, reason in _SETUP_FAILURE_REASONS:
+            if marker in lowered:
+                return reason
+    if errors:
+        return "setup-input-invalid"
+    return "setup-local-configuration-invalid"
+
+
+def _secret_reference_and_provider(reference_uri: str, kind: str) -> tuple[CredentialReference, object]:
+    """Build the credential reference and its native provider, or fail redacted.
+
+    Both CLI helpers signal invalid input with ``typer.BadParameter``, whose
+    message repeats the caller's reference/scheme; only a fixed slug is
+    returned to the client.
+    """
+
+    try:
+        reference = _credential_reference(reference_uri, kind)
+    except typer.BadParameter:
+        raise HTTPException(status_code=400, detail={"reason": "secret-kind-invalid"}) from None
+    try:
+        provider = _provider_for_reference(reference)
+    except typer.BadParameter:
+        raise HTTPException(status_code=400, detail={"reason": "secret-provider-unavailable"}) from None
+    return reference, provider
 
 
 def _require_allowed_service(service: str) -> None:
