@@ -27,23 +27,24 @@ def campaign_monitor_lock(
         yield
 
 
-def render_campaign_cron_entry(
-    *, profile_id: str, campaign_ref: str = "CAMPAIGN_REF",
-    grant_ref: str = "SCHEDULER_GRANT_ID", executable: str = "cfdi-vault",
-) -> str:
-    """Render a five-minute POSIX wake-up without installing or executing it."""
-    values = (profile_id, campaign_ref, grant_ref, executable)
-    if any(
+def render_campaign_cron_entry(*, executable: str = "cfdi-vault-campaign-run-worker") -> str:
+    """Render a five-minute POSIX wake-up without installing or executing it.
+
+    ADR 0005 moved campaign execution off a per-invocation ``--profile
+    --campaign-ref --grant`` command: the host-only campaign-run consumer
+    claims whatever is due from the durable ``sat_campaign_runs`` queue on
+    its own, so a scheduled wake-up only needs to invoke it for one pass
+    (``--once``) — there is nothing profile- or campaign-specific left to
+    template.
+    """
+    value = executable
+    if (
         not isinstance(value, str) or not value.strip()
         or any(char in value for char in "\r\n\0")
         or any(char.isspace() for char in value.strip())
-        for value in values
     ):
         raise ValueError("scheduler-template-invalid")
-    return (
-        f"*/5 * * * * {executable.strip()} sat campaign run --profile {profile_id.strip()} "
-        f"--campaign-ref {campaign_ref.strip()} --grant {grant_ref.strip()}\n"
-    )
+    return f"*/5 * * * * {value.strip()} --once\n"
 
 
 def select_due_metadata_recovery(

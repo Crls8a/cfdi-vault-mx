@@ -66,9 +66,4 @@ def test_campaign_monitor_lock_is_non_reentrant_and_cron_is_due_only(tmp_path: P
             with campaign_monitor_lock(root):
                 pass
 
-    assert render_campaign_cron_entry(
-        profile_id="default", campaign_ref="cmp-0123456789ab", grant_ref="grt-0123456789ab",
-    ) == (
-        "*/5 * * * * cfdi-vault sat campaign run --profile default "
-        "--campaign-ref cmp-0123456789ab --grant grt-0123456789ab\n"
-    )
+    assert render_campaign_cron_entry() == "*/5 * * * * cfdi-vault-campaign-run-worker --once\n"

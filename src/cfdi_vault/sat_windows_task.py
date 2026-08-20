@@ -1,36 +1,30 @@
-"""Pure Windows Task Scheduler XML rendering for the SAT one-shot runner."""
+"""Pure Windows Task Scheduler XML rendering for the SAT campaign-run consumer."""
 
 from __future__ import annotations
 
 from pathlib import PureWindowsPath
 from xml.etree import ElementTree as ET
 
-from cfdi_vault.setup_core import SetupError, validate_profile_id
-
 TASK_NAMESPACE = "http://schemas.microsoft.com/windows/2004/02/mit/task"
-GRANT_PLACEHOLDER = "SCHEDULER_GRANT_ID"
-CAMPAIGN_PLACEHOLDER = "CAMPAIGN_REF"
 
 
 def render_windows_task_xml(
     *,
-    profile_id: str,
     working_directory: str,
-    executable: str = "cfdi-vault",
-    campaign_ref: str = CAMPAIGN_PLACEHOLDER,
+    executable: str = "cfdi-vault-campaign-run-worker",
 ) -> str:
-    """Render a deterministic five-minute task template without installing it."""
+    """Render a deterministic five-minute task template without installing it.
 
-    try:
-        safe_profile = validate_profile_id(profile_id)
-    except SetupError as exc:
-        raise ValueError("scheduler-profile-invalid") from exc
+    ADR 0005 moved campaign execution off a per-invocation ``--profile
+    --campaign-ref --grant`` command: the host-only campaign-run consumer
+    claims whatever is due from the durable ``sat_campaign_runs`` queue on
+    its own, so this task only needs to invoke it for one pass (``--once``)
+    — there is no profile or campaign left to template.
+    """
+
     safe_executable = executable.strip()
     if not safe_executable or any(char in safe_executable for char in "\r\n\0"):
         raise ValueError("scheduler-executable-invalid")
-    safe_campaign = campaign_ref.strip()
-    if not safe_campaign or any(char in safe_campaign for char in "\r\n\0"):
-        raise ValueError("scheduler-campaign-invalid")
     raw_working_directory = working_directory.strip()
     windows_directory = PureWindowsPath(raw_working_directory)
     if (
@@ -46,7 +40,7 @@ def render_windows_task_xml(
     task = ET.Element(_tag("Task"), {"version": "1.4"})
     registration = ET.SubElement(task, _tag("RegistrationInfo"))
     ET.SubElement(registration, _tag("Description")).text = (
-        "One-shot due SAT campaign runner; local state decides whether SAT contact is due."
+        "One-shot poll of the campaign-run consumer; PostgreSQL decides whether SAT contact is due."
     )
     triggers = ET.SubElement(task, _tag("Triggers"))
     trigger = ET.SubElement(triggers, _tag("CalendarTrigger"))
@@ -76,10 +70,7 @@ def render_windows_task_xml(
     actions = ET.SubElement(task, _tag("Actions"), {"Context": "Author"})
     execution = ET.SubElement(actions, _tag("Exec"))
     ET.SubElement(execution, _tag("Command")).text = safe_executable
-    ET.SubElement(execution, _tag("Arguments")).text = (
-        f"sat campaign run --profile {safe_profile} --campaign-ref {safe_campaign} "
-        f"--grant {GRANT_PLACEHOLDER}"
-    )
+    ET.SubElement(execution, _tag("Arguments")).text = "--once"
     ET.SubElement(execution, _tag("WorkingDirectory")).text = safe_working_directory
     ET.indent(task, space="  ")
     return ET.tostring(task, encoding="unicode", xml_declaration=False) + "\n"

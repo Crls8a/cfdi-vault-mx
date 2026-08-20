@@ -11,8 +11,8 @@ NS = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
 
 def test_windows_task_template_is_deterministic_one_shot_and_least_privilege() -> None:
     working_directory = r"C:\reviewed & audited\cfdi-vault-mx"
-    first = render_windows_task_xml(profile_id="default", working_directory=working_directory)
-    second = render_windows_task_xml(profile_id="default", working_directory=working_directory)
+    first = render_windows_task_xml(working_directory=working_directory)
+    second = render_windows_task_xml(working_directory=working_directory)
     root = ET.fromstring(first)
 
     assert first == second
@@ -20,9 +20,14 @@ def test_windows_task_template_is_deterministic_one_shot_and_least_privilege() -
     assert root.findtext(".//t:MultipleInstancesPolicy", namespaces=NS) == "IgnoreNew"
     assert root.findtext(".//t:ExecutionTimeLimit", namespaces=NS) == "PT4M"
     assert root.findtext(".//t:RunLevel", namespaces=NS) == "LeastPrivilege"
+    command = root.findtext(".//t:Exec/t:Command", namespaces=NS)
     arguments = root.findtext(".//t:Exec/t:Arguments", namespaces=NS) or ""
     rendered_working_directory = root.findtext(".//t:Exec/t:WorkingDirectory", namespaces=NS)
-    assert arguments == ("sat campaign run --profile default --campaign-ref CAMPAIGN_REF --grant SCHEDULER_GRANT_ID")
+    # ADR 0005: the campaign-run consumer claims whatever is due from the
+    # durable queue itself, so there is no profile/campaign/grant to template
+    # anymore - one flag is enough.
+    assert command == "cfdi-vault-campaign-run-worker"
+    assert arguments == "--once"
     assert rendered_working_directory == working_directory
     assert "&amp;" in first
     assert "--limit" not in arguments
@@ -36,6 +41,9 @@ def test_windows_task_template_is_deterministic_one_shot_and_least_privilege() -
             "--install",
             "--request-ref",
             "--manual-real-sat",
+            "--profile",
+            "--campaign-ref",
+            "--grant",
         )
     )
 
