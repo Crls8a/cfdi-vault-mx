@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 
 from cfdi_vault.adapters.webapi import app as subject
 from cfdi_vault.adapters.webapi.config import WebApiSettings
+from cfdi_vault.onboarding import OnboardingError
 from cfdi_vault.sat_campaign_db_cli import CampaignDatabaseError
 from cfdi_vault.secrets import CredentialKind, CredentialProviderError, CredentialReference
 from cfdi_vault.setup_core import (
@@ -576,6 +577,186 @@ def test_setup_requires_the_phrase_field(tmp_path: Path, monkeypatch: pytest.Mon
     del body["phrase"]
     response = _client(tmp_path).post("/api/setup", json=body, headers={"origin": ALLOWED_ORIGIN})
     assert 400 <= response.status_code < 500
+
+
+# --------------------------------------------------------------------------
+# POST /api/onboard
+# --------------------------------------------------------------------------
+#
+# Onboarding is the *other* phrase-bearing endpoint, and the one where the
+# phrase is only proved non-empty and then dropped.  ``tests/test_onboarding.py``
+# covers what it writes; these cover the phrase and redaction contract.
+
+
+def _onboard_body(tmp_path: Path) -> dict[str, object]:
+    return {
+        "profile_id": "dummy-profile",
+        "rfc": "AAA010101AAA",
+        "storage_root": str(tmp_path / "vault"),
+        "start_date": "2024-01-01",
+        "certificate_path": str(tmp_path / "dummy.cer"),
+        "private_key_path": str(tmp_path / "dummy.key"),
+        "config_path": str(tmp_path / "local.json"),
+        "phrase": PHRASE,
+    }
+
+
+def test_onboard_requires_correct_origin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(subject, "run_onboarding", _explode)
+    response = _client(tmp_path).post("/api/onboard", json=_onboard_body(tmp_path))
+    assert response.status_code == 403
+    assert PHRASE not in response.text
+
+
+def test_onboard_is_not_reachable_by_query_string(tmp_path: Path) -> None:
+    """There is no GET form of this endpoint: the phrase can only arrive in a body."""
+
+    response = _client(tmp_path).get("/api/onboard", params={"phrase": PHRASE})
+    assert response.status_code == 405
+
+
+def test_onboard_requires_the_phrase_field(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(subject, "run_onboarding", _explode)
+    body = _onboard_body(tmp_path)
+    del body["phrase"]
+    response = _client(tmp_path).post("/api/onboard", json=body, headers={"origin": ALLOWED_ORIGIN})
+    assert 400 <= response.status_code < 500
+
+
+def test_onboard_hands_the_phrase_to_run_onboarding_and_reports_it_unstored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_onboarding(request: object, phrase_value: str) -> object:
+        captured.update(request=request, phrase_value=phrase_value)
+        return _onboarding_result()
+
+    monkeypatch.setattr(subject, "run_onboarding", fake_run_onboarding)
+    response = _client(tmp_path).post(
+        "/api/onboard", json=_onboard_body(tmp_path), headers={"origin": ALLOWED_ORIGIN},
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "profile_id": "dummy-profile",
+        "rfc": "AA********AA",
+        "certificate_fingerprint": "b" * 64,
+        "credential_refs": {"certificateRef": "local-dev-dummy://cfdi-vault/dummy-profile/certificate"},
+        "config_written": True,
+        "storage_ready": True,
+        "credentials_copied": False,
+        "phrase_stored": False,
+    }
+    # The phrase reached run_onboarding exactly once and came back out nowhere.
+    assert captured["phrase_value"] == PHRASE
+    assert PHRASE not in response.text
+    assert "AAA010101AAA" not in response.text
+
+
+def _onboarding_result() -> object:
+    from cfdi_vault.onboarding import OnboardingResult
+
+    return OnboardingResult(
+        output_config=Path("local.json"),
+        storage_root=Path("vault"),
+        profile_id="dummy-profile",
+        rfc="AAA010101AAA",
+        certificate_fingerprint="b" * 64,
+        credential_refs={"certificateRef": "local-dev-dummy://cfdi-vault/dummy-profile/certificate"},
+        ensured_paths=(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        ("private key phrase must be provided but is never stored in config", "onboard-phrase-required"),
+        ("profile 'dummy-profile' already exists; rerun with --replace-existing", "onboard-profile-exists"),
+        ("existing config is not valid JSON: unexpected token", "onboard-existing-config-invalid"),
+        ("certificate file must use .cer extension", "onboard-credential-extension-invalid"),
+        ("certificate file does not exist or is not a file: {path}", "onboard-credential-file-invalid"),
+        ("private key file is not readable: {path} (denied)", "onboard-credential-file-unreadable"),
+        ("certificate file must not be empty", "onboard-credential-file-empty"),
+        ("certificate file must look like DER or PEM certificate data", "onboard-credential-content-invalid"),
+        ("storage root is not a directory: {path}", "onboard-storage-root-invalid"),
+        ("storage root is not writable: {path}", "onboard-storage-root-not-writable"),
+        ("start date must be an ISO date: YYYY-MM-DD", "onboard-date-invalid"),
+        ("end date must be greater than or equal to start date", "onboard-period-invalid"),
+        ("download mode must be one of: issued, received, both", "onboard-download-mode-invalid"),
+        ("periodicity must be one of: disabled, interval, daily", "onboard-periodicity-invalid"),
+        ("interval periodicity requires --interval-minutes", "onboard-interval-minutes-required"),
+        ("daily periodicity requires --daily-at", "onboard-daily-at-required"),
+        ("some schema rule nobody has classified yet", "onboard-config-invalid"),
+    ],
+)
+def test_onboard_maps_errors_to_bounded_reasons_without_echoing_the_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: str, reason: str,
+) -> None:
+    message = error.format(path=tmp_path / "external")
+
+    def fail(request: object, phrase_value: str) -> object:
+        raise OnboardingError([message])
+
+    monkeypatch.setattr(subject, "run_onboarding", fail)
+    response = _client(tmp_path).post(
+        "/api/onboard", json=_onboard_body(tmp_path), headers={"origin": ALLOWED_ORIGIN},
+    )
+    assert response.status_code == 400
+    assert response.json() == {"detail": {"reason": reason}}
+    # Neither the secret nor the raw operator message leaves the process.
+    assert PHRASE not in response.text
+    assert str(tmp_path) not in response.text
+    assert "Traceback" not in response.text
+
+
+def test_onboard_failure_never_leaks_the_phrase_even_if_an_exception_carries_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defence in depth, matching the same guarantee ``POST /api/setup`` makes."""
+
+    def fail(request: object, phrase_value: str) -> object:
+        raise OnboardingError([f"storage root is not writable: {PHRASE}"])
+
+    monkeypatch.setattr(subject, "run_onboarding", fail)
+    response = _client(tmp_path).post(
+        "/api/onboard", json=_onboard_body(tmp_path), headers={"origin": ALLOWED_ORIGIN},
+    )
+    assert response.status_code == 400
+    assert response.json() == {"detail": {"reason": "onboard-storage-root-not-writable"}}
+    assert PHRASE not in response.text
+
+
+def test_onboard_maps_unexpected_os_failure_to_a_fixed_reason_without_the_phrase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(request: object, phrase_value: str) -> object:
+        raise OSError(13, "Permission denied", str(tmp_path / "vault"))
+
+    monkeypatch.setattr(subject, "run_onboarding", fail)
+    response = _client(tmp_path).post(
+        "/api/onboard", json=_onboard_body(tmp_path), headers={"origin": ALLOWED_ORIGIN},
+    )
+    assert response.status_code == 400
+    assert response.json() == {"detail": {"reason": "onboard-failed"}}
+    assert PHRASE not in response.text
+    assert str(tmp_path) not in response.text
+
+
+def test_onboard_maps_a_bare_value_error_without_echoing_its_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``ValueError`` with no ``errors`` tuple must not fall through to ``str(exc)``."""
+
+    def fail(request: object, phrase_value: str) -> object:
+        raise ValueError(f"unclassified failure touching {tmp_path}")
+
+    monkeypatch.setattr(subject, "run_onboarding", fail)
+    response = _client(tmp_path).post(
+        "/api/onboard", json=_onboard_body(tmp_path), headers={"origin": ALLOWED_ORIGIN},
+    )
+    assert response.status_code == 400
+    assert response.json() == {"detail": {"reason": "onboard-input-invalid"}}
+    assert str(tmp_path) not in response.text
 
 
 # --------------------------------------------------------------------------

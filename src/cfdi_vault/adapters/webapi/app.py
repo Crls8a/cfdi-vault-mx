@@ -1,9 +1,12 @@
 """FastAPI app factory for the local control-panel API (ADR 0004).
 
-A thin HTTP adapter over the same functions already used by the CLI
-(``setup_status``, ``sat_campaign_db_cli``, ``setup_service.run_setup``) — no
-SAT business logic, credential handling, or campaign state machine is
-reimplemented here.
+A thin HTTP adapter over the same functions the retired Typer CLI called
+(``setup_status``, ``sat_campaign_db_cli``, ``setup_service.run_setup``,
+``onboarding.run_onboarding``) — no SAT business logic, credential handling, or
+campaign state machine is reimplemented here.  The shared runtime wiring those
+handlers need now lives in :mod:`cfdi_vault.panel_services` and
+:mod:`cfdi_vault.analysis.report_request`; it moved out of ``adapters/cli``
+unchanged when that package was deleted.
 
 ``POST .../run`` queues a durable ``sat_campaign_runs`` row and returns 202; the
 live SAT sequence is executed by the separate host-only campaign-run consumer
@@ -20,12 +23,13 @@ boundary, not frontend UX: it is the first statement in each handler and runs
 before any profile load or database call, so a caller that bypasses the panel
 entirely still cannot create or authorize anything unconfirmed.
 
-Credential-bearing endpoints (``POST /api/setup``, ``POST /api/secret/register``)
-implement the FIEL phrase contract ADR 0004 already specified: the secret
-arrives only in a JSON request body, is consumed immediately, and is never
-echoed in a response, an error message, or a log line.  Failures are mapped to
-bounded reason slugs — never to raw exception text — because the underlying
-``SetupError`` messages can carry filesystem paths.
+Credential-bearing endpoints (``POST /api/setup``, ``POST /api/onboard``,
+``POST /api/secret/register``) implement the FIEL phrase contract ADR 0004
+already specified: the secret arrives only in a JSON request body, is consumed
+immediately, and is never echoed in a response, an error message, or a log
+line.  Failures are mapped to bounded reason slugs — never to raw exception
+text — because the underlying ``SetupError``/``OnboardingError`` messages can
+carry filesystem paths.
 """
 
 from __future__ import annotations
@@ -40,20 +44,30 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 
-from cfdi_vault.adapters.cli.analysis import _AnalysisCliError
-from cfdi_vault.adapters.cli.analysis import _build_report as _analysis_build_report
-from cfdi_vault.adapters.cli.analysis import _database_url as _analysis_database_url
-from cfdi_vault.adapters.cli.analysis import _load_exact_profile as _analysis_load_exact_profile
-from cfdi_vault.adapters.cli.analysis import _parse_date as _analysis_parse_date
-from cfdi_vault.adapters.cli.common import _provider_for_reference, _resolve_storage_root, _setup_provider
-from cfdi_vault.adapters.cli.common import _service as _recovery_service
-from cfdi_vault.adapters.cli.secrets import _credential_reference
-from cfdi_vault.adapters.cli.storage import _default_service as _storage_service
 from cfdi_vault.adapters.webapi.config import WebApiSettings
 from cfdi_vault.adapters.webapi.security import OriginGuardMiddleware
+from cfdi_vault.analysis.report_request import AnalysisReportError as _AnalysisCliError
+from cfdi_vault.analysis.report_request import build_report as _analysis_build_report
+from cfdi_vault.analysis.report_request import load_exact_profile as _analysis_load_exact_profile
+from cfdi_vault.analysis.report_request import parse_date as _analysis_parse_date
+from cfdi_vault.analysis.report_request import resolve_database_url as _analysis_database_url
 from cfdi_vault.config import ConfigValidationError, load_config
 from cfdi_vault.local_preflight import default_local_probes, run_local_preflight
+from cfdi_vault.onboarding import (
+    OnboardingError,
+    OnboardingRequest,
+    parse_download_mode,
+    parse_iso_date,
+    parse_schedule_mode,
+    run_onboarding,
+)
 from cfdi_vault.os_secret_providers import native_provider_for_reference
+from cfdi_vault.panel_services import credential_reference as _credential_reference
+from cfdi_vault.panel_services import provider_for_reference as _provider_for_reference
+from cfdi_vault.panel_services import recovery_service as _recovery_service
+from cfdi_vault.panel_services import resolve_storage_root as _resolve_storage_root
+from cfdi_vault.panel_services import setup_provider as _setup_provider
+from cfdi_vault.panel_services import storage_observability_service as _storage_service
 from cfdi_vault.recovery_service import RecoveryService, write_minimal_pdf
 from cfdi_vault.runtime_settings import RuntimeSettingsError
 from cfdi_vault.sat_campaign_db_cli import (
@@ -101,6 +115,37 @@ _SETUP_FAILURE_REASONS: tuple[tuple[str, str], ...] = (
     ("unsupported credential mode or status", "setup-profile-invalid"),
     ("profile is not configured", "setup-profile-invalid"),
     ("profile json is invalid", "setup-profile-invalid"),
+)
+
+# ``OnboardingError.errors`` has the same shape as ``SetupError.errors`` — a
+# tuple of operator-facing strings — and the same hazard: several of them
+# interpolate a raw filesystem path (``"... file does not exist or is not a
+# file: {path}"``, ``"storage root is not writable: {root}"``), and the
+# ``ConfigValidationError`` errors re-raised by ``write_profile_config`` are
+# arbitrary schema text.  None of them can contain the phrase: the only
+# phrase-related message ``run_onboarding`` raises is the fixed
+# ``validate_phrase_was_entered`` string, and the phrase is never assigned to
+# any field of ``OnboardingRequest``.  This table maps a failure to a bounded
+# slug regardless, exactly like ``_SETUP_FAILURE_REASONS``.  Order matters: the
+# first marker found in a message wins, so specific markers precede general
+# ones.
+_ONBOARD_FAILURE_REASONS: tuple[tuple[str, str], ...] = (
+    ("phrase must be provided", "onboard-phrase-required"),
+    ("already exists", "onboard-profile-exists"),
+    ("existing config", "onboard-existing-config-invalid"),
+    ("extension", "onboard-credential-extension-invalid"),
+    ("does not exist or is not a file", "onboard-credential-file-invalid"),
+    ("is not readable", "onboard-credential-file-unreadable"),
+    ("must not be empty", "onboard-credential-file-empty"),
+    ("der or pem", "onboard-credential-content-invalid"),
+    ("storage root is not a directory", "onboard-storage-root-invalid"),
+    ("storage root is not writable", "onboard-storage-root-not-writable"),
+    ("must be an iso date", "onboard-date-invalid"),
+    ("end date must be greater", "onboard-period-invalid"),
+    ("download mode must be one of", "onboard-download-mode-invalid"),
+    ("periodicity must be one of", "onboard-periodicity-invalid"),
+    ("interval periodicity requires", "onboard-interval-minutes-required"),
+    ("daily periodicity requires", "onboard-daily-at-required"),
 )
 
 
@@ -153,6 +198,50 @@ class SetupRequest(BaseModel):
     certificate_path: str | None = None
     private_key_path: str | None = None
     credential_mode: str = "copied"
+
+
+class OnboardRequest(BaseModel):
+    """Safe first-run profile body — the panel equivalent of ``cfdi-vault onboard``.
+
+    Distinct from ``SetupRequest`` in three ways that matter:
+
+    * it writes a local JSON *config file* (the same file
+      ``POST /api/config/validate`` reads), it does not create an AppData
+      profile;
+    * ``certificate_path``/``private_key_path`` are validated for shape and
+      hashed, never copied anywhere (``onboarding.validate_local_credential_files``);
+    * ``phrase`` is checked for presence only and then discarded —
+      ``run_onboarding`` passes it to ``validate_phrase_was_entered`` and never
+      stores it, so unlike ``POST /api/setup`` this endpoint answers
+      ``phrase_stored: false``.
+
+    ``phrase`` gets the identical handling either way: body-only, never echoed,
+    and already covered by ``security.REDACTED_FIELD_NAMES``.
+
+    Value rules for ``download_mode``/``periodicity``/``interval_minutes``/
+    ``max_concurrency`` are deliberately *not* restated here.  They belong to
+    ``onboarding.parse_*`` and ``config.validate_config``, which own them and
+    report them as ``onboard-*`` reason codes; duplicating them in the model
+    would answer the same bad input with a different status and vocabulary.
+    """
+
+    rfc: str
+    storage_root: str
+    start_date: str
+    certificate_path: str
+    private_key_path: str
+    phrase: str
+    profile_id: str = "default"
+    config_path: str = "cfdi-vault.local.json"
+    download_mode: str = "both"
+    end_date: str | None = None
+    periodicity: str = "disabled"
+    interval_minutes: int | None = None
+    daily_at: str | None = None
+    max_concurrency: int = 2
+    timezone: str = "America/Mexico_City"
+    credential_ref_prefix: str | None = None
+    replace_existing: bool = False
 
 
 class SecretRegisterRequest(BaseModel):
@@ -377,6 +466,63 @@ def create_app(settings: WebApiSettings | None = None) -> FastAPI:
             "credential_mode": result.profile.credential_mode.value,
             "credentials_imported": True,
             "phrase_stored": True,
+        }
+
+    @app.post("/api/onboard")
+    def onboard_endpoint(body: OnboardRequest) -> dict[str, object]:
+        """Write the first safe local profile config without storing credentials.
+
+        The phrase is read once out of the request body, handed straight to
+        ``run_onboarding`` (which only proves it is non-empty), and never
+        referenced again.  Every failure answers with a bounded slug from
+        ``_onboard_failure_reason``; no branch interpolates ``body.phrase``,
+        ``str(exc)``, or ``exc.errors`` into a response.
+
+        The response deliberately carries no filesystem path.  ``config_path``
+        and ``storage_root`` came from the caller, so echoing them back adds
+        nothing, and ``OnboardingResult.storage_root`` is the *expanded* root,
+        which would disclose the panel host's home directory for a ``~`` input.
+        """
+
+        try:
+            request = OnboardingRequest(
+                profile_id=body.profile_id,
+                rfc=body.rfc,
+                storage_root=Path(body.storage_root),
+                download_mode=parse_download_mode(body.download_mode),
+                start_date=parse_iso_date(body.start_date, "start date"),
+                end_date=parse_iso_date(body.end_date, "end date") if body.end_date else None,
+                schedule_mode=parse_schedule_mode(body.periodicity),
+                interval_minutes=body.interval_minutes,
+                daily_at=body.daily_at,
+                max_concurrency=body.max_concurrency,
+                certificate_path=Path(body.certificate_path),
+                private_key_path=Path(body.private_key_path),
+                output_config=Path(body.config_path),
+                timezone=body.timezone,
+                credential_ref_prefix=body.credential_ref_prefix,
+                replace_existing=body.replace_existing,
+            )
+            result = run_onboarding(request, body.phrase)
+        except (OnboardingError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail={"reason": _onboard_failure_reason(exc)}) from None
+        except Exception:
+            # An OSError from the storage-layout creation or the config write
+            # carries a raw path that may not be echoed, and must not surface
+            # as an unhandled 500.
+            raise HTTPException(status_code=400, detail={"reason": "onboard-failed"}) from None
+        return {
+            "profile_id": result.profile_id,
+            "rfc": redact_rfc(result.rfc),
+            "certificate_fingerprint": result.certificate_fingerprint,
+            # Non-secret reference URIs, derived from the profile id alone, and
+            # written to the config file in plain text by design — the operator
+            # needs them to register the matching credentials afterwards.
+            "credential_refs": dict(result.credential_refs),
+            "config_written": True,
+            "storage_ready": True,
+            "credentials_copied": False,
+            "phrase_stored": False,
         }
 
     @app.post("/api/secret/register")
@@ -776,6 +922,27 @@ def _setup_failure_reason(exc: Exception) -> str:
     if errors:
         return "setup-input-invalid"
     return "setup-local-configuration-invalid"
+
+
+def _onboard_failure_reason(exc: Exception) -> str:
+    """Map an onboarding failure to a bounded slug without echoing its message.
+
+    ``OnboardingError.errors`` is a tuple of operator-facing strings that can
+    embed a filesystem path, and can also carry re-raised
+    ``ConfigValidationError`` schema text; the raw text therefore never leaves
+    this process.  A plain ``ValueError`` (no ``errors`` attribute) falls
+    through to the generic slug rather than exposing ``str(exc)``.
+    """
+
+    errors = exc.errors if isinstance(exc, OnboardingError) else ()
+    for error in errors:
+        lowered = error.lower()
+        for marker, reason in _ONBOARD_FAILURE_REASONS:
+            if marker in lowered:
+                return reason
+    if errors:
+        return "onboard-config-invalid"
+    return "onboard-input-invalid"
 
 
 def _secret_reference_and_provider(reference_uri: str, kind: str) -> tuple[CredentialReference, object]:

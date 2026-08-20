@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import cfdi_vault.adapters.cli.sat_campaign_runtime as subject
+import cfdi_vault.sat_campaign_runtime as subject
 from cfdi_vault.sat_campaign_preflight import (
     CampaignPreflightCheck as Check,
 )

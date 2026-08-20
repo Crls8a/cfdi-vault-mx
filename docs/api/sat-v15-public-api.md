@@ -144,6 +144,7 @@ supported LIB-005B and LIB-005C rows are public library API.
 | `cfdi_vault.sat_campaign_recovery_projection` | Internal reference-system reconciliation | Projects persisted recovery outcomes into campaign transitions; no stable consumer surface. |
 | `cfdi_vault.sat_campaign_run` | Internal reference-system application service | One-shot preflight, reservation, and bounded Metadata submission with ref-free aggregates; not a supported import. |
 | `cfdi_vault.sat_campaign_runner` | Internal reference-system orchestration | One-shot campaign reservation, recovery binding, and claim planning; no stable consumer surface. |
+| `cfdi_vault.sat_campaign_runtime` | Internal reference-system composition | Fail-closed native provider and preflight-check factories for the campaign service; no SAT contact and no credential value ever read. Formerly `cfdi_vault.adapters.cli.sat_campaign_runtime`; it never depended on Typer and moved here when the CLI package was deleted. |
 | `cfdi_vault.sat_db_campaign_runner` | Internal reference-system orchestration | PostgreSQL due VERIFY claims and sanitized result categorization; no live side effects by import. |
 | `cfdi_vault.sat_campaign_repository` | Internal reference-system persistence | Short SQLAlchemy transactions for claims, submissions, attempts, packages, and status. |
 | `cfdi_vault.sat_campaign_repository_campaign` | Internal reference-system persistence | Campaign, window, and grant repository mixin; not a supported import. |

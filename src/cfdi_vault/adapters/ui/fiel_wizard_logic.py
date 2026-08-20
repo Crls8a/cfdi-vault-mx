@@ -10,6 +10,7 @@ for the binding security contract this module must uphold.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -261,35 +262,131 @@ def run_diagnostic_command(
     commit_ref: str | None = None,
     env: Mapping[str, str] | None = None,
 ) -> str:
-    """Invoke one already-redacted, read-only CLI diagnostic in-process.
+    """Run one already-redacted, read-only diagnostic in-process.
 
-    Reuses the exact ``cfdi-vault status|doctor|preflight`` commands so the
-    wizard never re-implements DB/queue/cache/storage/preflight wiring. Only
-    read-only, non-SAT diagnostics are reachable here; ``sat campaign *`` is
+    This used to drive the ``cfdi-vault status|doctor|preflight`` Typer
+    commands through ``CliRunner``.  That CLI has been retired, so the three
+    diagnostics now call the same underlying functions those commands called
+    (``inspect_profile``/``format_profile_status``, ``RecoveryService.doctor``,
+    ``run_local_preflight``) and reproduce their exact output shape, so the
+    wizard's display is unchanged.  No DB/queue/cache/storage/preflight wiring
+    is re-implemented here.
+
+    Only read-only, non-SAT diagnostics are reachable; ``sat campaign *`` is
     intentionally not exposed through this function.
     """
 
     if command not in _ALLOWED_DIAGNOSTIC_COMMANDS:
         raise ValueError(f"unsupported diagnostic command: {command}")
 
-    from typer.testing import CliRunner
-
-    from cfdi_vault.cli import app
-
-    args = [command, "--profile-id", profile_id]
-    if command in {"doctor", "preflight"}:
-        args.extend(["--database-url", database_url or DEFAULT_LOCAL_DATABASE_URL])
-    if command == "preflight":
-        args.extend(["--storage", storage_root or default_local_storage_root(profile_id, env=env)])
-        args.extend(["--rabbitmq-url", rabbitmq_url or DEFAULT_LOCAL_RABBITMQ_URL])
-        args.extend(["--redis-url", redis_url or DEFAULT_LOCAL_REDIS_URL])
-        resolved_commit_ref = commit_ref or default_local_commit_ref()
-        if resolved_commit_ref:
-            args.extend(["--commit-ref", resolved_commit_ref])
-
-    runner = CliRunner()
-    result = runner.invoke(app, args, env=dict(env) if env is not None else None, catch_exceptions=True)
-    output = result.output.strip()
-    if result.exception is not None and not output:
+    try:
+        provider = _diagnostic_provider(profile_id, env=env)
+        if command == "status":
+            return _diagnostic_profile_status(profile_id, provider, env)
+        if command == "doctor":
+            return _run_doctor_diagnostic(profile_id, provider, database_url, env)
+        return _run_preflight_diagnostic(
+            profile_id, provider, database_url, storage_root, rabbitmq_url, redis_url, commit_ref, env,
+        )
+    except Exception:
+        # Same contract as before: a diagnostic that cannot run reports that it
+        # could not run, never the raw exception, which may carry a local path
+        # or a connection URL with embedded credentials.
         return f"diagnostic '{command}' failed to run (see local logs for detail)"
-    return output
+
+
+def _diagnostic_provider(profile_id: str, *, env: Mapping[str, str] | None = None) -> object:
+    """Select the phrase provider the retired CLI's ``_setup_provider`` selected.
+
+    ``allow_synthetic=True`` matches the retired CLI exactly: these are
+    read-only diagnostics, so a host with no native credential backend should
+    still be able to render a status report rather than fail outright.  The
+    production onboarding path keeps using ``default_provider_for_profile``,
+    which fails closed.
+    """
+
+    values = env if env is not None else os.environ
+    platform = "win32" if values.get("LOCALAPPDATA") else None
+    try:
+        phrase_ref = setup_flow.load_profile(profile_id, env=env).phrase_ref
+    except setup_flow.SetupError:
+        phrase_ref = setup_flow.default_phrase_reference(profile_id, platform=platform)
+    reference = CredentialReference(uri=phrase_ref, kind=CredentialKind.PHRASE)
+    return native_provider_for_reference(reference, platform=platform, allow_synthetic=True)
+
+
+def _diagnostic_profile_status(
+    profile_id: str, provider: object, env: Mapping[str, str] | None,
+) -> str:
+    inspection = setup_flow.inspect_profile(profile_id, provider=provider, env=env)
+    return setup_flow.format_profile_status(inspection)
+
+
+def _run_doctor_diagnostic(
+    profile_id: str, provider: object, database_url: str | None, env: Mapping[str, str] | None,
+) -> str:
+    """Reproduce ``cfdi-vault doctor``'s output: one line per check, then profile status."""
+
+    from cfdi_vault.panel_services import recovery_service
+
+    service = recovery_service(database_url or DEFAULT_LOCAL_DATABASE_URL, None)
+    try:
+        checks = service.doctor()
+    finally:
+        service.close()
+    lines = [f"{'OK' if check.ok else 'FAIL'} {check.name}: {check.detail}" for check in checks]
+    lines.append("")
+    lines.append(_diagnostic_profile_status(profile_id, provider, env))
+    return "\n".join(lines).strip()
+
+
+def _run_preflight_diagnostic(
+    profile_id: str,
+    provider: object,
+    database_url: str | None,
+    storage_root: str | None,
+    rabbitmq_url: str | None,
+    redis_url: str | None,
+    commit_ref: str | None,
+    env: Mapping[str, str] | None,
+) -> str:
+    """Reproduce ``cfdi-vault preflight``'s output: a ready flag and one line per check."""
+
+    from cfdi_vault.local_preflight import default_local_probes, run_local_preflight
+    from cfdi_vault.runtime_settings import RuntimeSettings, RuntimeSettingsError
+    from cfdi_vault.setup_core import find_repo_root
+
+    cli_values = {
+        "DATABASE_URL": database_url or DEFAULT_LOCAL_DATABASE_URL,
+        "CFDI_STORAGE_ROOT": storage_root or default_local_storage_root(profile_id, env=env),
+        "RABBITMQ_URL": rabbitmq_url or DEFAULT_LOCAL_RABBITMQ_URL,
+        "REDIS_URL": redis_url or DEFAULT_LOCAL_REDIS_URL,
+    }
+    resolved_commit_ref = commit_ref or default_local_commit_ref()
+    if resolved_commit_ref:
+        cli_values["CFDI_VAULT_COMMIT_REF"] = resolved_commit_ref
+
+    repository_root = find_repo_root(Path.cwd()) or Path.cwd()
+    try:
+        settings = RuntimeSettings.resolve(
+            cli=cli_values,
+            dotenv_path=repository_root / ".env",
+            repository_root=repository_root,
+        )
+        profile = setup_flow.load_profile(profile_id, env=env)
+        report = run_local_preflight(
+            settings,
+            profile,
+            provider,
+            probes=default_local_probes(settings),
+            repository_root=repository_root,
+        )
+    except (RuntimeSettingsError, setup_flow.SetupError, CredentialProviderError):
+        return "ready=false\npreflight=failed reason=local-configuration-invalid"
+
+    lines = [f"ready={str(report.ready).lower()}"]
+    lines.extend(
+        f"check={check['name']} status={check['status']} reason={check['reason']}"
+        for check in report.sanitized()["checks"]
+    )
+    return "\n".join(lines)

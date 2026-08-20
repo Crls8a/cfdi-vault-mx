@@ -1,3 +1,12 @@
+"""Safe first-run onboarding through the control panel.
+
+``cfdi-vault onboard`` is retired; ``POST /api/onboard`` is its equivalent.
+Each test below asserts the same thing its ``CliRunner`` predecessor asserted —
+the config file is written with the expected safe document, the phrase never
+reaches it, a duplicate profile is refused, and a credential-shaped ref prefix
+is rejected — driven through the endpoint instead of the command.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -5,64 +14,82 @@ import json
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
+from fastapi.testclient import TestClient
 
-from cfdi_vault.cli import app
+from cfdi_vault.adapters.webapi import app as webapi
+from cfdi_vault.adapters.webapi.config import WebApiSettings
 from cfdi_vault.onboarding import OnboardingError, validate_local_credential_files
 
+ALLOWED_ORIGIN = "http://127.0.0.1:3000"
+PHRASE = "DUMMY-LOCAL-PHRASE"
 
-def test_onboard_writes_safe_profile_config_and_storage_layout(tmp_path: Path) -> None:
+
+def _client(tmp_path: Path) -> TestClient:
+    settings = WebApiSettings.resolve(
+        environment={
+            "DATABASE_URL": "postgresql://synthetic:synthetic@localhost/synthetic",
+            "CFDI_STORAGE_ROOT": str(tmp_path / "panel-storage"),
+        },
+        repository_root=tmp_path / "repo",
+    )
+    return TestClient(webapi.create_app(settings))
+
+
+def _credentials(tmp_path: Path) -> tuple[Path, Path, bytes]:
     certificate_bytes = b"\x30\x82\x00\x06DUMMY-CERTIFICATE"
     key_bytes = b"\x30\x82\x00\x03DUMMY-KEY"
     certificate_path = tmp_path / "dummy.cer"
     key_path = tmp_path / "dummy.key"
     certificate_path.write_bytes(certificate_bytes)
     key_path.write_bytes(key_bytes)
+    return certificate_path, key_path, certificate_bytes
 
+
+def _post(client: TestClient, body: dict[str, object]):
+    return client.post("/api/onboard", json=body, headers={"origin": ALLOWED_ORIGIN})
+
+
+def test_onboard_writes_safe_profile_config_and_storage_layout(tmp_path: Path) -> None:
+    certificate_path, key_path, certificate_bytes = _credentials(tmp_path)
     config_path = tmp_path / "local.config.json"
     storage_root = tmp_path / "vault-storage"
-    cli_input = "DUMMY-LOCAL-PHRASE\nDUMMY-LOCAL-PHRASE\n"
 
-    result = CliRunner().invoke(
-        app,
-        [
-            "onboard",
-            "--config",
-            str(config_path),
-            "--profile-id",
-            "dummy-profile",
-            "--rfc",
-            "XAXX010101000",
-            "--storage-root",
-            str(storage_root),
-            "--download-mode",
-            "both",
-            "--start-date",
-            "2024-01-01",
-            "--end-date",
-            "2024-01-31",
-            "--periodicity",
-            "interval",
-            "--interval-minutes",
-            "360",
-            "--max-concurrency",
-            "2",
-            "--cer",
-            str(certificate_path),
-            "--key",
-            str(key_path),
-        ],
-        input=cli_input,
+    response = _post(
+        _client(tmp_path),
+        {
+            "config_path": str(config_path),
+            "profile_id": "dummy-profile",
+            "rfc": "XAXX010101000",
+            "storage_root": str(storage_root),
+            "download_mode": "both",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+            "periodicity": "interval",
+            "interval_minutes": 360,
+            "max_concurrency": 2,
+            "certificate_path": str(certificate_path),
+            "private_key_path": str(key_path),
+            "phrase": PHRASE,
+        },
     )
 
-    assert result.exit_code == 0, result.output
-    assert "Onboarding complete" in result.output
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["profile_id"] == "dummy-profile"
+    assert payload["credentials_copied"] is False
+    assert payload["phrase_stored"] is False
+    # The response redacts the RFC and echoes neither the phrase nor a path.
+    assert "XAXX010101000" not in response.text
+    assert PHRASE not in response.text
+    assert str(config_path) not in response.text
+    assert str(storage_root) not in response.text
+
     assert storage_root.joinpath("XAXX010101000", "metadata", "2024", "01").is_dir()
     assert storage_root.joinpath("XAXX010101000", "packages", "2024", "01").is_dir()
     assert storage_root.joinpath("XAXX010101000", "xml", "2024", "01").is_dir()
 
     raw_config = config_path.read_text(encoding="utf-8")
-    assert "DUMMY-LOCAL-PHRASE" not in raw_config
+    assert PHRASE not in raw_config
     assert str(certificate_path) not in raw_config
     assert str(key_path) not in raw_config
 
@@ -81,10 +108,7 @@ def test_onboard_writes_safe_profile_config_and_storage_layout(tmp_path: Path) -
 
 
 def test_onboard_rejects_duplicate_profile_without_replace(tmp_path: Path) -> None:
-    certificate_path = tmp_path / "dummy.cer"
-    key_path = tmp_path / "dummy.key"
-    certificate_path.write_bytes(b"\x30\x82\x00\x06DUMMY-CERTIFICATE")
-    key_path.write_bytes(b"\x30\x82\x00\x03DUMMY-KEY")
+    certificate_path, key_path, _ = _credentials(tmp_path)
     config_path = tmp_path / "local.config.json"
     config_path.write_text(
         json.dumps(
@@ -112,80 +136,85 @@ def test_onboard_rejects_duplicate_profile_without_replace(tmp_path: Path) -> No
         encoding="utf-8",
     )
 
-    result = CliRunner().invoke(
-        app,
-        [
-            "onboard",
-            "--config",
-            str(config_path),
-            "--profile-id",
-            "dummy-profile",
-            "--rfc",
-            "XAXX010101000",
-            "--storage-root",
-            str(tmp_path / "vault-storage"),
-            "--download-mode",
-            "received",
-            "--start-date",
-            "2024-01-01",
-            "--end-date",
-            "2024-01-01",
-            "--periodicity",
-            "disabled",
-            "--max-concurrency",
-            "1",
-            "--cer",
-            str(certificate_path),
-            "--key",
-            str(key_path),
-        ],
-        input="DUMMY-LOCAL-PHRASE\nDUMMY-LOCAL-PHRASE\n",
+    response = _post(
+        _client(tmp_path),
+        {
+            "config_path": str(config_path),
+            "profile_id": "dummy-profile",
+            "rfc": "XAXX010101000",
+            "storage_root": str(tmp_path / "vault-storage"),
+            "download_mode": "received",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-01",
+            "periodicity": "disabled",
+            "max_concurrency": 1,
+            "certificate_path": str(certificate_path),
+            "private_key_path": str(key_path),
+            "phrase": PHRASE,
+        },
     )
 
-    assert result.exit_code == 1
-    assert "already exists" in result.output
+    assert response.status_code == 400
+    assert response.json() == {"detail": {"reason": "onboard-profile-exists"}}
+    assert PHRASE not in response.text
 
 
-def test_onboard_rejects_credential_ref_prefix_that_looks_like_credential_path(tmp_path: Path) -> None:
-    certificate_path = tmp_path / "dummy.cer"
-    key_path = tmp_path / "dummy.key"
-    certificate_path.write_bytes(b"\x30\x82\x00\x06DUMMY-CERTIFICATE")
-    key_path.write_bytes(b"\x30\x82\x00\x03DUMMY-KEY")
+def test_onboard_replace_existing_updates_the_profile_in_place(tmp_path: Path) -> None:
+    certificate_path, key_path, _ = _credentials(tmp_path)
+    config_path = tmp_path / "local.config.json"
+    client = _client(tmp_path)
+    body: dict[str, object] = {
+        "config_path": str(config_path),
+        "profile_id": "dummy-profile",
+        "rfc": "XAXX010101000",
+        "storage_root": str(tmp_path / "vault-storage"),
+        "download_mode": "received",
+        "start_date": "2024-01-01",
+        "periodicity": "disabled",
+        "max_concurrency": 1,
+        "certificate_path": str(certificate_path),
+        "private_key_path": str(key_path),
+        "phrase": PHRASE,
+    }
 
-    result = CliRunner().invoke(
-        app,
-        [
-            "onboard",
-            "--config",
-            str(tmp_path / "local.config.json"),
-            "--profile-id",
-            "dummy-profile",
-            "--rfc",
-            "XAXX010101000",
-            "--storage-root",
-            str(tmp_path / "vault-storage"),
-            "--download-mode",
-            "received",
-            "--start-date",
-            "2024-01-01",
-            "--end-date",
-            "2024-01-01",
-            "--periodicity",
-            "disabled",
-            "--max-concurrency",
-            "1",
-            "--cer",
-            str(certificate_path),
-            "--key",
-            str(key_path),
-            "--credential-ref-prefix",
-            "windows-credential-manager://cfdi-vault/example.cer",
-        ],
-        input="DUMMY-LOCAL-PHRASE\nDUMMY-LOCAL-PHRASE\n",
+    assert _post(client, body).status_code == 200
+    replaced = _post(client, {**body, "download_mode": "both", "replace_existing": True})
+
+    assert replaced.status_code == 200
+    profiles = json.loads(config_path.read_text(encoding="utf-8"))["profiles"]
+    assert len(profiles) == 1
+    assert profiles[0]["download"]["issued"] is True
+
+
+def test_onboard_rejects_credential_ref_prefix_that_looks_like_credential_path(
+    tmp_path: Path,
+) -> None:
+    certificate_path, key_path, _ = _credentials(tmp_path)
+
+    response = _post(
+        _client(tmp_path),
+        {
+            "config_path": str(tmp_path / "local.config.json"),
+            "profile_id": "dummy-profile",
+            "rfc": "XAXX010101000",
+            "storage_root": str(tmp_path / "vault-storage"),
+            "download_mode": "received",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-01",
+            "periodicity": "disabled",
+            "max_concurrency": 1,
+            "certificate_path": str(certificate_path),
+            "private_key_path": str(key_path),
+            "credential_ref_prefix": "windows-credential-manager://cfdi-vault/example.cer",
+            "phrase": PHRASE,
+        },
     )
 
-    assert result.exit_code == 1
-    assert "not a credential file path" in result.output
+    # The rule lives in ``config.validate_config`` and reaches the panel as a
+    # re-raised ``ConfigValidationError``, which maps to the generic slug.
+    assert response.status_code == 400
+    assert response.json() == {"detail": {"reason": "onboard-config-invalid"}}
+    assert not (tmp_path / "local.config.json").exists()
 
 
 def test_validate_local_credential_files_rejects_unexpected_extension(tmp_path: Path) -> None:

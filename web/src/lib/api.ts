@@ -186,6 +186,58 @@ export function runSetup(body: SetupRequest): Promise<SetupResponse> {
   });
 }
 
+// Onboarding is not setup. It writes a local JSON config file (the same file
+// `POST /api/config/validate` reads) and validates the certificate/key without
+// copying them anywhere. `phrase` is checked for presence and discarded, which
+// is why the response reports `phrase_stored: false`.
+//
+// `config_path`, `storage_root`, `certificate_path` and `private_key_path` are
+// filesystem paths on the machine running the panel API, typed by the operator
+// — never browser uploads (ADR 0004).
+//
+// `phrase` travels in the request body only. It must never be placed in a URL,
+// query string, log line, or any browser storage.
+export interface OnboardRequest {
+  rfc: string;
+  storage_root: string;
+  start_date: string;
+  certificate_path: string;
+  private_key_path: string;
+  phrase: string;
+  profile_id?: string;
+  config_path?: string;
+  download_mode?: string;
+  end_date?: string;
+  periodicity?: string;
+  interval_minutes?: number;
+  daily_at?: string;
+  max_concurrency?: number;
+  timezone?: string;
+  credential_ref_prefix?: string;
+  replace_existing?: boolean;
+}
+
+// Carries no filesystem path back: the caller supplied every path it sent, and
+// the backend refuses to echo its own expanded storage root. `rfc` arrives
+// already redacted; `credential_refs` are non-secret reference URIs.
+export interface OnboardResponse {
+  profile_id: string;
+  rfc: string;
+  certificate_fingerprint: string;
+  credential_refs: Record<string, string>;
+  config_written: boolean;
+  storage_ready: boolean;
+  credentials_copied: boolean;
+  phrase_stored: boolean;
+}
+
+export function runOnboard(body: OnboardRequest): Promise<OnboardResponse> {
+  return request<OnboardResponse>("/api/onboard", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 // `value` carries raw credential material and is handled exactly like the FIEL
 // phrase: body-only, never logged, never persisted client-side.
 export interface SecretRegisterRequest {

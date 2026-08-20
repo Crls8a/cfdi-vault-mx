@@ -16,6 +16,7 @@ import {
 } from "@/lib/api";
 import { CampaignAuthorizeCard } from "./_components/CampaignAuthorizeCard";
 import { CampaignCreateCard } from "./_components/CampaignCreateCard";
+import { OnboardCard } from "./_components/OnboardCard";
 import { Section } from "./_components/Section";
 import { SecretCard } from "./_components/SecretCard";
 import { SetupCard } from "./_components/SetupCard";
@@ -32,6 +33,7 @@ export default function Dashboard() {
         </header>
 
         <ProfileStatusCard />
+        <OnboardCard />
         <SetupCard />
         <CampaignCreateCard />
         <CampaignAuthorizeCard />

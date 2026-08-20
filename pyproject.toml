@@ -58,10 +58,10 @@ Issues = "https://github.com/Crls8a/cfdi-vault-mx/issues"
 Documentation = "https://github.com/Crls8a/cfdi-vault-mx/tree/main/docs"
 
 [project.scripts]
-cfdi-vault = "cfdi_vault.cli:app"
 cfdi-vault-fiel-wizard = "cfdi_vault.adapters.ui.fiel_wizard:main"
 cfdi-vault-webapi = "cfdi_vault.adapters.webapi.app:run"
 cfdi-vault-campaign-run-worker = "cfdi_vault.sat_campaign_run_service:main"
+cfdi-vault-doctor = "cfdi_vault.doctor_runner:main"
 cfdi-vault-worker = "cfdi_vault.worker_runner:main"
 
 [tool.pytest.ini_options]
@@ -82,14 +82,6 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
-
-# These CLI family shims intentionally re-export the shared command surface
-# from ``common.py``.  Keep the compatibility boundary explicit while the
-# legacy shims are migrated to typed, module-local imports.
-[tool.ruff.lint.per-file-ignores]
-"src/cfdi_vault/adapters/cli/download.py" = ["F403", "F405"]
-"src/cfdi_vault/adapters/cli/operations.py" = ["F403", "F405"]
-"src/cfdi_vault/adapters/cli/secrets.py" = ["F403", "F405"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cfdi_vault"]

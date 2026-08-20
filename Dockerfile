@@ -14,5 +14,10 @@ RUN pip install --upgrade pip \
 
 VOLUME ["/app/storage", "/app/logs"]
 
-ENTRYPOINT ["cfdi-vault"]
-CMD ["doctor"]
+# The Typer console script is gone. Every Compose service sets its own
+# entrypoint/command explicitly (`worker`, `ledger-publisher`, `sat-monitor`,
+# `app`), so this pair only serves a bare `docker run` with no command. It
+# defaults to the same one-shot dependency check the `app` service runs, which
+# keeps `docker run <image>` a useful smoke test instead of an error.
+ENTRYPOINT ["python"]
+CMD ["-m", "cfdi_vault.doctor_runner"]

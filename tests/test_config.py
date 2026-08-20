@@ -5,10 +5,36 @@ import json
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
+from fastapi.testclient import TestClient
 
-from cfdi_vault.cli import app
+from cfdi_vault.adapters.webapi import app as webapi
+from cfdi_vault.adapters.webapi.config import WebApiSettings
 from cfdi_vault.config import ConfigValidationError, validate_config
+
+ALLOWED_ORIGIN = "http://127.0.0.1:3000"
+
+
+def _validate_config_file(tmp_path: Path, config_path: Path):
+    """Validate one config file through ``POST /api/config/validate``.
+
+    The retired ``cfdi-vault config validate`` command is gone; the panel
+    endpoint calls the same ``load_config``, so these tests assert the same
+    schema rules through the surface that still exists.
+    """
+
+    settings = WebApiSettings.resolve(
+        environment={
+            "DATABASE_URL": "postgresql://synthetic:synthetic@localhost/synthetic",
+            "CFDI_STORAGE_ROOT": str(tmp_path / "panel-storage"),
+        },
+        repository_root=tmp_path / "repo",
+    )
+    client = TestClient(webapi.create_app(settings))
+    return client.post(
+        "/api/config/validate",
+        json={"config_path": str(config_path)},
+        headers={"origin": ALLOWED_ORIGIN},
+    )
 
 EXAMPLE_CONFIG = {
     "schemaVersion": 1,
@@ -147,36 +173,41 @@ def test_config_requires_range_or_lookback_but_not_both() -> None:
     assert "must not define both initialRange and lookbackDays" in str(exc_info.value)
 
 
-def test_cli_config_validate_accepts_dummy_example(tmp_path: Path) -> None:
+def test_config_validate_endpoint_accepts_dummy_example(tmp_path: Path) -> None:
     config_path = tmp_path / "dummy-config.json"
     config_path.write_text(json.dumps(EXAMPLE_CONFIG), encoding="utf-8")
 
-    result = CliRunner().invoke(app, ["config", "validate", str(config_path)])
+    response = _validate_config_file(tmp_path, config_path)
 
-    assert result.exit_code == 0
-    assert "Config OK" in result.output
-    assert "profiles=2" in result.output
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["schema_version"] == 1
+    assert len(payload["profiles"]) == 2
 
 
-def test_cli_config_validate_rejects_private_key_material(tmp_path: Path) -> None:
+def test_config_validate_endpoint_rejects_private_key_material(tmp_path: Path) -> None:
     config_data = copy.deepcopy(EXAMPLE_CONFIG)
     config_data["profiles"][0]["notes"] = "-----BEGIN " + "OPENSSH PRIVATE KEY-----"
     config_path = tmp_path / "bad-config.json"
     config_path.write_text(json.dumps(config_data), encoding="utf-8")
 
-    result = CliRunner().invoke(app, ["config", "validate", str(config_path)])
+    response = _validate_config_file(tmp_path, config_path)
 
-    assert result.exit_code != 0
-    assert "private key or certificate-like material" in result.output
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["reason"] == "config-invalid"
+    assert any("private key or certificate-like material" in error for error in detail["errors"])
 
 
-def test_cli_config_validate_rejects_unknown_key_file_field(tmp_path: Path) -> None:
+def test_config_validate_endpoint_rejects_unknown_key_file_field(tmp_path: Path) -> None:
     config_data = copy.deepcopy(EXAMPLE_CONFIG)
     config_data["profiles"][0]["keyFile"] = "C:/dummy/sat/example.key"
     config_path = tmp_path / "bad-config.json"
     config_path.write_text(json.dumps(config_data), encoding="utf-8")
 
-    result = CliRunner().invoke(app, ["config", "validate", str(config_path)])
+    response = _validate_config_file(tmp_path, config_path)
 
-    assert result.exit_code != 0
-    assert "is not allowed by the safe config schema" in result.output
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["reason"] == "config-invalid"
+    assert any("is not allowed by the safe config schema" in error for error in detail["errors"])

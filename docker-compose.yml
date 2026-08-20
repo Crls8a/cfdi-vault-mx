@@ -1,6 +1,7 @@
 services:
   app:
     build: .
+    entrypoint: ["python"]
     env_file:
       - path: .env
         required: false
@@ -21,7 +22,7 @@ services:
     volumes:
       - ${CFDI_STORAGE_MOUNT:-sat_artifacts_data}:/var/lib/cfdi-vault/storage
       - ./logs:/app/logs
-    command: ["doctor"]
+    command: ["-m", "cfdi_vault.doctor_runner"]
 
   worker:
     build: .
