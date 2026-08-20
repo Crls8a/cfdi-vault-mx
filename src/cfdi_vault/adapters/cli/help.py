@@ -90,54 +90,6 @@ COMMAND_HELP: tuple[dict[str, str], ...] = (
         "example": "cfdi-vault init --tenant-id acme --rfc AAA010101AAA",
     },
     {
-        "command": "sync metadata",
-        "purpose": "Run a fake/offline metadata recovery for a tenant/RFC/date range and load the metadata ledger.",
-        "when": "Use for offline pipeline checks; live SAT recovery belongs to sat campaign.",
-        "example": "cfdi-vault sync metadata --tenant-id acme --rfc AAA010101AAA --start 2024-01-01 --end 2024-01-31",
-    },
-    {
-        "command": "sync xml",
-        "purpose": "Run a fake/offline package/XML recovery, register local file paths, parse known fields, and load data.",
-        "when": "Use for offline pipeline checks; live SAT recovery belongs to sat campaign.",
-        "example": "cfdi-vault sync xml --tenant-id acme --rfc AAA010101AAA --start 2024-01-01 --end 2024-01-31",
-    },
-    {
-        "command": "download plan",
-        "purpose": "Validate a safe fake/offline SAT download query from a setup profile.",
-        "when": "Run before submitting a fake SAT request to confirm criteria without printing RFCs or paths.",
-        "example": "cfdi-vault download plan --profile default --from 2024-01-01 --to 2024-01-31 --kind metadata --direction received",
-    },
-    {
-        "command": "download request",
-        "purpose": "Submit a fake/offline SAT download request and print the synthetic accepted result.",
-        "when": "Run after planning when you need a synthetic request id for offline workflow tests.",
-        "example": "cfdi-vault download request --profile default --from 2024-01-01 --to 2024-01-31 --kind cfdi --direction issued",
-    },
-    {
-        "command": "download sync",
-        "purpose": "Run a fake/offline SAT download sync from a setup profile and persist local recovery evidence.",
-        "when": "Run when you need the offline request, verification, package, metadata, and XML pipeline to finish locally.",
-        "example": "cfdi-vault download sync --profile default --from 2024-01-01 --to 2024-01-31 --kind cfdi --direction received",
-    },
-    {
-        "command": "download status",
-        "purpose": "Read safe fake/offline download status by job id or durable pending-work aggregates.",
-        "when": "Run after download sync with --job-id, or without --job-id to inspect pending verify work.",
-        "example": "cfdi-vault download status --profile default",
-    },
-    {
-        "command": "queue status",
-        "purpose": "Show queue/job event counts from the durable event log.",
-        "when": "Use when a job is pending, failed, or needs operational inspection.",
-        "example": "cfdi-vault queue status",
-    },
-    {
-        "command": "worker run",
-        "purpose": "Process queued recovery work from RabbitMQ.",
-        "when": "Use with --enqueue workflows or in the Docker Compose worker service.",
-        "example": "cfdi-vault worker run --loop",
-    },
-    {
         "command": "reconcile",
         "purpose": "Recompute metadata/XML reconciliation state.",
         "when": "Run after evidence changes or when pending/downloaded status looks stale.",
@@ -214,17 +166,18 @@ def help_command(
     typer.echo("  2. cfdi-vault setup --source-folder <external-folder>")
     typer.echo("  3. cfdi-vault status")
     typer.echo("  4. cfdi-vault init --tenant-id <tenant> --rfc <RFC>")
-    typer.echo("  5. cfdi-vault sync metadata --tenant-id <tenant> --rfc <RFC> --start YYYY-MM-DD --end YYYY-MM-DD")
-    typer.echo("  6. cfdi-vault sync xml --tenant-id <tenant> --rfc <RFC> --start YYYY-MM-DD --end YYYY-MM-DD")
-    typer.echo("  7. cfdi-vault search <text-or-rfc>")
-    typer.echo("  8. cfdi-vault show <UUID>")
-    typer.echo("  9. cfdi-vault print <UUID> --format pdf")
+    typer.echo("  5. cfdi-vault sat campaign create --profile <profile>")
+    typer.echo("  6. cfdi-vault sat campaign authorize --profile <profile> --campaign-ref <campaign-ref> ...")
+    typer.echo("  7. cfdi-vault sat campaign run --profile <profile> --campaign-ref <campaign-ref> --grant <grant-ref>")
+    typer.echo("  8. cfdi-vault search <text-or-rfc>")
+    typer.echo("  9. cfdi-vault show <UUID>")
+    typer.echo(" 10. cfdi-vault print <UUID> --format pdf")
     typer.echo("")
     typer.echo("Command catalog:")
     for command in COMMAND_HELP:
         typer.echo(f"  {command['command']:<14} {command['purpose']}")
     typer.echo("")
-    typer.echo('For details: cfdi-vault help "sync metadata"')
+    typer.echo('For details: cfdi-vault help "sat campaign run"')
     typer.echo("For Typer options: cfdi-vault <command> --help")
 
 def _find_command_help(topic: str) -> dict[str, str] | None:

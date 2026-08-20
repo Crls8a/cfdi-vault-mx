@@ -14,7 +14,12 @@ def test_compose_worker_consumes_all_recovery_queues() -> None:
     )
 
     assert worker_match is not None
-    assert 'command: ["worker", "run", "--loop", "--queue", "all"]' in worker_match.group("body")
+    body = worker_match.group("body")
+    # The worker is invoked as a plain module, not through the Typer console
+    # script, so the CLI surface can shrink without changing the deployment.
+    assert 'entrypoint: ["python"]' in body
+    assert 'command: ["-m", "cfdi_vault.worker_runner", "--loop", "--queue", "all"]' in body
+    assert '"worker", "run"' not in body
 
 
 def test_compose_monitor_uses_external_artifact_volume_and_flyway_gate() -> None:
@@ -67,7 +72,7 @@ def test_compose_ledger_publisher_is_separate_and_disabled_by_default() -> None:
     assert "condition: service_completed_successfully" in body
     assert "./storage:/var/lib/cfdi-vault/storage" not in body
     assert "sat-monitor" not in body
-    assert 'command: ["worker", "run", "--loop", "--queue", "all"]' not in body
+    assert 'command: ["-m", "cfdi_vault.worker_runner", "--loop", "--queue", "all"]' not in body
 
     # The outbox publisher needs DB and RabbitMQ only; it must not inherit the
     # SAT monitor's Redis dependency or an artifact volume.

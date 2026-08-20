@@ -1,4 +1,10 @@
-"""Download CLI commands."""
+"""Fake/offline download and sync helpers, retired from the Typer surface.
+
+These functions are no longer registered as ``cfdi-vault`` commands.  They stay
+as plain Python callables for the offline/synthetic pipeline checks that still
+drive them directly; the durable worker process now lives in
+:mod:`cfdi_vault.worker_runner`, which imports no Typer code.
+"""
 
 from __future__ import annotations
 
@@ -66,75 +72,6 @@ def queue_status(
         return
     for row in rows:
         typer.echo(f"{row['queue']},{row['status']},{row['count']}")
-
-def worker_run(
-    loop: bool = typer.Option(False, "--loop", help="Keep polling the configured queue instead of running once."),
-    poll_seconds: float = typer.Option(5.0, "--poll-seconds", min=0.5, help="Polling interval when --loop is used."),
-    queue_name: str = typer.Option("all", "--queue", help="Queue name or all campaign/recovery queues."),
-    database_url: str | None = typer.Option(None, "--database-url", help="PostgreSQL URL. Defaults to DATABASE_URL."),
-    storage: Path | None = typer.Option(None, "--storage", help="Storage root. Defaults to CFDI_STORAGE_ROOT or storage/."),
-) -> None:
-    """Run the recovery worker shell."""
-
-    service = _service(database_url, storage)
-    worker = RecoveryWorker(service, ledger_consumer=_build_ledger_consumer(service))
-    if loop:
-        worker.run_forever(poll_seconds=poll_seconds, queue_name=queue_name)
-        return
-    report = worker.run_one_shot(queue_name=queue_name)
-    typer.echo(f"processed={report.processed} detail={report.detail}")
-
-
-def _build_ledger_consumer(service: object) -> object | None:
-    """Build the durable parse consumer when PostgreSQL and Rabbit are present."""
-
-    queue = getattr(service, "queue", None)
-    factory = getattr(service, "session_factory", None)
-    engine = getattr(factory, "kw", {}).get("bind") if factory is not None else None
-    if queue is None or engine is None:
-        return None
-    from cfdi_vault.accounting_ledger_jobs_v6 import LedgerJobStoreV6
-    from cfdi_vault.accounting_ledger_v5 import AccountingLedgerRepository
-    from cfdi_vault.accounting_ledger_v5_mapper import LedgerWriteIntentMapper
-    from cfdi_vault.accounting_ledger_worker import LedgerParseAggregate, LedgerParseError
-    from cfdi_vault.domain import QueueMessage
-    from cfdi_vault.ledger_artifact_bridge import V5LedgerProjectionWriter
-    from cfdi_vault.ledger_job_consumer import LedgerJobConsumer
-    from cfdi_vault.queue_contract import TerminalQueueError
-
-    store = LedgerJobStoreV6(engine)
-    if getattr(service, "ledger_writer", None) is None:
-        repository = AccountingLedgerRepository(factory)
-        mapper = LedgerWriteIntentMapper(repository)
-        setattr(service, "ledger_writer", V5LedgerProjectionWriter(mapper))
-
-    def parser(job: object) -> LedgerParseAggregate:
-        from datetime import datetime, timezone
-
-        queue_name = getattr(job, "queue")
-        tenant_id = str(getattr(job, "tenant_id"))
-        artifact_ref = str(getattr(job, "artifact_ref"))
-        message = QueueMessage(
-            queue=queue_name,
-            tenant_id=tenant_id,
-            job_id=artifact_ref,
-            correlation_id=artifact_ref,
-            idempotency_key=str(getattr(job, "idempotency_key")),
-            created_at=datetime.now(timezone.utc),
-        )
-        try:
-            result = service.process_queue_message_for_worker(message, worker_ref="ledger-worker")  # type: ignore[attr-defined]
-        except TerminalQueueError as exc:
-            raise LedgerParseError(exc.reason_code) from None
-        count = max(0, int(getattr(result, "metadata_count", 0)))
-        return LedgerParseAggregate(records_seen=count, records_written=count)
-
-    return LedgerJobConsumer(
-        store,
-        parser,
-        consumer_name="cfdi-vault-worker",
-        worker_ref="cfdi-vault-worker",
-    )
 
 def sync_metadata(
     rfc: str = typer.Option(..., "--rfc", help="Requester RFC."),
@@ -335,23 +272,3 @@ def download_status(
         typer.echo("error=status_not_found", err=True)
         raise typer.Exit(code=1)
     _print_download_status(profile_id=profile, status=status)
-
-
-def register(queue_app: typer.Typer, worker_app: typer.Typer, sync_app: typer.Typer, download_app: typer.Typer) -> None:
-    """Register download commands."""
-
-    queue_app.command("status")(queue_status)
-
-    worker_app.command("run")(worker_run)
-
-    sync_app.command("metadata")(sync_metadata)
-
-    sync_app.command("xml")(sync_xml)
-
-    download_app.command("plan")(download_plan)
-
-    download_app.command("request")(download_request)
-
-    download_app.command("sync")(download_sync)
-
-    download_app.command("status")(download_status)

@@ -1,4 +1,3 @@
-import pytest
 from typer.testing import CliRunner
 
 from cfdi_vault.cli import app
@@ -14,35 +13,39 @@ def test_help_command_lists_productive_recovery_flow() -> None:
         "sat campaign authorize",
         "sat campaign run",
         "sat campaign status",
-        "sync metadata",
-        "sync xml",
-        "download sync",
-        "download status",
-        "worker run",
+        "analysis report",
+        "doctor",
+        "setup",
     ):
         assert command in result.output
     assert "Command catalog" in result.output
 
 
-def test_help_command_explains_one_topic() -> None:
-    result = CliRunner().invoke(app, ["help", "sync xml"])
-
-    assert result.exit_code == 0
-    assert "sync xml" in result.output
-    assert "fake/offline" in result.output
-    assert "live SAT recovery belongs to sat campaign" in result.output
-    assert "register local file paths" in result.output
-    assert "Example:" in result.output
-
-
-@pytest.mark.parametrize("command", ("metadata", "xml"))
-def test_offline_sync_help_does_not_expose_live_option(command: str) -> None:
-    result = CliRunner().invoke(app, ["sync", command, "--help"])
+def test_help_command_omits_retired_offline_and_worker_commands() -> None:
+    result = CliRunner().invoke(app, ["help"])
 
     assert result.exit_code == 0, result.output
-    assert "--live" not in result.output
-    assert "live SAT is available" in result.output
-    assert "campaign" in result.output
+    for command in (
+        "sync metadata",
+        "sync xml",
+        "download plan",
+        "download request",
+        "download sync",
+        "download status",
+        "queue status",
+        "worker run",
+    ):
+        assert command not in result.output
+
+
+def test_help_command_explains_one_topic() -> None:
+    result = CliRunner().invoke(app, ["help", "sat campaign run"])
+
+    assert result.exit_code == 0
+    assert "sat campaign run" in result.output
+    assert "bounded productive Metadata campaign submission run" in result.output
+    assert "after authorization" in result.output
+    assert "Example:" in result.output
 
 
 def test_help_command_fails_for_unknown_topic() -> None:
@@ -58,15 +61,10 @@ def test_cli_subcommand_help_builds_for_productive_commands() -> None:
         ["setup", "--help"],
         ["setup", "--skip-credential-check", "--help"],
         ["doctor", "--help"],
-        ["download", "plan", "--help"],
-        ["download", "request", "--help"],
-        ["download", "sync", "--help"],
-        ["download", "status", "--help"],
         ["sat", "campaign", "create", "--help"],
         ["sat", "campaign", "authorize", "--help"],
         ["sat", "campaign", "run", "--help"],
         ["sat", "campaign", "status", "--help"],
-        ["worker", "run", "--help"],
     ):
         result = CliRunner().invoke(app, args)
 
@@ -127,4 +125,24 @@ def test_retired_sat_commands_are_absent_from_help_and_fail_closed() -> None:
         assert command not in catalog.output
         result = runner.invoke(app, list(args))
         assert result.exit_code == 2, f"{command}: {result.output}"
+        assert "no such command" in result.output.lower()
+
+
+def test_retired_offline_and_worker_commands_fail_closed() -> None:
+    """The worker now runs as ``python -m cfdi_vault.worker_runner`` instead."""
+
+    runner = CliRunner()
+    for args in (
+        ("download", "plan"),
+        ("download", "request"),
+        ("download", "sync"),
+        ("download", "status"),
+        ("sync", "metadata"),
+        ("sync", "xml"),
+        ("queue", "status"),
+        ("worker", "run"),
+    ):
+        result = runner.invoke(app, list(args))
+
+        assert result.exit_code == 2, f"{' '.join(args)}: {result.output}"
         assert "no such command" in result.output.lower()

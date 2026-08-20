@@ -1,41 +1,44 @@
+"""Offline download helper behaviour.
+
+``download plan/request/sync/status`` are no longer Typer commands, so these
+tests drive the underlying functions directly.  Each one still asserts the
+redaction and pipeline behaviour it asserted through ``CliRunner`` before.
+"""
+
 from __future__ import annotations
 
 import re
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
+import typer
 
-import cfdi_vault.adapters.cli.download as download_cli
 from cfdi_vault import setup as setup_flow
-from cfdi_vault.cli import app
+from cfdi_vault.adapters.cli.download import (
+    download_plan,
+    download_request,
+    download_status,
+    download_sync,
+)
 
 
-def test_download_plan_prints_safe_plan_and_criteria_hash(tmp_path: Path) -> None:
+def test_download_plan_prints_safe_plan_and_criteria_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     appdata_root = tmp_path / "appdata"
     _write_setup_profile(appdata_root)
+    monkeypatch.setenv("LOCALAPPDATA", str(appdata_root))
 
-    result = CliRunner().invoke(
-        app,
-        [
-            "download",
-            "plan",
-            "--profile",
-            "dummy-profile",
-            "--from",
-            "2024-01-01",
-            "--to",
-            "2024-01-31",
-            "--kind",
-            "metadata",
-            "--direction",
-            "received",
-        ],
-        env={"LOCALAPPDATA": str(appdata_root)},
+    download_plan(
+        profile="dummy-profile",
+        from_date="2024-01-01",
+        to_date="2024-01-31",
+        kind="metadata",
+        direction="received",
     )
 
-    assert result.exit_code == 0, result.output
-    lines = _key_value_lines(result.output)
+    output = _output(capsys)
+    lines = _key_value_lines(output)
     assert lines["mode"] == "fake"
     assert lines["profile"] == "dummy-profile"
     assert lines["kind"] == "metadata"
@@ -45,135 +48,26 @@ def test_download_plan_prints_safe_plan_and_criteria_hash(tmp_path: Path) -> Non
     assert lines["will_submit"] == "false"
     assert re.fullmatch(r"[0-9a-f]{64}", lines["criteria_hash"])
     assert "request_id" not in lines
-    _assert_no_profile_secrets_or_paths(result.output, appdata_root)
+    _assert_no_profile_secrets_or_paths(output, appdata_root)
 
 
-def test_worker_run_one_shot_uses_lifecycle_wrapper(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_download_request_prints_synthetic_accepted_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    class FakeWorker:
-        instance: "FakeWorker | None" = None
-
-        def __init__(self, _service: object, *, ledger_consumer: object | None = None) -> None:
-            self.one_shot_calls: list[str] = []
-            self.forever_calls = 0
-            FakeWorker.instance = self
-
-        def run_one_shot(self, *, queue_name: str):
-            self.one_shot_calls.append(queue_name)
-            return type("Report", (), {"processed": 0, "detail": "No synthetic work."})()
-
-        def run_forever(self, **_kwargs: object) -> None:
-            self.forever_calls += 1
-
-    monkeypatch.setattr(download_cli, "_service", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(download_cli, "_build_ledger_consumer", lambda _service: None)
-    monkeypatch.setattr(download_cli, "RecoveryWorker", FakeWorker)
-
-    download_cli.worker_run(
-        loop=False,
-        poll_seconds=5.0,
-        queue_name="all",
-        database_url=None,
-        storage=None,
-    )
-
-    assert FakeWorker.instance is not None
-    assert FakeWorker.instance.one_shot_calls == ["all"]
-    assert FakeWorker.instance.forever_calls == 0
-    assert "processed=0 detail=No synthetic work." in capsys.readouterr().out
-
-
-def test_build_ledger_consumer_injects_v5_writer_from_service_factory() -> None:
-    class SessionFactory:
-        kw = {"bind": object()}
-
-    service = type("Service", (), {"queue": object(), "session_factory": SessionFactory()})()
-    consumer = download_cli._build_ledger_consumer(service)
-
-    from cfdi_vault.ledger_artifact_bridge import V5LedgerProjectionWriter
-
-    assert consumer is not None
-    assert isinstance(service.ledger_writer, V5LedgerProjectionWriter)
-    assert service.ledger_writer._mapper._repository._session_factory is service.session_factory  # type: ignore[attr-defined]
-
-
-def test_build_ledger_consumer_preserves_injected_writer() -> None:
-    class SessionFactory:
-        kw = {"bind": object()}
-
-    existing = object()
-    service = type(
-        "Service",
-        (),
-        {"queue": object(), "session_factory": SessionFactory(), "ledger_writer": existing},
-    )()
-
-    consumer = download_cli._build_ledger_consumer(service)
-
-    assert consumer is not None
-    assert service.ledger_writer is existing
-
-
-def test_build_ledger_consumer_redacts_writer_failure_reason() -> None:
-    class SessionFactory:
-        kw = {"bind": object()}
-
-    class Service:
-        queue = object()
-        session_factory = SessionFactory()
-
-        def process_queue_message_for_worker(self, _message, *, worker_ref: str):  # type: ignore[no-untyped-def]
-            from cfdi_vault.queue_contract import TerminalQueueError
-
-            raise TerminalQueueError("ledger_write_failed")
-
-    consumer = download_cli._build_ledger_consumer(Service())
-    from cfdi_vault.accounting_ledger_worker import LedgerParseError
-
-    with pytest.raises(LedgerParseError) as raised:
-        consumer._parser(  # type: ignore[union-attr]
-            type(
-                "Job",
-                (),
-                {
-                    "queue": "cfdi.parse.xml",
-                    "tenant_id": "tenant",
-                    "artifact_ref": "artifact",
-                    "idempotency_key": "key",
-                },
-            )()
-        )
-
-    assert raised.value.reason_code == "ledger_write_failed"
-    assert str(raised.value) == "ledger_write_failed"
-
-
-def test_download_request_prints_synthetic_accepted_result(tmp_path: Path) -> None:
     appdata_root = tmp_path / "appdata"
     _write_setup_profile(appdata_root)
+    monkeypatch.setenv("LOCALAPPDATA", str(appdata_root))
 
-    result = CliRunner().invoke(
-        app,
-        [
-            "download",
-            "request",
-            "--profile",
-            "dummy-profile",
-            "--from",
-            "2024-02-01",
-            "--to",
-            "2024-02-29",
-            "--kind",
-            "cfdi",
-            "--direction",
-            "issued",
-        ],
-        env={"LOCALAPPDATA": str(appdata_root)},
+    download_request(
+        profile="dummy-profile",
+        from_date="2024-02-01",
+        to_date="2024-02-29",
+        kind="cfdi",
+        direction="issued",
     )
 
-    assert result.exit_code == 0, result.output
-    lines = _key_value_lines(result.output)
+    output = _output(capsys)
+    lines = _key_value_lines(output)
     assert lines["mode"] == "fake"
     assert lines["profile"] == "dummy-profile"
     assert lines["kind"] == "cfdi"
@@ -183,37 +77,31 @@ def test_download_request_prints_synthetic_accepted_result(tmp_path: Path) -> No
     assert lines["action"] == "accepted"
     assert lines["sat_code"] == "5000"
     assert lines["message"] == "Synthetic request accepted"
-    _assert_no_profile_secrets_or_paths(result.output, appdata_root)
+    _assert_no_profile_secrets_or_paths(output, appdata_root)
 
 
 @pytest.mark.integration
 def test_download_sync_cfdi_runs_fake_pipeline_without_sensitive_output(
-    tmp_path: Path, reset_postgres_database: str
+    tmp_path: Path,
+    reset_postgres_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     appdata_root = tmp_path / "appdata"
     paths = _write_setup_profile(appdata_root)
+    monkeypatch.setenv("LOCALAPPDATA", str(appdata_root))
 
-    result = CliRunner().invoke(
-        app,
-        [
-            "download",
-            "sync",
-            "--profile",
-            "dummy-profile",
-            "--from",
-            "2024-01-01",
-            "--to",
-            "2024-01-31",
-            "--kind",
-            "cfdi",
-            "--direction",
-            "received",
-        ],
-        env={"LOCALAPPDATA": str(appdata_root)},
+    download_sync(
+        profile="dummy-profile",
+        from_date="2024-01-01",
+        to_date="2024-01-31",
+        kind="cfdi",
+        direction="received",
+        database_url=None,
     )
 
-    assert result.exit_code == 0, result.output
-    lines = _key_value_lines(result.output)
+    output = _output(capsys)
+    lines = _key_value_lines(output)
     assert lines["mode"] == "fake"
     assert lines["profile"] == "dummy-profile"
     assert lines["kind"] == "cfdi"
@@ -225,49 +113,37 @@ def test_download_sync_cfdi_runs_fake_pipeline_without_sensitive_output(
     assert lines["status"] == "succeeded"
     assert lines["metadata_count"] == "2"
     assert len(list(paths.storage_root.glob("*/xml/2024/01/*.xml"))) == 2
-    assert "PKG-" not in result.output
-    assert ".zip" not in result.output
-    assert ".xml" not in result.output
-    _assert_no_profile_secrets_or_paths(result.output, appdata_root)
+    assert "PKG-" not in output
+    assert ".zip" not in output
+    assert ".xml" not in output
+    _assert_no_profile_secrets_or_paths(output, appdata_root)
 
 
 @pytest.mark.integration
 def test_download_status_reads_persisted_fake_sync_aggregates_safely(
-    tmp_path: Path, reset_postgres_database: str
+    tmp_path: Path,
+    reset_postgres_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     appdata_root = tmp_path / "appdata"
     _write_setup_profile(appdata_root)
-    runner = CliRunner()
+    monkeypatch.setenv("LOCALAPPDATA", str(appdata_root))
 
-    sync = runner.invoke(
-        app,
-        [
-            "download",
-            "sync",
-            "--profile",
-            "dummy-profile",
-            "--from",
-            "2024-01-01",
-            "--to",
-            "2024-01-31",
-            "--kind",
-            "cfdi",
-            "--direction",
-            "received",
-        ],
-        env={"LOCALAPPDATA": str(appdata_root)},
+    download_sync(
+        profile="dummy-profile",
+        from_date="2024-01-01",
+        to_date="2024-01-31",
+        kind="cfdi",
+        direction="received",
+        database_url=None,
     )
-    assert sync.exit_code == 0, sync.output
-    sync_lines = _key_value_lines(sync.output)
+    sync_lines = _key_value_lines(_output(capsys))
 
-    status = runner.invoke(
-        app,
-        ["download", "status", "--profile", "dummy-profile", "--job-id", sync_lines["job_id"]],
-        env={"LOCALAPPDATA": str(appdata_root)},
-    )
+    download_status(profile="dummy-profile", job_id=sync_lines["job_id"], database_url=None)
 
-    assert status.exit_code == 0, status.output
-    lines = _key_value_lines(status.output)
+    output = _output(capsys)
+    lines = _key_value_lines(output)
     assert lines["mode"] == "fake"
     assert lines["profile"] == "dummy-profile"
     assert lines["job_id"] == sync_lines["job_id"]
@@ -281,267 +157,141 @@ def test_download_status_reads_persisted_fake_sync_aggregates_safely(
     assert lines["package_count"] == "1"
     assert lines["downloaded_package_count"] == "1"
     assert lines["xml_count"] == "2"
-    _assert_no_download_status_leaks(status.output, appdata_root)
+    _assert_no_download_status_leaks(output, appdata_root)
 
 
 @pytest.mark.integration
-def test_download_status_missing_or_unknown_job_fails_safely(tmp_path: Path, reset_postgres_database: str) -> None:
+def test_download_status_missing_or_unknown_job_fails_safely(
+    tmp_path: Path,
+    reset_postgres_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     appdata_root = tmp_path / "appdata"
     _write_setup_profile(appdata_root)
-    runner = CliRunner()
+    monkeypatch.setenv("LOCALAPPDATA", str(appdata_root))
 
-    missing_job = runner.invoke(
-        app,
-        ["download", "status", "--profile", "dummy-profile", "--job-id", "missing-job"],
-        env={"LOCALAPPDATA": str(appdata_root)},
+    with pytest.raises(typer.Exit) as missing_job:
+        download_status(profile="dummy-profile", job_id="missing-job", database_url=None)
+
+    assert missing_job.value.exit_code == 1
+    missing_output = _output(capsys)
+    assert "error=status_not_found" in missing_output
+    _assert_no_download_status_leaks(missing_output, appdata_root)
+
+    download_sync(
+        profile="dummy-profile",
+        from_date="2024-01-01",
+        to_date="2024-01-31",
+        kind="cfdi",
+        direction="received",
+        database_url=None,
     )
+    capsys.readouterr()
 
-    assert missing_job.exit_code == 1
-    assert "error=status_not_found" in missing_job.output
-    _assert_no_download_status_leaks(missing_job.output, appdata_root)
+    with pytest.raises(typer.Exit) as unknown_job:
+        download_status(profile="dummy-profile", job_id="unknown-job", database_url=None)
 
-    sync = runner.invoke(
-        app,
-        [
-            "download",
-            "sync",
-            "--profile",
-            "dummy-profile",
-            "--from",
-            "2024-01-01",
-            "--to",
-            "2024-01-31",
-            "--kind",
-            "cfdi",
-            "--direction",
-            "received",
-        ],
-        env={"LOCALAPPDATA": str(appdata_root)},
-    )
-    assert sync.exit_code == 0, sync.output
-
-    unknown_job = runner.invoke(
-        app,
-        ["download", "status", "--profile", "dummy-profile", "--job-id", "unknown-job"],
-        env={"LOCALAPPDATA": str(appdata_root)},
-    )
-
-    assert unknown_job.exit_code == 1
-    assert "error=status_not_found" in unknown_job.output
-    _assert_no_download_status_leaks(unknown_job.output, appdata_root)
+    assert unknown_job.value.exit_code == 1
+    unknown_output = _output(capsys)
+    assert "error=status_not_found" in unknown_output
+    _assert_no_download_status_leaks(unknown_output, appdata_root)
 
 
 @pytest.mark.integration
-def test_download_sync_replay_same_criteria_returns_stable_result(tmp_path: Path, reset_postgres_database: str) -> None:
+def test_download_sync_replay_same_criteria_returns_stable_result(
+    tmp_path: Path,
+    reset_postgres_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     appdata_root = tmp_path / "appdata"
     _write_setup_profile(appdata_root)
-    args = [
-        "download",
-        "sync",
-        "--profile",
-        "dummy-profile",
-        "--from",
-        "2024-02-01",
-        "--to",
-        "2024-02-29",
-        "--kind",
-        "metadata",
-        "--direction",
-        "issued",
-    ]
-    runner = CliRunner()
+    monkeypatch.setenv("LOCALAPPDATA", str(appdata_root))
+    arguments = {
+        "profile": "dummy-profile",
+        "from_date": "2024-02-01",
+        "to_date": "2024-02-29",
+        "kind": "metadata",
+        "direction": "issued",
+        "database_url": None,
+    }
 
-    first = runner.invoke(app, args, env={"LOCALAPPDATA": str(appdata_root)})
-    replay = runner.invoke(app, args, env={"LOCALAPPDATA": str(appdata_root)})
+    download_sync(**arguments)
+    first_output = _output(capsys)
+    download_sync(**arguments)
+    replay_output = _output(capsys)
 
-    assert first.exit_code == 0, first.output
-    assert replay.exit_code == 0, replay.output
-    first_lines = _key_value_lines(first.output)
-    replay_lines = _key_value_lines(replay.output)
+    first_lines = _key_value_lines(first_output)
+    replay_lines = _key_value_lines(replay_output)
     assert replay_lines["criteria_hash"] == first_lines["criteria_hash"]
     assert replay_lines["job_id"] == first_lines["job_id"]
     assert replay_lines["request_id"] == first_lines["request_id"]
     assert replay_lines["status"] == first_lines["status"] == "succeeded"
     assert replay_lines["metadata_count"] == first_lines["metadata_count"] == "2"
-    _assert_no_profile_secrets_or_paths(first.output, appdata_root)
-    _assert_no_profile_secrets_or_paths(replay.output, appdata_root)
+    _assert_no_profile_secrets_or_paths(first_output, appdata_root)
+    _assert_no_profile_secrets_or_paths(replay_output, appdata_root)
 
 
-def test_download_rejects_invalid_direction_folio(tmp_path: Path) -> None:
+def test_download_rejects_invalid_direction_folio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     appdata_root = tmp_path / "appdata"
     _write_setup_profile(appdata_root)
+    monkeypatch.setenv("LOCALAPPDATA", str(appdata_root))
 
-    result = CliRunner().invoke(
-        app,
-        [
-            "download",
-            "plan",
-            "--profile",
-            "dummy-profile",
-            "--from",
-            "2024-01-01",
-            "--to",
-            "2024-01-31",
-            "--kind",
-            "metadata",
-            "--direction",
-            "folio",
-        ],
-        env={"LOCALAPPDATA": str(appdata_root)},
-    )
+    with pytest.raises(typer.BadParameter) as raised:
+        download_plan(
+            profile="dummy-profile",
+            from_date="2024-01-01",
+            to_date="2024-01-31",
+            kind="metadata",
+            direction="folio",
+        )
 
-    assert result.exit_code != 0
-    assert "direction must be received or issued" in result.output
+    assert "direction must be received or issued" in str(raised.value)
 
 
-def test_download_rejects_from_after_to(tmp_path: Path) -> None:
-    appdata_root = tmp_path / "appdata"
-    _write_setup_profile(appdata_root)
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "download",
-            "plan",
-            "--profile",
-            "dummy-profile",
-            "--from",
-            "2024-02-01",
-            "--to",
-            "2024-01-31",
-            "--kind",
-            "metadata",
-            "--direction",
-            "received",
-        ],
-        env={"LOCALAPPDATA": str(appdata_root)},
-    )
-
-    assert result.exit_code == 1
-    assert "error=invalid_date_range" in result.output
-    assert "detail=--from must be before or equal to --to" in result.output
-
-
-def test_download_missing_profile_fails_without_absolute_path_leak(tmp_path: Path) -> None:
-    appdata_root = tmp_path / "appdata"
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "download",
-            "plan",
-            "--profile",
-            "missing-profile",
-            "--from",
-            "2024-01-01",
-            "--to",
-            "2024-01-31",
-            "--kind",
-            "metadata",
-            "--direction",
-            "received",
-        ],
-        env={"LOCALAPPDATA": str(appdata_root)},
-    )
-
-    assert result.exit_code == 1
-    assert "profile=missing-profile" in result.output
-    assert "error=profile_not_configured" in result.output
-    assert str(appdata_root) not in result.output
-
-
-def test_download_live_option_is_rejected(tmp_path: Path) -> None:
-    appdata_root = tmp_path / "appdata"
-    _write_setup_profile(appdata_root)
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "download",
-            "request",
-            "--profile",
-            "dummy-profile",
-            "--from",
-            "2024-01-01",
-            "--to",
-            "2024-01-31",
-            "--kind",
-            "metadata",
-            "--direction",
-            "received",
-            "--live",
-        ],
-        env={"LOCALAPPDATA": str(appdata_root)},
-    )
-
-    assert result.exit_code == 2
-    assert "request_id=" not in result.output
-    assert "mode=fake" not in result.output
-
-
-def test_download_sync_live_option_is_rejected_without_running(tmp_path: Path) -> None:
-    appdata_root = tmp_path / "appdata"
-    _write_setup_profile(appdata_root)
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "download",
-            "sync",
-            "--profile",
-            "dummy-profile",
-            "--from",
-            "2024-01-01",
-            "--to",
-            "2024-01-31",
-            "--kind",
-            "cfdi",
-            "--direction",
-            "received",
-            "--live",
-        ],
-        env={"LOCALAPPDATA": str(appdata_root)},
-    )
-
-    assert result.exit_code == 2
-    assert "job_id=" not in result.output
-    assert "request_id=" not in result.output
-    assert "mode=fake" not in result.output
-
-
-@pytest.mark.parametrize("command", ("metadata", "xml"))
-def test_offline_sync_live_option_is_rejected_before_service_call(
-    command: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_download_rejects_from_after_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     appdata_root = tmp_path / "appdata"
     _write_setup_profile(appdata_root)
+    monkeypatch.setenv("LOCALAPPDATA", str(appdata_root))
 
-    def fail_if_called(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("offline sync parser must reject --live before constructing a service")
+    with pytest.raises(typer.Exit) as raised:
+        download_plan(
+            profile="dummy-profile",
+            from_date="2024-02-01",
+            to_date="2024-01-31",
+            kind="metadata",
+            direction="received",
+        )
 
-    monkeypatch.setattr("cfdi_vault.adapters.cli.download._service", fail_if_called)
-    result = CliRunner().invoke(
-        app,
-        [
-            "sync",
-            command,
-            "--rfc",
-            "XAXX010101000",
-            "--start",
-            "2024-01-01",
-            "--end",
-            "2024-01-31",
-            "--direction",
-            "received",
-            "--live",
-        ],
-        env={"LOCALAPPDATA": str(appdata_root)},
-    )
+    assert raised.value.exit_code == 1
+    output = _output(capsys)
+    assert "error=invalid_date_range" in output
+    assert "detail=--from must be before or equal to --to" in output
 
-    assert result.exit_code == 2, result.output
-    assert "no such option" in result.output.lower()
-    assert "job_id=" not in result.output
-    assert "request_id=" not in result.output
+
+def test_download_missing_profile_fails_without_absolute_path_leak(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    appdata_root = tmp_path / "appdata"
+    monkeypatch.setenv("LOCALAPPDATA", str(appdata_root))
+
+    with pytest.raises(typer.Exit) as raised:
+        download_plan(
+            profile="missing-profile",
+            from_date="2024-01-01",
+            to_date="2024-01-31",
+            kind="metadata",
+            direction="received",
+        )
+
+    assert raised.value.exit_code == 1
+    output = _output(capsys)
+    assert "profile=missing-profile" in output
+    assert "error=profile_not_configured" in output
+    assert str(appdata_root) not in output
 
 
 def _write_setup_profile(
@@ -564,6 +314,13 @@ def _write_setup_profile(
     )
     setup_flow.write_profile(profile, paths.profile_json)
     return paths
+
+
+def _output(capsys: pytest.CaptureFixture[str]) -> str:
+    """Return the merged stream the CliRunner used to expose as ``output``."""
+
+    captured = capsys.readouterr()
+    return captured.out + captured.err
 
 
 def _key_value_lines(output: str) -> dict[str, str]:

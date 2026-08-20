@@ -25,6 +25,7 @@ services:
 
   worker:
     build: .
+    entrypoint: ["python"]
     env_file:
       - path: .env
         required: false
@@ -45,7 +46,7 @@ services:
     volumes:
       - ${CFDI_STORAGE_MOUNT:-sat_artifacts_data}:/var/lib/cfdi-vault/storage
       - ./logs:/app/logs
-    command: ["worker", "run", "--loop", "--queue", "all"]
+    command: ["-m", "cfdi_vault.worker_runner", "--loop", "--queue", "all"]
     restart: unless-stopped
 
   ledger-publisher:
