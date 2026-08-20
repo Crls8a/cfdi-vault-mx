@@ -1,6 +1,17 @@
 # CLI family refactor plan
 
-This is the living plan for keeping the `cfdi-vault` Typer CLI split by responsibility instead of rebuilding a monolithic `cli.py`.
+**Superseded.** The project direction changed from "keep the Typer CLI split
+by family" to "eliminate the Typer CLI entirely" in favor of the FastAPI
+control panel (`docs/adr/0004-local-control-panel.md`,
+`docs/adr/0005-asynchronous-campaign-run.md`). The retired SAT command
+modules this plan tracked (`sat_auth.py`, `sat_backfill.py`, `sat_probes.py`,
+`sat_recovery.py`, `sat_scheduler.py`, `sat_verify.py`, `sat_metadata.py`,
+`sat_live_environment.py`, `live.py`, `sat_common.py`) have been deleted
+outright rather than kept for migration/audit — that rationale applied to a
+now-integrated merge, not to the current elimination effort. Kept for
+historical context only; do not treat the checklist below as active.
+
+This was the living plan for keeping the `cfdi-vault` Typer CLI split by responsibility instead of rebuilding a monolithic `cli.py`.
 
 ## Decision
 
