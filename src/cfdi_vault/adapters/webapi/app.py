@@ -45,14 +45,16 @@ from cfdi_vault.adapters.cli.analysis import _build_report as _analysis_build_re
 from cfdi_vault.adapters.cli.analysis import _database_url as _analysis_database_url
 from cfdi_vault.adapters.cli.analysis import _load_exact_profile as _analysis_load_exact_profile
 from cfdi_vault.adapters.cli.analysis import _parse_date as _analysis_parse_date
-from cfdi_vault.adapters.cli.common import _provider_for_reference, _setup_provider
+from cfdi_vault.adapters.cli.common import _provider_for_reference, _resolve_storage_root, _setup_provider
 from cfdi_vault.adapters.cli.common import _service as _recovery_service
 from cfdi_vault.adapters.cli.secrets import _credential_reference
 from cfdi_vault.adapters.cli.storage import _default_service as _storage_service
 from cfdi_vault.adapters.webapi.config import WebApiSettings
 from cfdi_vault.adapters.webapi.security import OriginGuardMiddleware
+from cfdi_vault.config import ConfigValidationError, load_config
 from cfdi_vault.local_preflight import default_local_probes, run_local_preflight
 from cfdi_vault.os_secret_providers import native_provider_for_reference
+from cfdi_vault.recovery_service import RecoveryService, write_minimal_pdf
 from cfdi_vault.runtime_settings import RuntimeSettingsError
 from cfdi_vault.sat_campaign_db_cli import (
     CampaignDatabaseError,
@@ -63,6 +65,7 @@ from cfdi_vault.sat_campaign_db_cli import (
     publish_campaign_run_hint,
 )
 from cfdi_vault.secrets import CredentialProviderError, CredentialReference
+from cfdi_vault.service import VaultService
 from cfdi_vault.setup_core import CredentialMode, SetupError, find_repo_root, load_profile, redact_rfc
 from cfdi_vault.setup_service import run_setup
 from cfdi_vault.setup_status import format_profile_status, inspect_profile
@@ -173,6 +176,68 @@ class SecretDeleteRequest(BaseModel):
     reference: str
     kind: str = "generic"
     purpose: str = "webapi-delete"
+
+
+class OperationsInitRequest(BaseModel):
+    """Body for the ``cfdi-vault operations init`` panel equivalent."""
+
+    tenant_id: str = "default"
+    rfc: str
+    name: str | None = None
+
+
+class OperationsReconcileRequest(BaseModel):
+    """Body for the ``cfdi-vault operations reconcile`` panel equivalent."""
+
+    tenant_id: str | None = None
+
+
+class OperationsPrintRequest(BaseModel):
+    """Body for the ``cfdi-vault operations print`` panel equivalent.
+
+    ``output_path`` is a plain filesystem path this process reads/writes on
+    its own machine, exactly like the CLI's ``--output`` option — not a
+    browser upload or download.
+    """
+
+    uuid: str
+    format: str = "text"
+    tenant_id: str | None = None
+    output_path: str | None = None
+
+
+class OperationsExportRequest(BaseModel):
+    """Body for the ``cfdi-vault operations export`` panel equivalent."""
+
+    output_path: str | None = None
+    tenant_id: str | None = None
+
+
+class OperationsImportXmlRequest(BaseModel):
+    """Body for the ``cfdi-vault operations import-xml`` panel equivalent.
+
+    ``xml_path`` is an existing file already on the panel's own machine.
+    """
+
+    xml_path: str
+
+
+class OperationsImportZipRequest(BaseModel):
+    """Body for the ``cfdi-vault operations import-zip`` panel equivalent."""
+
+    zip_path: str
+
+
+class OperationsExportCsvRequest(BaseModel):
+    """Body for the ``cfdi-vault operations export-csv`` panel equivalent."""
+
+    output_path: str
+
+
+class ConfigValidateRequest(BaseModel):
+    """Body for the ``cfdi-vault config validate`` panel equivalent."""
+
+    config_path: str
 
 
 def create_app(settings: WebApiSettings | None = None) -> FastAPI:
@@ -461,6 +526,196 @@ def create_app(settings: WebApiSettings | None = None) -> FastAPI:
         _require_allowed_service(service)
         _run_compose("stop", service)
         return {"service": service, "action": "stop"}
+
+    def _operations_recovery_service() -> RecoveryService:
+        """Build the same ``RecoveryService`` the CLI's ``_service`` builds.
+
+        Construction failures map exactly like ``system_doctor`` already maps
+        them: a ``RuntimeError``/``SQLAlchemyError`` here is a local
+        PostgreSQL misconfiguration, not something to echo raw.
+        """
+
+        try:
+            return _recovery_service(resolved.runtime.database_url, resolved.runtime.storage_root)
+        except (RuntimeError, SQLAlchemyError):
+            raise HTTPException(status_code=400, detail={"reason": "operations-database-unavailable"}) from None
+
+    def _operations_vault_service() -> VaultService:
+        """Build the same ``VaultService`` the CLI's import/summary/export commands build."""
+
+        try:
+            return VaultService(resolved.runtime.database_url)
+        except (RuntimeError, SQLAlchemyError):
+            raise HTTPException(status_code=400, detail={"reason": "operations-database-unavailable"}) from None
+
+    def _require_readable_file(path: Path, reason: str) -> None:
+        """Mirror Typer's ``exists=True, dir_okay=False, readable=True`` argument validation."""
+
+        if not path.is_file() or not os.access(path, os.R_OK):
+            raise HTTPException(status_code=400, detail={"reason": reason})
+
+    @app.post("/api/operations/init")
+    def operations_init(body: OperationsInitRequest) -> dict[str, str]:
+        service = _operations_recovery_service()
+        try:
+            service.init_tenant(body.tenant_id, body.rfc, body.name)
+        finally:
+            service.close()
+        return {"tenant_id": body.tenant_id, "rfc": body.rfc.upper()}
+
+    @app.post("/api/operations/reconcile")
+    def operations_reconcile(body: OperationsReconcileRequest) -> dict[str, int]:
+        service = _operations_recovery_service()
+        try:
+            updated_count = service.reconcile(tenant_id=body.tenant_id)
+        finally:
+            service.close()
+        return {"updated_count": updated_count}
+
+    @app.get("/api/operations/search")
+    def operations_search(
+        text: str = "", tenant_id: str | None = None, limit: int = Query(20, ge=1, le=200),
+    ) -> list[dict[str, object]]:
+        service = _operations_recovery_service()
+        try:
+            rows = service.search(text, tenant_id=tenant_id, limit=limit)
+        finally:
+            service.close()
+        return list(rows)
+
+    @app.get("/api/operations/cfdi/{uuid}")
+    def operations_show(uuid: str, tenant_id: str | None = None) -> dict[str, str]:
+        service = _operations_recovery_service()
+        try:
+            text = service.render_text(uuid, tenant_id=tenant_id)
+        except LookupError:
+            raise HTTPException(status_code=404, detail={"reason": "cfdi-not-found"}) from None
+        finally:
+            service.close()
+        return {"uuid": uuid, "text": text}
+
+    @app.post("/api/operations/print")
+    def operations_print(body: OperationsPrintRequest) -> dict[str, object]:
+        """Mirror ``print_invoice``'s three format branches exactly."""
+
+        service = _operations_recovery_service()
+        try:
+            output_path = Path(body.output_path) if body.output_path else None
+            if body.format == "text":
+                text = service.render_text(body.uuid, tenant_id=body.tenant_id)
+                if output_path is None:
+                    return {"uuid": body.uuid, "format": body.format, "output_path": None, "text": text}
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(text, encoding="utf-8")
+                return {"uuid": body.uuid, "format": body.format, "output_path": str(output_path), "text": None}
+            if output_path is None:
+                output_path = _resolve_storage_root(resolved.runtime.storage_root) / "exports" / f"{body.uuid}.{body.format}"
+            if body.format == "html":
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(service.render_html(body.uuid, tenant_id=body.tenant_id), encoding="utf-8")
+            elif body.format == "pdf":
+                write_minimal_pdf(output_path, service.render_text(body.uuid, tenant_id=body.tenant_id))
+            else:
+                raise ValueError("format must be text, html, or pdf")
+        except (LookupError, ValueError):
+            raise HTTPException(status_code=400, detail={"reason": "operations-print-failed"}) from None
+        finally:
+            service.close()
+        return {"uuid": body.uuid, "format": body.format, "output_path": str(output_path), "text": None}
+
+    @app.post("/api/operations/export")
+    def operations_export(body: OperationsExportRequest) -> dict[str, object]:
+        service = _operations_recovery_service()
+        try:
+            output_path = (
+                Path(body.output_path)
+                if body.output_path
+                else _resolve_storage_root(resolved.runtime.storage_root) / "exports" / "cfdi.csv"
+            )
+            exported_count = service.export_csv(output_path, tenant_id=body.tenant_id)
+        finally:
+            service.close()
+        return {"output_path": str(output_path), "exported_count": exported_count}
+
+    @app.post("/api/operations/import-xml")
+    def operations_import_xml(body: OperationsImportXmlRequest) -> dict[str, object]:
+        xml_path = Path(body.xml_path)
+        _require_readable_file(xml_path, "operations-xml-path-invalid")
+        service = _operations_vault_service()
+        try:
+            record = service.import_xml_file(xml_path)
+        finally:
+            service.engine.dispose()
+        if record.error:
+            raise HTTPException(status_code=400, detail={"reason": record.error})
+        return asdict(record)
+
+    @app.post("/api/operations/import-zip")
+    def operations_import_zip(body: OperationsImportZipRequest) -> dict[str, object]:
+        zip_path = Path(body.zip_path)
+        _require_readable_file(zip_path, "operations-zip-path-invalid")
+        service = _operations_vault_service()
+        try:
+            result = service.import_zip_file(zip_path)
+        finally:
+            service.engine.dispose()
+        # The CLI's ``typer.Exit(code=1)`` on ``result.failed`` is a shell-exit
+        # convention for a batch that partly failed; an HTTP response instead
+        # reports the counts (and per-record detail, since none of it is
+        # sensitive) with 200, leaving the caller to inspect ``failed``.
+        return {
+            "total_files": result.total_files,
+            "imported": result.imported,
+            "duplicates": result.duplicates,
+            "failed": result.failed,
+            "records": [asdict(record) for record in result.records],
+        }
+
+    @app.get("/api/operations/summary")
+    def operations_summary() -> dict[str, object]:
+        service = _operations_vault_service()
+        try:
+            vault_summary = service.summary()
+        finally:
+            service.engine.dispose()
+        return {
+            "by_month": [asdict(row) for row in vault_summary.by_month],
+            "by_issuer": [asdict(row) for row in vault_summary.by_issuer],
+            "by_comprobante_type": [asdict(row) for row in vault_summary.by_comprobante_type],
+        }
+
+    @app.post("/api/operations/export-csv")
+    def operations_export_csv(body: OperationsExportCsvRequest) -> dict[str, object]:
+        service = _operations_vault_service()
+        output_path = Path(body.output_path)
+        try:
+            exported_count = service.export_csv(output_path)
+        finally:
+            service.engine.dispose()
+        return {"output_path": str(output_path), "exported_count": exported_count}
+
+    @app.post("/api/config/validate")
+    def config_validate_endpoint(body: ConfigValidateRequest) -> dict[str, object]:
+        config_path = Path(body.config_path)
+        _require_readable_file(config_path, "config-path-invalid")
+        try:
+            config = load_config(config_path)
+        except ConfigValidationError as exc:
+            raise HTTPException(
+                status_code=400, detail={"reason": "config-invalid", "errors": list(exc.errors)},
+            ) from None
+        return {
+            "schema_version": config.schema_version,
+            "profiles": [
+                {
+                    "profile_id": profile.profile_id,
+                    "rfc": profile.rfc,
+                    "storage_root": profile.storage_root,
+                    "metadata_first": profile.download.metadata_first,
+                }
+                for profile in config.profiles
+            ],
+        }
 
     return app
 
